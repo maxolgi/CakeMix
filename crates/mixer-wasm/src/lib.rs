@@ -7,6 +7,8 @@ use oximedia_mixer::{
 };
 use oximedia_audio::ChannelLayout;
 
+pub mod effects;
+
 /// WASM binding for the oximedia-mixer audio engine.
 ///
 /// Construction: `new(sample_rate, buffer_size, max_channels)`.
