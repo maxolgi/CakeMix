@@ -15,8 +15,8 @@ MPEG2-TS using SMPTE 302M (s302m) encapsulation.
 56 known-answer tests (47 native + 9 WASM). The web demo server runs the
 WASM mixer inside an AudioWorklet with a 4-channel tone generator.
 
-**M1 is blocked** on WebSRT changes documented in `WEBSRT_CHANGES.md`
-and `audioplan.md`.
+**M1 is unblocked** — WebSRT has implemented all PCM/SMPTE 302M changes (commit a4181b1).
+Integration is browser-only (worker PCM messages → mixer worklet).
 
 ---
 
@@ -25,7 +25,7 @@ and `audioplan.md`.
 | Milestone | Status | Notes |
 |-----------|--------|-------|
 | M0 — WASM build + DSP tests | ✅ Done | 47 native + 9 WASM tests |
-| M1 — PCM end-to-end via WebSRT | ⏳ Blocked | Needs WebSRT s302m + MPTS |
+| M1 — PCM end-to-end via WebSRT | ✅ Unblocked | WebSRT has all PCM changes (a4181b1) |
 | M2 — Multi-PID (8 stereo / 16 mono) | ⏳ Blocked | Needs M1 + WebSRT MPTS |
 | M3 — Multi-session sum | ⏳ Blocked | Needs M1 |
 | M4 — Pro DSP (EQ, dynamics, metering) | 🔨 In Progress | Adapters + honesty tests done |
