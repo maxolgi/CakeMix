@@ -61,7 +61,8 @@ async fn serve_web_file(uri: axum::http::Uri) -> Response {
     if let Some(content) = WebAsset::get(&web_path) {
         let mime = from_path(&web_path).first_or_octet_stream();
         return (
-            [(header::CONTENT_TYPE, mime.as_ref())],
+            [(header::CONTENT_TYPE, mime.as_ref()),
+             (header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")],
             content.data.to_vec(),
         )
             .into_response();
