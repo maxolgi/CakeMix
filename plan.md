@@ -224,17 +224,18 @@ No UI, no network.
 
 ## Milestone roadmap (after M0)
 
-### M1 — single stereo program in/out (audio-only end-to-end)
-- [WebSRT] audio-only mux path lands; bump pin. (Fallback: dummy-video
-  fallback to unblock without the WebSRT edit.)
-- Receive: tap decoded `AudioData` → Float32 → mixer input per
-  SlopShady `streaming-input.ts:542` pattern.
-- Publish: master Float32 → Opus encode → `ts-muxer-wasm` → SRT per
-  `stream-worker.js` pattern.
-- 128↔960 buffering on the publish side (SlopShady's approach).
-- **Verify:** publish a tone from OBS (or another browser via WebSRT)
-  → mixer passes through → receive in test viewer, audio present at
-  correct level. No video PID in the output TS.
+### M1 — single stereo program in/out (PCM audio-only end-to-end)
+- [WebSRT] ts-muxer-wasm changes for PCM (see WEBSRT_CHANGES.md);
+  bump pin when merged.
+- Receive: WebSRT delivers MPEG2-TS → demux audio PES → raw PCM
+  bytes → Float32Array → mixer `set_channel_input`.
+- Publish: master Float32Array → raw PCM bytes → `ts-muxer-wasm`
+  `push_audio` → SRT datagrams.
+- No codec encode/decode step — PCM goes straight in/out of the TS muxer.
+- 128↔960 buffering on the publish side (SlopShady's approach, minus Opus).
+- **Verify:** publish a tone from a browser → mixer passes through →
+  receive in a second browser, audio present at correct level.
+  No video PID in the output TS.
 
 ### M2 — MPTS, one program with 8 stereo / 16 mono PIDs
 - [WebSRT] MPTS mux + demux + multi-PID-per-program land; bump pin.

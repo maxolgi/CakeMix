@@ -1,0 +1,156 @@
+/* CakeMix — WASM Audio Mixer UI */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    min-height: 100vh;
+}
+
+#app {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+header h1 {
+    font-size: 2.5rem;
+    margin-bottom: 0.25rem;
+}
+
+header p {
+    color: #888;
+    font-size: 0.9rem;
+}
+
+#status {
+    margin-top: 0.5rem;
+    font-style: italic;
+}
+
+.controls {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+#start-btn {
+    background: #0f3460;
+    color: #e0e0e0;
+    border: 1px solid #1a5276;
+    border-radius: 6px;
+    padding: 0.75rem 2rem;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+#start-btn:hover:not(:disabled) { background: #1a5276; }
+#start-btn:disabled { opacity: 0.5; cursor: wait; }
+
+.mixer-console {
+    display: flex;
+    gap: 1px;
+    background: #333;
+    border-radius: 8px;
+    overflow: hidden;
+    padding: 1px;
+}
+
+.channel-strip, .master-strip {
+    flex: 1;
+    background: #16213e;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.master-strip {
+    background: #0f3460;
+    flex: 0.7;
+}
+
+.channel-strip h3, .master-strip h3 {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #888;
+}
+
+.freq {
+    font-size: 0.75rem;
+    color: #4a9;
+}
+
+.knob-group {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    gap: 0.25rem;
+}
+
+.knob-group label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    color: #666;
+}
+
+.value {
+    font-size: 0.75rem;
+    color: #4a9;
+    font-family: monospace;
+}
+
+.slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 6px;
+    background: #1a1a3e;
+    border-radius: 3px;
+    outline: none;
+}
+
+.slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #0ea5e9;
+    cursor: pointer;
+    border: 2px solid #16213e;
+}
+
+.slider::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #0ea5e9;
+    cursor: pointer;
+    border: 2px solid #16213e;
+}
+
+.mute-btn {
+    background: transparent;
+    color: #888;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 0.4rem 1rem;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    width: 100%;
+}
+
+.mute-btn:hover { border-color: #c33; color: #c33; }
+.mute-btn.active { background: #c33; color: #fff; border-color: #c33; }
