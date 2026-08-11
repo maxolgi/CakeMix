@@ -183,13 +183,15 @@ standalone (no workspace inheritance).
 
 ## Known Issues
 
-### AudioWorklet crypto polyfill (in progress)
-`AudioWorkletGlobalScope` does not provide `crypto.getRandomValues`.
-The WASM mixer needs it for `uuid::Uuid::new_v4()` (channel IDs).
-A `Math.random`-based polyfill has been written and needs verification
-in the browser. This is the last remaining blocker for the live demo.
+### Web demo: WORKING ✅
+The WASM mixer runs successfully inside an AudioWorklet. Verified in
+headless Chrome via CDP: MixerWasm constructs, wasm-ready posted, page
+shows "WASM mixer ready" / "WASM ACTIVE". Start button enables. Gain,
+pan, and mute controls all work. Three polyfills for
+AudioWorkletGlobalScope are in place (TextDecoder/TextEncoder,
+crypto.getRandomValues, inlined glue with no dynamic import).
 
-### Allocation per process() call
+### Allocation per process() call (M4 perf)
 The binding's `process()` allocates Vecs every call (~4/channel + 2 master).
 Not blocking at 2-4 channels but matters at 128. The engine has
 `buffer_pool` infrastructure that isn't wired into `process_mix` yet.
@@ -221,7 +223,7 @@ The mixer binding is ready: `feed_pcm(pid, data)` implements the
 ## Repository
 
 - **Root:** `/home/flibb/CakeMix`
-- **Commits:** 24 local commits on `master`
+- **Commits:** 26 local commits on `master`
 - **Remote:** `git@github.com:maxolgi/CakeMix.git` (not created yet — user creates + pushes)
 - **Fork:** `maxolgi/oximedia` — 4 commits on `master` beyond upstream
 - **No push policy:** The user handles all git push operations.
