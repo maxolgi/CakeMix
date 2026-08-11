@@ -8,6 +8,93 @@
  */
 
 // ═══════════════════════════════════════════════════════════════════
+// BEGIN polyfills for AudioWorkletGlobalScope
+// ═══════════════════════════════════════════════════════════════════
+// AudioWorkletGlobalScope lacks TextDecoder/TextEncoder.
+// Provide minimal UTF-8 implementations.
+
+if (typeof TextDecoder === 'undefined') {
+    class WorkletTextDecoder {
+        constructor(label, options) {
+            this._fatal = options && options.fatal;
+        }
+        decode(bytes) {
+            if (bytes === undefined || bytes === null) return '';
+            // UTF-8 decode
+            let result = '';
+            let i = 0;
+            const len = bytes.length;
+            while (i < len) {
+                const b1 = bytes[i++];
+                if (b1 < 0x80) {
+                    result += String.fromCharCode(b1);
+                } else if (b1 < 0xC0) {
+                    if (this._fatal) throw new TypeError('Invalid UTF-8 continuation byte');
+                    result += '�';
+                } else if (b1 < 0xE0) {
+                    const b2 = bytes[i++];
+                    result += String.fromCharCode(((b1 & 0x1F) << 6) | (b2 & 0x3F));
+                } else if (b1 < 0xF0) {
+                    const b2 = bytes[i++];
+                    const b3 = bytes[i++];
+                    result += String.fromCharCode(((b1 & 0x0F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F));
+                } else {
+                    const b2 = bytes[i++];
+                    const b3 = bytes[i++];
+                    const b4 = bytes[i++];
+                    let cp = ((b1 & 0x07) << 18) | ((b2 & 0x3F) << 12) | ((b3 & 0x3F) << 6) | (b4 & 0x3F);
+                    cp -= 0x10000;
+                    result += String.fromCharCode(0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF));
+                }
+            }
+            return result;
+        }
+    }
+    globalThis.TextDecoder = WorkletTextDecoder;
+}
+
+if (typeof TextEncoder === 'undefined') {
+    class WorkletTextEncoder {
+        encode(str) {
+            if (str === undefined || str === null) return new Uint8Array(0);
+            const bytes = [];
+            for (let i = 0; i < str.length; i++) {
+                let cp = str.charCodeAt(i);
+                if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < str.length) {
+                    // surrogate pair
+                    const lo = str.charCodeAt(i + 1);
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                    i++;
+                }
+                if (cp < 0x80) {
+                    bytes.push(cp);
+                } else if (cp < 0x800) {
+                    bytes.push(0xC0 | (cp >> 6));
+                    bytes.push(0x80 | (cp & 0x3F));
+                } else if (cp < 0x10000) {
+                    bytes.push(0xE0 | (cp >> 12));
+                    bytes.push(0x80 | ((cp >> 6) & 0x3F));
+                    bytes.push(0x80 | (cp & 0x3F));
+                } else {
+                    bytes.push(0xF0 | (cp >> 18));
+                    bytes.push(0x80 | ((cp >> 12) & 0x3F));
+                    bytes.push(0x80 | ((cp >> 6) & 0x3F));
+                    bytes.push(0x80 | (cp & 0x3F));
+                }
+            }
+            return new Uint8Array(bytes);
+        }
+        encodeInto(str, view) {
+            const encoded = this.encode(str);
+            const len = Math.min(encoded.length, view.length);
+            for (let i = 0; i < len; i++) view[i] = encoded[i];
+            return { read: str.length, written: len };
+        }
+    }
+    globalThis.TextEncoder = WorkletTextEncoder;
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // BEGIN wasm-bindgen glue (auto-stripped from mixer_wasm.js)
 // ═══════════════════════════════════════════════════════════════════
 
