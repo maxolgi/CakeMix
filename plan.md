@@ -258,16 +258,24 @@ No UI, no network.
   master output is the correct sum; drop one session, confirm the other
   continues cleanly. Measure inter-session skew vs. configured latency.
 
-### M4 — per-strip pro DSP (each module ships with its own known-answer test)
-- Wire `eq_band::ParametricEq` (live, dead-code today). Extend to 6-band
-  to match Fairlight. Honesty test: band gain at center freq.
-- Wire `dynamics.rs` (comp/gate/expander/limiter). Honesty test:
-  steady-state gain reduction, attack/release curves.
-- Per-strip metering (peak/RMS/true-peak). The `enable_metering` no-op
+### M4 — per-strip pro DSP (progress: adapters + honesty tests done)
+
+**Done:**
+- ✅ ParametricEq: honesty-tested (5 tests), AudioEffect adapter written,
+  integration-tested through process_mix (3 tests). Real RBJ biquads.
+- ✅ Dynamics: comp/expander/gate all honesty-tested (16 tests). Real DSP
+  with envelope followers and gain computers. Zero-crossing bug found and
+  fixed in fork. AudioEffect adapters written, integration-tested (3 tests).
+- ✅ OversampledLimiter: honesty-tested (3 tests). Already live in
+  `process()` when `limiter_enabled`. 4x oversampling + lookahead.
+
+**Remaining:**
+- [ ] Extend ParametricEq to 6-band to match Fairlight.
+- [ ] Per-strip metering (peak/RMS/true-peak). The `enable_metering` no-op
   must become a real integration.
-- Wire `limiter.rs` / `oversampled_limiter.rs` as the master bus
-  finalizer (already live in `process()` if `limiter_enabled`).
-- Measure real CPU at 128 strips in a browser tab — confirm v1 channel
+- [ ] Wire buffer_pool into process_mix to eliminate ~514 Vec allocs/block
+  at 128 channels (measured: 4 allocs/channel x 128 + 2 master = 514).
+- [ ] Measure real CPU at 128 strips in a browser tab -- confirm v1 channel
   ceiling.
 
 ### M5 — broadcast bus architecture + scenes
