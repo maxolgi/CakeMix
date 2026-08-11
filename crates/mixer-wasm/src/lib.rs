@@ -6,6 +6,7 @@ use oximedia_mixer::{
     ChannelId, ChannelProcessParams, MixerConfig, PanLawType,
 };
 use oximedia_audio::ChannelLayout;
+use oximedia_mixer::metering::{Meter, MeterBallistics};
 
 pub mod effects;
 
@@ -47,6 +48,8 @@ pub struct MixerWasm {
     channel_inputs: HashMap<u32, Vec<f32>>,
     /// Maps TS PID → PID mapping info (for pidmap events).
     pid_map: HashMap<u16, PidMapping>,
+    /// Master output meter (stereo peak/RMS).
+    master_meter: Meter,
 }
 
 /// Per-PID mapping metadata (from MPEG-2 component descriptors).
@@ -85,6 +88,7 @@ impl MixerWasm {
             channel_ids: vec![None; max_channels as usize],
             channel_inputs: HashMap::new(),
             pid_map: HashMap::new(),
+            master_meter: Meter::new(2, sample_rate, MeterBallistics::Fast),
         })
     }
 
@@ -360,6 +364,46 @@ impl MixerWasm {
             out[i * 2 + 1] = master_right[i];
         }
 
+        // Update master meter.
+        self.master_meter.process(&out);
+
         Ok(js_sys::Float32Array::from(&out[..]))
+    }
+
+    // ------------------------------------------------------------------
+    // Metering
+    // ------------------------------------------------------------------
+
+    /// Get master peak level in dB for left channel.
+    pub fn master_peak_db_l(&self) -> f32 {
+        self.master_meter.data().peak.first()
+            .map(|p| p.current_db)
+            .unwrap_or(-f32::INFINITY)
+    }
+
+    /// Get master peak level in dB for right channel.
+    pub fn master_peak_db_r(&self) -> f32 {
+        self.master_meter.data().peak.get(1)
+            .map(|p| p.current_db)
+            .unwrap_or(-f32::INFINITY)
+    }
+
+    /// Get master RMS level in dB for left channel.
+    pub fn master_rms_db_l(&self) -> f32 {
+        self.master_meter.data().rms.first()
+            .map(|r| r.current_db)
+            .unwrap_or(-f32::INFINITY)
+    }
+
+    /// Get master RMS level in dB for right channel.
+    pub fn master_rms_db_r(&self) -> f32 {
+        self.master_meter.data().rms.get(1)
+            .map(|r| r.current_db)
+            .unwrap_or(-f32::INFINITY)
+    }
+
+    /// Check if master output is clipping (peak ≥ 0 dBFS).
+    pub fn master_clipping(&self) -> bool {
+        self.master_meter.data().peak.iter().any(|p| p.clipped)
     }
 }
