@@ -79,7 +79,20 @@ class MixerProcessor extends AudioWorkletProcessor {
         if (!out || out.length < 2) return true;
         var outL = out[0], outR = out[1], n = Math.min(outL.length, BLOCK_SIZE);
         outL.fill(0); outR.fill(0);
-        if (!this._running || !this._mixer) return true;
+        if (!this._running || !this._mixer) {
+            // Send zeroed meters when stopped so UI clears.
+            this._meterInterval++;
+            if (this._meterInterval >= 10) {
+                this._meterInterval = 0;
+                this.port.postMessage({
+                    type: "meter",
+                    peakL: -Infinity, peakR: -Infinity,
+                    rmsL: -Infinity, rmsR: -Infinity,
+                    clip: false,
+                });
+            }
+            return true;
+        }
 
         if (this._mode === "demo") {
             // Generate test tones, feed to mixer
