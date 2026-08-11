@@ -170,3 +170,19 @@ header p {
 
 #stop-btn:hover:not(:disabled) { background: #3a2222; }
 #stop-btn:disabled { opacity: 0.3; cursor: default; }
+
+#wasm-badge {
+    display: inline-block;
+    margin-top: 0.5rem;
+    padding: 0.25rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: bold;
+    background: #333;
+    color: #888;
+}
+
+#wasm-badge.active {
+    background: #0a4d2e;
+    color: #4f9;
+}

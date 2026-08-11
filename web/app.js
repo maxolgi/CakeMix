@@ -1,9 +1,11 @@
 /**
  * app.js — CakeMix WASM audio mixer demo.
  *
- * Sets up the AudioWorklet, wires up the UI controls.
- * The WASM mixer is loaded on the main thread for status display;
- * the AudioWorklet runs the real-time audio path.
+ * Loads the WASM mixer, creates an AudioContext, registers the worklet,
+ * sends the compiled wasm Module to the worklet, and wires up UI controls.
+ *
+ * The mixer runs IN the AudioWorklet for real-time audio.
+ * Test signal generators provide input (no WebSRT needed).
  */
 
 const SAMPLE_RATE = 48000;
@@ -15,7 +17,7 @@ let mixerNode = null;
 async function initAudio() {
     audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
 
-    // Register the self-contained worklet (no imports needed).
+    // Register the worklet processor.
     await audioCtx.audioWorklet.addModule('/mixer-worklet-processor.js');
 
     mixerNode = new AudioWorkletNode(audioCtx, 'mixer-processor', {
@@ -29,18 +31,45 @@ async function initAudio() {
     mixerNode.port.onmessage = (e) => {
         const msg = e.data;
         if (msg.type === 'ready') {
+            // Worklet is ready — now load WASM and send the compiled module.
+            loadAndSendWasm();
+        } else if (msg.type === 'wasm-ready') {
             document.getElementById('start-btn').disabled = false;
             document.getElementById('start-btn').textContent = 'Start Audio';
-            document.getElementById('status').textContent = 'Ready. Click Start Audio.';
+            document.getElementById('status').textContent = 'WASM mixer ready. Click Start Audio.';
+            document.getElementById('wasm-badge').textContent = 'WASM ACTIVE';
+            document.getElementById('wasm-badge').classList.add('active');
+        } else if (msg.type === 'error') {
+            document.getElementById('status').textContent = 'Error: ' + msg.msg;
+            // Fall back to JS mixer (still works, just without WASM DSP).
+            document.getElementById('start-btn').disabled = false;
+            document.getElementById('start-btn').textContent = 'Start Audio (JS fallback)';
         } else if (msg.type === 'status') {
             const peakLDb = msg.peakL > 0 ? 20 * Math.log10(msg.peakL) : '-inf';
             const peakRDb = msg.peakR > 0 ? 20 * Math.log10(msg.peakR) : '-inf';
+            const engine = msg.wasmActive ? 'WASM' : 'JS';
             document.getElementById('status').textContent =
-                `Frame ${msg.frame} | L: ${peakLDb.toFixed(1)} dB | R: ${peakRDb.toFixed(1)} dB`;
+                `[${engine}] Frame ${msg.frame} | L: ${peakLDb.toFixed(1)} dB | R: ${peakRDb.toFixed(1)} dB`;
         }
     };
+}
 
-    console.log('[app] Pipeline ready');
+async function loadAndSendWasm() {
+    try {
+        // Fetch and compile the wasm module on the main thread.
+        const wasmResponse = await fetch('/pkg/mixer_wasm_bg.wasm');
+        const wasmBytes = await wasmResponse.arrayBuffer();
+        const wasmModule = await WebAssembly.compile(wasmBytes);
+
+        // Send the compiled module to the worklet.
+        // WebAssembly.Module is structured-cloneable across MessagePort.
+        mixerNode.port.postMessage({ type: 'init-wasm', module: wasmModule });
+    } catch (err) {
+        console.error('[app] WASM load failed:', err);
+        document.getElementById('status').textContent = 'WASM load failed — using JS fallback';
+        document.getElementById('start-btn').disabled = false;
+        document.getElementById('start-btn').textContent = 'Start Audio (JS fallback)';
+    }
 }
 
 function sendToWorklet(msg) {
