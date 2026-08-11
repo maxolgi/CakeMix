@@ -225,14 +225,16 @@ No UI, no network.
 ## Milestone roadmap (after M0)
 
 ### M1 — single stereo program in/out (PCM audio-only end-to-end)
-- [WebSRT] ts-muxer-wasm changes for PCM (see WEBSRT_CHANGES.md);
+- [WebSRT] ts-muxer-wasm changes for s302m PCM (see WEBSRT_CHANGES.md);
   bump pin when merged.
-- Receive: WebSRT delivers MPEG2-TS → demux audio PES → raw PCM
-  bytes → Float32Array → mixer `set_channel_input`.
-- Publish: master Float32Array → raw PCM bytes → `ts-muxer-wasm`
+- Receive: WebSRT delivers MPEG2-TS → demux audio PES → **Float32
+  interleaved** per PID → mixer `set_channel_input_interleaved`.
+  i32→f32 conversion done in demuxer (cheaper than JS).
+- Publish: master Float32Array → f32→i32 → `ts-muxer-wasm`
   `push_audio` → SRT datagrams.
-- No codec encode/decode step — PCM goes straight in/out of the TS muxer.
-- 128↔960 buffering on the publish side (SlopShady's approach, minus Opus).
+- 48 kHz fixed; PTS from PES PTS (s302m, ffmpeg-populated).
+- PID→channel mapping via `map_pid`/`unmap_pid` (idempotent for
+  mid-stream reconfiguration).
 - **Verify:** publish a tone from a browser → mixer passes through →
   receive in a second browser, audio present at correct level.
   No video PID in the output TS.

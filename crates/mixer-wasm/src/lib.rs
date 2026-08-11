@@ -11,8 +11,24 @@ pub mod effects;
 
 /// WASM binding for the oximedia-mixer audio engine.
 ///
-/// Construction: `new(sample_rate, buffer_size, max_channels)`.
-/// Set per-channel input via `set_channel_input(ch, data)`.
+/// Construction: `new(sample_rate, block_size, max_channels)`.
+///
+/// # PCM transport contract
+///
+/// Audio arrives from the WebSRT demuxer as **Float32 interleaved** per PID
+/// (i32→f32 conversion done in the demuxer, not JS). 48 kHz is fixed.
+/// PTS comes from PES PTS (s302m, ffmpeg-populated).
+///
+/// Two input modes:
+/// - `set_channel_input(ch, data)` — mono planar Float32 (one channel).
+/// - `set_channel_input_interleaved(ch_start, data, num_channels)` —
+///   interleaved stereo/multichannel, de-interleaved into consecutive
+///   mixer channels starting at `ch_start`.
+///
+/// PID mapping:
+/// - `map_pid(pid, ch_start)` — route a TS PID's audio to mixer channels.
+/// - `unmap_pid(pid)` — remove mapping (idempotent, for mid-stream reconfig).
+///
 /// Process via `process(block_size)` → interleaved stereo Float32Array.
 ///
 /// # Per-channel input architecture
@@ -20,17 +36,17 @@ pub mod effects;
 /// The engine's `process()` feeds the SAME input to every channel.
 /// We resolve this at the binding layer by calling `engine.process_mix()`
 /// once per active channel with that channel's own input, then summing
-/// the master outputs. This is correct when all channels route to master
-/// (the M0 default). Bus-effect sharing across per-channel calls is
-/// deferred to M5.
+/// the master outputs.
 #[wasm_bindgen]
 pub struct MixerWasm {
     engine: oximedia_mixer::AudioMixer,
     buffer_size: usize,
     /// Maps JS-visible channel index → engine ChannelId (UUID).
     channel_ids: Vec<Option<ChannelId>>,
-    /// Pending per-channel input audio (planar f32, mono).
+    /// Pending per-channel input audio (mono f32).
     channel_inputs: HashMap<u32, Vec<f32>>,
+    /// Maps TS PID → starting channel index (for pidmap events).
+    pid_to_channel: HashMap<u16, u32>,
 }
 
 #[wasm_bindgen]
@@ -57,6 +73,7 @@ impl MixerWasm {
             buffer_size: buffer_size as usize,
             channel_ids: vec![None; max_channels as usize],
             channel_inputs: HashMap::new(),
+            pid_to_channel: HashMap::new(),
         })
     }
 
@@ -87,6 +104,10 @@ impl MixerWasm {
         Ok(self.channel_ids[i].unwrap())
     }
 
+    // ------------------------------------------------------------------
+    // Input
+    // ------------------------------------------------------------------
+
     /// Set pending input audio for a channel (planar f32, mono).
     pub fn set_channel_input(&mut self, ch: u32, data: &js_sys::Float32Array) -> Result<(), JsValue> {
         self.ensure_channel(ch)?;
@@ -95,6 +116,89 @@ impl MixerWasm {
         self.channel_inputs.insert(ch, buf);
         Ok(())
     }
+
+    /// Set pending input audio from an interleaved Float32 buffer.
+    ///
+    /// WebSRT delivers PCM as interleaved Float32 per PID (s302m).
+    /// This de-interleaves into consecutive mixer channels starting at `ch_start`.
+    ///
+    /// For stereo: L,R,L,R,... → ch_start gets L stream, ch_start+1 gets R stream.
+    /// For mono: passes through as-is to ch_start.
+    pub fn set_channel_input_interleaved(
+        &mut self,
+        ch_start: u32,
+        data: &js_sys::Float32Array,
+        num_channels: u32,
+    ) -> Result<(), JsValue> {
+        let nc = num_channels as usize;
+        if nc == 0 {
+            return Err(JsValue::from_str("num_channels must be > 0"));
+        }
+
+        let total = data.length() as usize;
+        if total % nc != 0 {
+            return Err(JsValue::from_str(&format!(
+                "interleaved data length {total} not divisible by num_channels {nc}"
+            )));
+        }
+
+        let frames = total / nc;
+
+        // De-interleave into per-channel buffers.
+        let mut deinterleaved: Vec<Vec<f32>> = vec![Vec::with_capacity(frames); nc];
+        let mut raw = vec![0.0f32; total];
+        data.copy_to(&mut raw);
+
+        for f in 0..frames {
+            for c in 0..nc {
+                deinterleaved[c].push(raw[f * nc + c]);
+            }
+        }
+
+        // Assign to consecutive mixer channels.
+        for (c, buf) in deinterleaved.into_iter().enumerate() {
+            let ch = ch_start + c as u32;
+            self.ensure_channel(ch)?;
+            self.channel_inputs.insert(ch, buf);
+        }
+
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // PID mapping (idempotent — safe for mid-stream reconfiguration)
+    // ------------------------------------------------------------------
+
+    /// Map a TS PID to a starting channel index.
+    ///
+    /// When the demuxer delivers audio from this PID, JS calls
+    /// `set_channel_input_interleaved(mapped_channel, data, num_channels)`.
+    /// This mapping is stored so `handle_pidmap` can reconfigure channels
+    /// when the source changes its PID layout.
+    ///
+    /// Idempotent: calling twice with the same PID updates the mapping.
+    pub fn map_pid(&mut self, pid: u16, ch_start: u32) -> Result<(), JsValue> {
+        self.ensure_channel(ch_start)?;
+        self.pid_to_channel.insert(pid, ch_start);
+        Ok(())
+    }
+
+    /// Remove a PID mapping. Idempotent — safe to call on an unmapped PID.
+    pub fn unmap_pid(&mut self, pid: u16) {
+        self.pid_to_channel.remove(&pid);
+    }
+
+    /// Get the channel index a PID is mapped to, or -1 if unmapped.
+    pub fn pid_channel(&self, pid: u16) -> i32 {
+        self.pid_to_channel
+            .get(&pid)
+            .map(|&c| c as i32)
+            .unwrap_or(-1)
+    }
+
+    // ------------------------------------------------------------------
+    // Channel controls
+    // ------------------------------------------------------------------
 
     /// Set channel gain (linear 0.0–2.0).
     pub fn set_channel_gain(&mut self, ch: u32, gain: f32) -> Result<(), JsValue> {
@@ -121,21 +225,21 @@ impl MixerWasm {
         Ok(())
     }
 
-    /// Process one block. Calls `engine.process_mix()` per active channel
-    /// with that channel's own input, sums to master stereo.
-    /// Returns interleaved stereo (L, R, L, R, ...) Float32Array.
+    // ------------------------------------------------------------------
+    // Processing
+    // ------------------------------------------------------------------
+
+    /// Process one block. Returns interleaved stereo (L, R, L, R, ...).
     pub fn process(&mut self, _block_size: u32) -> Result<js_sys::Float32Array, JsValue> {
         let bs = self.buffer_size;
         let mut master_left = vec![0.0f32; bs];
         let mut master_right = vec![0.0f32; bs];
 
-        // Process each active channel through the real engine DSP.
         for (&ch_idx, samples) in &self.channel_inputs {
             let Some(&Some(id)) = self.channel_ids.get(ch_idx as usize) else {
                 continue;
             };
 
-            // Build per-channel params from current channel state.
             let params = if let Ok(ch) = self.engine.get_channel(id) {
                 let pan_law = match ch.pan_law() {
                     PanLaw::Linear => PanLawType::Linear,
@@ -159,7 +263,6 @@ impl MixerWasm {
                 continue;
             }
 
-            // Call the real engine DSP with this channel's own input.
             let (ch_left, ch_right) =
                 self.engine.engine_mut().process_mix(&[(id, params)], samples);
 
@@ -169,7 +272,6 @@ impl MixerWasm {
             }
         }
 
-        // Interleave stereo.
         let mut out = vec![0.0f32; bs * 2];
         for i in 0..bs {
             out[i * 2] = master_left[i];

@@ -1,7 +1,16 @@
 # WebSRT Changes Needed for PCM-Only MPTS
 
-CakeMix transports raw linear PCM audio inside MPEG2-TS over WebSRT/SRT.
-No codec encode/decode — PCM bytes go straight into TS PES packets.
+CakeMix transports raw linear PCM audio inside MPEG2-TS over WebSRT/SRT
+using SMPTE 302M (s302m) stream type. No codec encode/decode — PCM bytes
+go straight into TS PES packets.
+
+## PCM transport contract (confirmed with user)
+
+- PCM arrives as **Float32 interleaved** per PID (i32→f32 done in demuxer)
+- **48 kHz fixed** — resampling is the mixer's concern
+- **ptsMs from PES PTS** — ffmpeg populates correctly for s302m
+- **PID map can change mid-stream** — mixer handles pidmap events idempotently
+- Stream type: s302m (not the generic private 0x06 we initially proposed)
 
 The current `ts-muxer-wasm` is hardcoded for Opus audio + H.264/AV1/HEVC
 video. The changes below make it support audio-only PCM streams and
