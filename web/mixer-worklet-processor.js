@@ -9,7 +9,7 @@
  * inside the worklet, feeds them to the mixer, and outputs stereo.
  */
 
-import { MixerWasm, initSync } from '../crates/mixer-wasm/pkg/mixer_wasm.js';
+import { MixerWasm, initSync } from '/pkg/mixer_wasm.js';
 
 const BLOCK_SIZE = 128;
 const SAMPLE_RATE = 48000;

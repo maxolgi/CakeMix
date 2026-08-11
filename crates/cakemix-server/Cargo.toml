@@ -1,0 +1,23 @@
+[package]
+name = "cakemix-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Web server for the CakeMix WASM audio mixer demo"
+
+[[bin]]
+name = "cakemix"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rust-embed = "8"
+mime_guess = "2"
+rcgen = "0.13"
+open = "5"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"

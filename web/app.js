@@ -5,7 +5,7 @@
  * AudioWorklet processor, and wires up the UI controls.
  */
 
-import init from '../crates/mixer-wasm/pkg/mixer_wasm.js';
+import init from '/pkg/mixer_wasm.js';
 
 const SAMPLE_RATE = 48000;
 
@@ -20,7 +20,7 @@ async function initAudio() {
     audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
 
     // Compile a separate copy for the worklet.
-    const wasmResponse = await fetch('../crates/mixer-wasm/pkg/mixer_wasm_bg.wasm');
+    const wasmResponse = await fetch('/pkg/mixer_wasm_bg.wasm');
     const wasmBytes = await wasmResponse.arrayBuffer();
     const wasmModule = await WebAssembly.compile(wasmBytes);
 

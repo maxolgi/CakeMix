@@ -4,7 +4,7 @@
 RUST_TARGET := wasm32-unknown-unknown
 CRATE_DIR := crates/mixer-wasm
 
-.PHONY: build-wasm build-web build-node test-native test-wasm test-all check clean
+.PHONY: build-wasm build-web build-node test-native test-wasm test-all check clean serve
 
 # Build for wasm32-unknown-unknown (first gate)
 build-wasm:
@@ -36,3 +36,11 @@ check:
 clean:
 	cargo clean
 	rm -rf $(CRATE_DIR)/pkg
+
+# Build WASM pkg + start the server (http://localhost:8200)
+serve: build-web
+	cargo run -p cakemix-server -- --no-tls --port 8200
+
+# Same but with HTTPS (auto-generates self-signed cert)
+serve-tls: build-web
+	cargo run -p cakemix-server -- --port 8200

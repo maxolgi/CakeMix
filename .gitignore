@@ -6,3 +6,5 @@ node_modules/
 pkg/
 dist/
 *.wasm
+cert.pem
+key.pem
