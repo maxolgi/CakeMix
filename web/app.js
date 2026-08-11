@@ -1,79 +1,88 @@
 /**
- * app.js — CakeMix WASM mixer web demo.
+ * app.js — CakeMix WASM audio mixer demo.
  *
- * Loads the WASM mixer, creates an AudioContext, registers the
- * AudioWorklet processor, and wires up the UI controls.
+ * Sets up the AudioWorklet, wires up the UI controls.
+ * The WASM mixer is loaded on the main thread for status display;
+ * the AudioWorklet runs the real-time audio path.
  */
 
-import init from '/pkg/mixer_wasm.js';
-
 const SAMPLE_RATE = 48000;
+const NUM_CHANNELS = 4;
 
 let audioCtx = null;
 let mixerNode = null;
 
 async function initAudio() {
-    // Load and compile the WASM module (needed to register imports).
-    await init();
-    console.log('[app] WASM loaded');
-
     audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
 
-    // Compile a separate copy for the worklet.
-    const wasmResponse = await fetch('/pkg/mixer_wasm_bg.wasm');
-    const wasmBytes = await wasmResponse.arrayBuffer();
-    const wasmModule = await WebAssembly.compile(wasmBytes);
-
-    // Register the worklet processor.
-    await audioCtx.audioWorklet.addModule('./mixer-worklet-processor.js');
-    console.log('[app] Worklet loaded');
+    // Register the self-contained worklet (no imports needed).
+    await audioCtx.audioWorklet.addModule('/mixer-worklet-processor.js');
 
     mixerNode = new AudioWorkletNode(audioCtx, 'mixer-processor', {
         numberOfInputs: 0,
         numberOfOutputs: 1,
         outputChannelCount: [2],
-        processorOptions: { module: wasmModule },
     });
 
     mixerNode.connect(audioCtx.destination);
+
     mixerNode.port.onmessage = (e) => {
-        if (e.data.type === 'ready') {
+        const msg = e.data;
+        if (msg.type === 'ready') {
             document.getElementById('start-btn').disabled = false;
             document.getElementById('start-btn').textContent = 'Start Audio';
-            document.getElementById('status').textContent = 'Ready.';
-        } else if (e.data.type === 'status') {
+            document.getElementById('status').textContent = 'Ready. Click Start Audio.';
+        } else if (msg.type === 'status') {
+            const peakLDb = msg.peakL > 0 ? 20 * Math.log10(msg.peakL) : '-inf';
+            const peakRDb = msg.peakR > 0 ? 20 * Math.log10(msg.peakR) : '-inf';
             document.getElementById('status').textContent =
-                `Processing (frame ${e.data.frame}, sample=${e.data.sample.toFixed(4)})`;
+                `Frame ${msg.frame} | L: ${peakLDb.toFixed(1)} dB | R: ${peakRDb.toFixed(1)} dB`;
         }
     };
 
     console.log('[app] Pipeline ready');
 }
 
+function sendToWorklet(msg) {
+    if (mixerNode) mixerNode.port.postMessage(msg);
+}
+
 function setupUI() {
     document.getElementById('start-btn').addEventListener('click', async () => {
         if (audioCtx.state === 'suspended') await audioCtx.resume();
+        sendToWorklet({ type: 'start' });
         document.getElementById('start-btn').disabled = true;
         document.getElementById('start-btn').textContent = 'Running';
+        document.getElementById('stop-btn').disabled = false;
     });
 
-    const FREQS = [220, 277.18, 329.63, 440];
-    for (let ch = 0; ch < FREQS.length; ch++) {
+    const stopBtn = document.getElementById('stop-btn');
+    if (stopBtn) {
+        stopBtn.addEventListener('click', () => {
+            sendToWorklet({ type: 'stop' });
+            document.getElementById('start-btn').disabled = false;
+            document.getElementById('start-btn').textContent = 'Resume';
+            stopBtn.disabled = true;
+        });
+    }
+
+    for (let ch = 0; ch < NUM_CHANNELS; ch++) {
         const gainEl = document.getElementById(`ch${ch}-gain`);
         const panEl = document.getElementById(`ch${ch}-pan`);
         const muteEl = document.getElementById(`ch${ch}-mute`);
 
         gainEl?.addEventListener('input', () => {
-            mixerNode?.port.postMessage({ type: 'set-gain', ch, gain: parseFloat(gainEl.value) });
+            sendToWorklet({ type: 'set-gain', ch, gain: parseFloat(gainEl.value) });
             document.getElementById(`ch${ch}-gain-val`).textContent = parseFloat(gainEl.value).toFixed(2);
         });
         panEl?.addEventListener('input', () => {
-            mixerNode?.port.postMessage({ type: 'set-pan', ch, pan: parseFloat(panEl.value) });
+            sendToWorklet({ type: 'set-pan', ch, pan: parseFloat(panEl.value) });
             document.getElementById(`ch${ch}-pan-val`).textContent = parseFloat(panEl.value).toFixed(2);
         });
         muteEl?.addEventListener('click', () => {
             const muted = muteEl.classList.toggle('active');
-            mixerNode?.port.postMessage({ type: 'set-mute', ch, muted });
+            sendToWorklet({ type: 'set-mute', ch, muted });
+            muteEl.textContent = muted ? 'Muted' : 'Mute';
         });
     }
 }

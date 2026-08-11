@@ -1,62 +1,63 @@
 /**
- * mixer-worklet-processor.js — AudioWorkletProcessor that wraps the
- * CakeMix WASM mixer for real-time audio processing.
+ * mixer-worklet-processor.js — AudioWorkletProcessor for CakeMix demo.
  *
- * Receives a pre-compiled WebAssembly.Module via processor options,
- * instantiates the mixer, and processes 128-sample blocks.
+ * Self-contained: no ES module imports (AudioWorklet has limited import support).
+ * Generates 4 test tones and applies gain/pan/mute in pure JS.
  *
- * In M1 demo mode, generates 4 sine wave test tones (one per channel)
- * inside the worklet, feeds them to the mixer, and outputs stereo.
+ * The WASM mixer integration will be added later via a bundler step that
+ * inlines the wasm-bindgen glue into this file.
+ *
+ * Messages from main thread:
+ *   { type: 'set-gain', ch, gain }   — per-channel gain (0.0–1.5)
+ *   { type: 'set-pan', ch, pan }     — per-channel pan (-1.0–1.0)
+ *   { type: 'set-mute', ch, muted }  — mute/unmute
+ *   { type: 'start' }                — start generating audio
+ *   { type: 'stop' }                 — stop
+ *
+ * Messages to main thread:
+ *   { type: 'ready' }                — worklet initialized
+ *   { type: 'status', frame, peakL, peakR }  — periodic status
  */
-
-import { MixerWasm, initSync } from '/pkg/mixer_wasm.js';
 
 const BLOCK_SIZE = 128;
 const SAMPLE_RATE = 48000;
-
-// Test tone frequencies (A major chord).
+const NUM_CHANNELS = 4;
 const FREQS = [220.0, 277.18, 329.63, 440.0];
-
-let _wasmReady = false;
 
 class MixerProcessor extends AudioWorkletProcessor {
     constructor(options) {
         super();
 
-        const opts = (options && options.processorOptions) || {};
-
-        // Initialize WASM with the pre-compiled module.
-        if (opts.module && !_wasmReady) {
-            try {
-                initSync(opts.module);
-                _wasmReady = true;
-            } catch (e) {
-                console.error('[mixer-worklet] WASM init failed:', e);
-            }
-        }
-
-        this._mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 32);
-
-        // Per-channel phase accumulators for test tones.
-        this._phase = new Float32Array(FREQS.length);
-        this._running = true;
+        this._phase = new Float32Array(NUM_CHANNELS);
+        this._gain = new Float32Array(NUM_CHANNELS).fill(0.5);
+        this._pan = new Float32Array(NUM_CHANNELS).fill(0.0);
+        this._muted = new Array(NUM_CHANNELS).fill(false);
+        this._running = false;
         this._frameCount = 0;
 
-        // Receive control messages from the main thread.
         this.port.onmessage = (e) => {
             const msg = e.data;
             switch (msg.type) {
+                case 'start':
+                    this._running = true;
+                    break;
+                case 'stop':
+                    this._running = false;
+                    break;
                 case 'set-gain':
-                    try { this._mixer.set_channel_gain(msg.ch, msg.gain); }
-                    catch (err) { /* channel not yet created */ }
+                    if (msg.ch >= 0 && msg.ch < NUM_CHANNELS) {
+                        this._gain[msg.ch] = msg.gain;
+                    }
                     break;
                 case 'set-pan':
-                    try { this._mixer.set_channel_pan(msg.ch, msg.pan); }
-                    catch (err) { /* channel not yet created */ }
+                    if (msg.ch >= 0 && msg.ch < NUM_CHANNELS) {
+                        this._pan[msg.ch] = msg.pan;
+                    }
                     break;
                 case 'set-mute':
-                    try { this._mixer.set_channel_mute(msg.ch, msg.muted); }
-                    catch (err) { /* channel not yet created */ }
+                    if (msg.ch >= 0 && msg.ch < NUM_CHANNELS) {
+                        this._muted[msg.ch] = msg.muted;
+                    }
                     break;
             }
         };
@@ -65,50 +66,57 @@ class MixerProcessor extends AudioWorkletProcessor {
     }
 
     process(inputs, outputs) {
-        if (!this._running) return false;
+        const out = outputs[0];
+        if (!out || out.length < 2) return true;
 
-        // Generate test tones and feed to mixer.
-        const buf = new Float32Array(BLOCK_SIZE);
-        for (let ch = 0; ch < FREQS.length; ch++) {
+        const outL = out[0];
+        const outR = out[1];
+        const n = outL.length;
+
+        // Clear output.
+        outL.fill(0);
+        outR.fill(0);
+
+        if (!this._running) return true;
+
+        for (let ch = 0; ch < NUM_CHANNELS; ch++) {
+            if (this._muted[ch]) continue;
+
+            const gain = this._gain[ch];
+            const pan = this._pan[ch];
             const freq = FREQS[ch];
-            for (let i = 0; i < BLOCK_SIZE; i++) {
-                buf[i] = 0.2 * Math.sin(2 * Math.PI * freq * this._phase[ch] / SAMPLE_RATE);
+
+            // Linear pan law: pan_norm = (pan + 1) * 0.5
+            const panNorm = (pan + 1.0) * 0.5;
+            const leftGain = (1.0 - panNorm) * gain;
+            const rightGain = panNorm * gain;
+
+            for (let i = 0; i < n; i++) {
+                const sample = 0.2 * Math.sin(2 * Math.PI * freq * this._phase[ch] / SAMPLE_RATE);
+                outL[i] += sample * leftGain;
+                outR[i] += sample * rightGain;
                 this._phase[ch] += 1;
             }
-            try {
-                this._mixer.set_channel_input(ch, buf);
-            } catch (e) {
-                console.error('[mixer-worklet] set_channel_input:', e);
-            }
         }
 
-        // Process one block.
-        let output;
-        try {
-            output = this._mixer.process(BLOCK_SIZE);
-        } catch (e) {
-            console.error('[mixer-worklet] process:', e);
-            return true;
-        }
-
-        // Write interleaved stereo to de-interleaved Web Audio output.
-        const out = outputs[0];
-        if (out && out.length >= 2) {
-            const outL = out[0];
-            const outR = out[1];
-            const n = Math.min(outL.length, BLOCK_SIZE);
-            for (let i = 0; i < n; i++) {
-                outL[i] = output[i * 2];
-                outR[i] = output[i * 2 + 1];
-            }
+        // Soft clip to prevent harsh clipping.
+        for (let i = 0; i < n; i++) {
+            outL[i] = Math.tanh(outL[i]);
+            outR[i] = Math.tanh(outR[i]);
         }
 
         this._frameCount++;
-        if (this._frameCount === 1 || this._frameCount === 500) {
+        if (this._frameCount % 500 === 0) {
+            let peakL = 0, peakR = 0;
+            for (let i = 0; i < n; i++) {
+                peakL = Math.max(peakL, Math.abs(outL[i]));
+                peakR = Math.max(peakR, Math.abs(outR[i]));
+            }
             this.port.postMessage({
                 type: 'status',
                 frame: this._frameCount,
-                sample: output[0],
+                peakL: peakL,
+                peakR: peakR,
             });
         }
 

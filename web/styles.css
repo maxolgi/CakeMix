@@ -154,3 +154,19 @@ header p {
 
 .mute-btn:hover { border-color: #c33; color: #c33; }
 .mute-btn.active { background: #c33; color: #fff; border-color: #c33; }
+
+
+#stop-btn {
+    background: #2a1a1a;
+    color: #c33;
+    border: 1px solid #553333;
+    border-radius: 6px;
+    padding: 0.75rem 2rem;
+    font-size: 1rem;
+    cursor: pointer;
+    margin-left: 0.5rem;
+    transition: background 0.2s;
+}
+
+#stop-btn:hover:not(:disabled) { background: #3a2222; }
+#stop-btn:disabled { opacity: 0.3; cursor: default; }
