@@ -140,5 +140,146 @@ try {
     failed++;
 }
 
+// Helper: interleave two mono buffers into stereo (L,R,L,R,...)
+function stereoInterleave(leftBuf, rightBuf) {
+    const interleaved = new Float32Array(leftBuf.length * 2);
+    for (let i = 0; i < leftBuf.length; i++) {
+        interleaved[i * 2] = leftBuf[i];
+        interleaved[i * 2 + 1] = rightBuf[i];
+    }
+    return interleaved;
+}
+
+// Test 6: Interleaved stereo input (known-answer)
+// set_channel_input_interleaved de-interleaves into consecutive mixer channels.
+// Two mono channels summed at Linear pan law center → 0.5 * (L + R).
+try {
+    const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 4);
+    const sineL = sineWave(220, 0.5, BLOCK_SIZE);
+    const sineR = sineWave(330, 0.5, BLOCK_SIZE);
+    const interleaved = stereoInterleave(sineL, sineR);
+
+    mixer.set_channel_input_interleaved(0, interleaved, 2);
+    const output = mixer.process(BLOCK_SIZE);
+    assert(output.length === BLOCK_SIZE * 2, `output length ${output.length} !== ${BLOCK_SIZE * 2}`);
+
+    const panGain = 0.5; // Linear pan law at center
+    for (let i = 0; i < BLOCK_SIZE; i++) {
+        const left = output[i * 2];
+        const right = output[i * 2 + 1];
+        const ref = (sineL[i] + sineR[i]) * panGain;
+        assert(Math.abs(left - right) < 1e-6, `L/R mismatch at ${i}: L=${left}, R=${right}`);
+        assert(Math.abs(left - ref) < 1e-5, `sample ${i}: actual=${left}, ref=${ref}, diff=${Math.abs(left - ref)}`);
+    }
+    passed++;
+    console.log('PASS: test_interleaved_stereo_input');
+} catch (e) {
+    console.error('FAIL: test_interleaved_stereo_input:', e.message);
+    failed++;
+}
+
+// Test 7: PID mapping with feed_pcm
+// map_pid + feed_pcm routes a TS PID's audio through the mixer.
+try {
+    const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 4);
+    const sine = sineWave(440, 1.0, BLOCK_SIZE);
+    const stereoData = stereoInterleave(sine, sine);
+
+    mixer.map_pid(0x101, 0, 2);
+    assert(mixer.pid_channel(0x101) === 0, `pid_channel should be 0, got ${mixer.pid_channel(0x101)}`);
+    assert(mixer.pid_channel_count(0x101) === 2, `pid_channel_count should be 2, got ${mixer.pid_channel_count(0x101)}`);
+
+    mixer.feed_pcm(0x101, stereoData);
+    const output = mixer.process(BLOCK_SIZE);
+
+    let max = 0;
+    for (let i = 0; i < output.length; i++) max = Math.max(max, Math.abs(output[i]));
+    assert(max > 0.01, `PID mapping output should be non-silent, max=${max}`);
+    passed++;
+    console.log('PASS: test_pid_mapping');
+} catch (e) {
+    console.error('FAIL: test_pid_mapping:', e.message);
+    failed++;
+}
+
+// Test 8: Subscribe / unsubscribe lifecycle
+// Audible → unsubscribe (silent) → subscribe (audible again).
+try {
+    const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 4);
+    const sine = sineWave(440, 1.0, BLOCK_SIZE);
+    const stereoData = stereoInterleave(sine, sine);
+
+    mixer.map_pid(0x101, 0, 2);
+
+    // Subscribed (default) → audible
+    mixer.feed_pcm(0x101, stereoData);
+    let out1 = mixer.process(BLOCK_SIZE);
+    let max1 = 0;
+    for (let i = 0; i < out1.length; i++) max1 = Math.max(max1, Math.abs(out1[i]));
+    assert(max1 > 0.01, `Subscribed PID should be audible, max1=${max1}`);
+
+    // Unsubscribe → feed_pcm is dropped + channels muted → silent
+    mixer.unsubscribe_pid(0x101);
+    mixer.feed_pcm(0x101, stereoData);
+    let out2 = mixer.process(BLOCK_SIZE);
+    let max2 = 0;
+    for (let i = 0; i < out2.length; i++) max2 = Math.max(max2, Math.abs(out2[i]));
+    assert(max2 < 1e-6, `Unsubscribed PID should be silent, max2=${max2}`);
+
+    // Re-subscribe → audible again
+    mixer.subscribe_pid(0x101);
+    mixer.feed_pcm(0x101, stereoData);
+    let out3 = mixer.process(BLOCK_SIZE);
+    let max3 = 0;
+    for (let i = 0; i < out3.length; i++) max3 = Math.max(max3, Math.abs(out3[i]));
+    assert(max3 > 0.01, `Re-subscribed PID should be audible, max3=${max3}`);
+    passed++;
+    console.log('PASS: test_subscribe_unsubscribe');
+} catch (e) {
+    console.error('FAIL: test_subscribe_unsubscribe:', e.message);
+    failed++;
+}
+
+// Test 9: PID reconfiguration (unmap + remap)
+// Mid-stream PID swap: unmap old PID, map new PID to same channels.
+try {
+    const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 4);
+    const sine = sineWave(440, 1.0, BLOCK_SIZE);
+    const stereoData = stereoInterleave(sine, sine);
+
+    // First PID active
+    mixer.map_pid(0x101, 0, 2);
+    mixer.feed_pcm(0x101, stereoData);
+    let out1 = mixer.process(BLOCK_SIZE);
+    let max1 = 0;
+    for (let i = 0; i < out1.length; i++) max1 = Math.max(max1, Math.abs(out1[i]));
+    assert(max1 > 0.01, `First PID should produce audio, max1=${max1}`);
+
+    // Reconfigure: unmap 0x101, map 0x102 to same channels
+    mixer.unmap_pid(0x101);
+    assert(mixer.pid_channel(0x101) === -1, `Unmapped PID should return -1, got ${mixer.pid_channel(0x101)}`);
+
+    mixer.map_pid(0x102, 0, 2);
+    assert(mixer.pid_channel(0x102) === 0, `New PID should map to channel 0, got ${mixer.pid_channel(0x102)}`);
+
+    mixer.feed_pcm(0x102, stereoData);
+    let out2 = mixer.process(BLOCK_SIZE);
+    let max2 = 0;
+    for (let i = 0; i < out2.length; i++) max2 = Math.max(max2, Math.abs(out2[i]));
+    assert(max2 > 0.01, `Reconfigured PID should produce audio, max2=${max2}`);
+
+    // Old PID feed should be silently ignored (unmapped)
+    mixer.feed_pcm(0x101, stereoData);
+    let out3 = mixer.process(BLOCK_SIZE);
+    let max3 = 0;
+    for (let i = 0; i < out3.length; i++) max3 = Math.max(max3, Math.abs(out3[i]));
+    assert(max3 > 0.01, `New PID should still be active after old PID feed, max3=${max3}`);
+    passed++;
+    console.log('PASS: test_pid_reconfiguration');
+} catch (e) {
+    console.error('FAIL: test_pid_reconfiguration:', e.message);
+    failed++;
+}
+
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 process.exit(failed > 0 ? 1 : 0);
