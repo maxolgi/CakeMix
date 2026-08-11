@@ -234,6 +234,65 @@ class MixerWasm {
         }
     }
     /**
+     * Solo a channel (mutes all others).
+     * @param {number} ch
+     * @param {boolean} soloed
+     */
+    set_channel_solo(ch, soloed) {
+        const ret = wasm.mixerwasm_set_channel_solo(this.__wbg_ptr, ch, soloed);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Set EQ band frequency (Hz) for a channel.
+     * @param {number} ch
+     * @param {number} band
+     * @param {number} freq_hz
+     */
+    set_eq_band_freq(ch, band, freq_hz) {
+        const ret = wasm.mixerwasm_set_eq_band_freq(this.__wbg_ptr, ch, band, freq_hz);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Set EQ band gain (dB) for a channel's 6-band EQ.
+     * Band 0=HPF, 1=Low, 2=Lo-Mid, 3=Mid, 4=Hi-Mid, 5=High.
+     * @param {number} ch
+     * @param {number} band
+     * @param {number} gain_db
+     */
+    set_eq_band_gain(ch, band, gain_db) {
+        const ret = wasm.mixerwasm_set_eq_band_gain(this.__wbg_ptr, ch, band, gain_db);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Set EQ band Q for a channel.
+     * @param {number} ch
+     * @param {number} band
+     * @param {number} q
+     */
+    set_eq_band_q(ch, band, q) {
+        const ret = wasm.mixerwasm_set_eq_band_q(this.__wbg_ptr, ch, band, q);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Bypass/unbypass EQ for a channel.
+     * @param {number} ch
+     * @param {boolean} bypassed
+     */
+    set_eq_bypass(ch, bypassed) {
+        const ret = wasm.mixerwasm_set_eq_bypass(this.__wbg_ptr, ch, bypassed);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {number} pid
      */
     subscribe_pid(pid) {
@@ -598,6 +657,16 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (this._mixer) try { this._mixer.set_channel_pan(msg.ch, msg.pan); } catch(e) {}
             } else if (msg.type === "set-mute") {
                 if (this._mixer) try { this._mixer.set_channel_mute(msg.ch, msg.muted); } catch(e) {}
+            } else if (msg.type === "set-solo") {
+                if (this._mixer) try { this._mixer.set_channel_solo(msg.ch, msg.soloed); } catch(e) {}
+            } else if (msg.type === "set-eq-gain") {
+                if (this._mixer) try { this._mixer.set_eq_band_gain(msg.ch, msg.band, msg.gainDb); } catch(e) {}
+            } else if (msg.type === "set-eq-freq") {
+                if (this._mixer) try { this._mixer.set_eq_band_freq(msg.ch, msg.band, msg.freqHz); } catch(e) {}
+            } else if (msg.type === "set-eq-q") {
+                if (this._mixer) try { this._mixer.set_eq_band_q(msg.ch, msg.band, msg.q); } catch(e) {}
+            } else if (msg.type === "set-eq-bypass") {
+                if (this._mixer) try { this._mixer.set_eq_bypass(msg.ch, msg.bypassed); } catch(e) {}
             } else if (msg.type === "map-pid") {
                 if (this._mixer) try { this._mixer.map_pid(msg.pid, msg.chStart, msg.channelCount); } catch(e) {}
             } else if (msg.type === "unmap-pid") {

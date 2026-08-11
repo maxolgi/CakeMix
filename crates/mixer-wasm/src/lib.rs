@@ -9,6 +9,9 @@ use oximedia_audio::ChannelLayout;
 use oximedia_mixer::metering::{Meter, MeterBallistics};
 
 pub mod effects;
+use effects::EqEffect;
+
+use oximedia_mixer::effects_chain::AudioEffect;
 
 /// WASM binding for the oximedia-mixer audio engine.
 ///
@@ -58,6 +61,12 @@ pub struct MixerWasm {
     deinterleave_scratch: Vec<Vec<f32>>,
     /// Reusable raw input copy buffer.
     raw_input: Vec<f32>,
+    /// Per-channel solo state.
+    soloed_channels: std::collections::HashSet<u32>,
+    /// Per-channel EQ instances (for parameter control).
+    eq_chains: HashMap<u32, EqEffect>,
+    /// Sample rate (for creating EQ effects).
+    sample_rate: u32,
 }
 
 /// Per-PID mapping metadata (from MPEG-2 component descriptors).
@@ -100,6 +109,9 @@ impl MixerWasm {
             stereo_out: vec![0.0; bs * 2],
             deinterleave_scratch: Vec::new(),
             raw_input: Vec::new(),
+            soloed_channels: std::collections::HashSet::new(),
+            eq_chains: HashMap::new(),
+            sample_rate,
         })
     }
 
@@ -124,6 +136,11 @@ impl MixerWasm {
                 ch.set_pan_law(PanLaw::Linear);
             }
             self.channel_ids[i] = Some(id);
+            // Initialize 6-band EQ for this channel.
+            if !self.eq_chains.contains_key(&idx) {
+                let eq = EqEffect::six_band(self.sample_rate);
+                self.eq_chains.insert(idx, eq);
+            }
         }
         Ok(self.channel_ids[i].unwrap())
     }
@@ -308,6 +325,93 @@ impl MixerWasm {
     }
 
     // ------------------------------------------------------------------
+    // EQ controls
+    // ------------------------------------------------------------------
+
+    /// Set EQ band gain (dB) for a channel's 6-band EQ.
+    /// Band 0=HPF, 1=Low, 2=Lo-Mid, 3=Mid, 4=Hi-Mid, 5=High.
+    pub fn set_eq_band_gain(&mut self, ch: u32, band: usize, gain_db: f32) -> Result<(), JsValue> {
+        if let Some(eq) = self.eq_chains.get_mut(&ch) {
+            if band < eq.inner().bands.len() {
+                eq.inner_mut().bands[band].set_gain_db(gain_db as f64);
+                eq.inner_mut().bands[band].update_coefficients();
+            }
+        }
+        Ok(())
+    }
+
+    /// Set EQ band frequency (Hz) for a channel.
+    pub fn set_eq_band_freq(&mut self, ch: u32, band: usize, freq_hz: f32) -> Result<(), JsValue> {
+        if let Some(eq) = self.eq_chains.get_mut(&ch) {
+            if band < eq.inner().bands.len() {
+                eq.inner_mut().bands[band].set_frequency(freq_hz as f64);
+                eq.inner_mut().bands[band].update_coefficients();
+            }
+        }
+        Ok(())
+    }
+
+    /// Set EQ band Q for a channel.
+    pub fn set_eq_band_q(&mut self, ch: u32, band: usize, q: f32) -> Result<(), JsValue> {
+        if let Some(eq) = self.eq_chains.get_mut(&ch) {
+            if band < eq.inner().bands.len() {
+                eq.inner_mut().bands[band].set_q(q as f64);
+                eq.inner_mut().bands[band].update_coefficients();
+            }
+        }
+        Ok(())
+    }
+
+    /// Bypass/unbypass EQ for a channel.
+    pub fn set_eq_bypass(&mut self, ch: u32, bypassed: bool) -> Result<(), JsValue> {
+        if let Some(eq) = self.eq_chains.get_mut(&ch) {
+            eq.set_bypassed(bypassed);
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Solo
+    // ------------------------------------------------------------------
+
+    /// Solo a channel (mutes all others).
+    pub fn set_channel_solo(&mut self, ch: u32, soloed: bool) -> Result<(), JsValue> {
+        if soloed {
+            self.soloed_channels.insert(ch);
+        } else {
+            self.soloed_channels.remove(&ch);
+        }
+        // Apply: if any channel is soloed, mute all non-soloed channels.
+        let any_soloed = !self.soloed_channels.is_empty();
+        let ids_to_update: Vec<(usize, ChannelId, bool)> = self.channel_ids.iter().enumerate()
+            .filter_map(|(i, id_opt)| {
+                id_opt.map(|id| {
+                    let should_mute = any_soloed && !self.soloed_channels.contains(&(i as u32));
+                    (i, id, should_mute)
+                })
+            })
+            .collect();
+        for (_, id, should_mute) in ids_to_update {
+            if let Ok(channel) = self.engine.get_channel_mut(id) {
+                if should_mute {
+                    channel.set_muted(true);
+                } else {
+                    channel.set_muted(false);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Check if a channel is user-muted (not solo-muted).
+    fn user_muted(&self, ch: u32) -> bool {
+        // Check if the channel's mute state was set by the user.
+        // For now, track via a simple heuristic: if not soloed and not in
+        // soloed set, check PID subscription. This is simplified.
+        false
+    }
+
+    // ------------------------------------------------------------------
     // Processing (allocation-free hot path)
     // ------------------------------------------------------------------
 
@@ -324,6 +428,8 @@ impl MixerWasm {
             let Some(&Some(id)) = self.channel_ids.get(ch_idx as usize) else {
                 continue;
             };
+
+
 
             let params = if let Ok(ch) = self.engine.get_channel(id) {
                 let pan_law = match ch.pan_law() {
@@ -348,8 +454,14 @@ impl MixerWasm {
                 continue;
             }
 
+            // Apply EQ on a copy of the input before process_mix.
+            let mut eq_samples: Vec<f32> = samples.to_vec();
+            if let Some(eq) = self.eq_chains.get_mut(&ch_idx) {
+                eq.process(&mut eq_samples);
+            }
+
             let (ch_left, ch_right) =
-                self.engine.engine_mut().process_mix(&[(id, params)], samples);
+                self.engine.engine_mut().process_mix(&[(id, params)], &eq_samples);
 
             for i in 0..bs {
                 self.master_left[i] += ch_left[i];

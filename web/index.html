@@ -7,120 +7,31 @@
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div id="app">
-        <header>
+<div id="app">
+    <header>
+        <div class="brand">
             <h1>🍰 CakeMix</h1>
-            <p class="subtitle">Professional WASM Audio Mixer</p>
-            <div class="status-bar">
-                <span id="status" class="status">Loading WASM…</span>
-                <span id="wasm-badge" class="badge">WASM LOADING…</span>
-            </div>
-        </header>
-
-        <!-- Master Meter Section -->
-        <div class="master-meter-section">
-            <div class="meter-row">
-                <span class="meter-label">L</span>
-                <div class="meter-track"><div id="meter-l" class="meter-bar"></div></div>
-            </div>
-            <div class="meter-row">
-                <span class="meter-label">R</span>
-                <div class="meter-track"><div id="meter-r" class="meter-bar"></div></div>
-            </div>
-            <div class="meter-readout">
-                <span id="meter-text">—</span>
-                <span id="clip-indicator" class="clip">CLIP</span>
-            </div>
+            <span class="subtitle">WASM Audio Mixer</span>
         </div>
-
-        <div class="controls">
-            <button id="start-btn" class="btn-start" disabled>Initializing…</button>
-            <button id="stop-btn" class="btn-stop" disabled>Stop</button>
+        <div class="header-right">
+            <span id="wasm-badge" class="badge">WASM LOADING…</span>
+            <span id="status" class="status">Loading…</span>
         </div>
+    </header>
 
-        <div class="mixer-console">
-            <!-- Channel Strips -->
-            <div class="channel-strip" data-ch="0">
-                <h3>CH 1</h3>
-                <p class="freq">220 Hz</p>
-                <div class="knob-group">
-                    <label>Gain</label>
-                    <input type="range" id="ch0-gain" min="0" max="1.5" step="0.01" value="1.0" class="slider">
-                    <span id="ch0-gain-val" class="value">1.00</span>
-                </div>
-                <div class="knob-group">
-                    <label>Pan</label>
-                    <input type="range" id="ch0-pan" min="-1" max="1" step="0.01" value="0" class="slider">
-                    <span id="ch0-pan-val" class="value">0.00</span>
-                </div>
-                <button id="ch0-mute" class="mute-btn">Mute</button>
-            </div>
-
-            <div class="channel-strip" data-ch="1">
-                <h3>CH 2</h3>
-                <p class="freq">277 Hz</p>
-                <div class="knob-group">
-                    <label>Gain</label>
-                    <input type="range" id="ch1-gain" min="0" max="1.5" step="0.01" value="1.0" class="slider">
-                    <span id="ch1-gain-val" class="value">1.00</span>
-                </div>
-                <div class="knob-group">
-                    <label>Pan</label>
-                    <input type="range" id="ch1-pan" min="-1" max="1" step="0.01" value="-0.5" class="slider">
-                    <span id="ch1-pan-val" class="value">-0.50</span>
-                </div>
-                <button id="ch1-mute" class="mute-btn">Mute</button>
-            </div>
-
-            <div class="channel-strip" data-ch="2">
-                <h3>CH 3</h3>
-                <p class="freq">330 Hz</p>
-                <div class="knob-group">
-                    <label>Gain</label>
-                    <input type="range" id="ch2-gain" min="0" max="1.5" step="0.01" value="1.0" class="slider">
-                    <span id="ch2-gain-val" class="value">1.00</span>
-                </div>
-                <div class="knob-group">
-                    <label>Pan</label>
-                    <input type="range" id="ch2-pan" min="-1" max="1" step="0.01" value="0.5" class="slider">
-                    <span id="ch2-pan-val" class="value">0.50</span>
-                </div>
-                <button id="ch2-mute" class="mute-btn">Mute</button>
-            </div>
-
-            <div class="channel-strip" data-ch="3">
-                <h3>CH 4</h3>
-                <p class="freq">440 Hz</p>
-                <div class="knob-group">
-                    <label>Gain</label>
-                    <input type="range" id="ch3-gain" min="0" max="1.5" step="0.01" value="1.0" class="slider">
-                    <span id="ch3-gain-val" class="value">1.00</span>
-                </div>
-                <div class="knob-group">
-                    <label>Pan</label>
-                    <input type="range" id="ch3-pan" min="-1" max="1" step="0.01" value="0" class="slider">
-                    <span id="ch3-pan-val" class="value">0.00</span>
-                </div>
-                <button id="ch3-mute" class="mute-btn">Mute</button>
-            </div>
-
-            <!-- Master Section -->
-            <div class="master-strip">
-                <h3>MASTER</h3>
-                <div class="master-meter-mini">
-                    <div class="meter-row">
-                        <span class="meter-label">L</span>
-                        <div class="meter-track"><div id="master-meter-l" class="meter-bar"></div></div>
-                    </div>
-                    <div class="meter-row">
-                        <span class="meter-label">R</span>
-                        <div class="meter-track"><div id="master-meter-r" class="meter-bar"></div></div>
-                    </div>
-                </div>
-            </div>
+    <div class="transport-bar">
+        <button id="start-btn" class="btn btn-start" disabled>Start</button>
+        <button id="stop-btn" class="btn btn-stop" disabled>Stop</button>
+        <div class="master-meters">
+            <div class="h-meter-row"><span class="h-meter-label">L</span><div class="h-meter-track"><div id="meter-l" class="h-meter-bar"></div></div></div>
+            <div class="h-meter-row"><span class="h-meter-label">R</span><div class="h-meter-track"><div id="meter-r" class="h-meter-bar"></div></div></div>
+            <span id="meter-text" class="meter-readout">—</span>
+            <span id="clip-indicator" class="clip">CLIP</span>
         </div>
     </div>
 
-    <script type="module" src="app.js"></script>
+    <div id="mixer-console" class="mixer-console"></div>
+</div>
+<script type="module" src="app.js"></script>
 </body>
 </html>

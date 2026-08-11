@@ -49,6 +49,16 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (this._mixer) try { this._mixer.set_channel_pan(msg.ch, msg.pan); } catch(e) {}
             } else if (msg.type === "set-mute") {
                 if (this._mixer) try { this._mixer.set_channel_mute(msg.ch, msg.muted); } catch(e) {}
+            } else if (msg.type === "set-solo") {
+                if (this._mixer) try { this._mixer.set_channel_solo(msg.ch, msg.soloed); } catch(e) {}
+            } else if (msg.type === "set-eq-gain") {
+                if (this._mixer) try { this._mixer.set_eq_band_gain(msg.ch, msg.band, msg.gainDb); } catch(e) {}
+            } else if (msg.type === "set-eq-freq") {
+                if (this._mixer) try { this._mixer.set_eq_band_freq(msg.ch, msg.band, msg.freqHz); } catch(e) {}
+            } else if (msg.type === "set-eq-q") {
+                if (this._mixer) try { this._mixer.set_eq_band_q(msg.ch, msg.band, msg.q); } catch(e) {}
+            } else if (msg.type === "set-eq-bypass") {
+                if (this._mixer) try { this._mixer.set_eq_bypass(msg.ch, msg.bypassed); } catch(e) {}
             } else if (msg.type === "map-pid") {
                 if (this._mixer) try { this._mixer.map_pid(msg.pid, msg.chStart, msg.channelCount); } catch(e) {}
             } else if (msg.type === "unmap-pid") {

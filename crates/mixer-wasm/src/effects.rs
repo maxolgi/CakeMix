@@ -17,6 +17,7 @@ pub struct EqEffect {
     eq: ParametricEq,
     // Scratch buffer for f64 conversion (reused per call).
     scratch: Vec<f64>,
+    bypassed: bool,
 }
 
 impl EqEffect {
@@ -28,6 +29,7 @@ impl EqEffect {
         Self {
             eq,
             scratch: Vec::new(),
+            bypassed: false,
         }
     }
 
@@ -38,6 +40,26 @@ impl EqEffect {
         Self {
             eq,
             scratch: Vec::new(),
+            bypassed: false,
+        }
+    }
+
+    /// Create a 6-band EQ matching a Fairlight console channel strip:
+    /// HPF (80 Hz) → Low Shelf (120 Hz) → Lo-Mid Peak (400 Hz) →
+    /// Mid Peak (1.5 kHz) → Hi-Mid Peak (5 kHz) → High Shelf (10 kHz).
+    #[must_use]
+    pub fn six_band(sample_rate: u32) -> Self {
+        let mut eq = ParametricEq::new(sample_rate, 1);
+        eq.add_band("HPF".into(), EqFilterType::HighPass, 80.0, 0.0, 0.707);
+        eq.add_band("Low".into(), EqFilterType::LowShelf, 120.0, 0.0, 0.707);
+        eq.add_band("Lo-Mid".into(), EqFilterType::Peaking, 400.0, 0.0, 1.0);
+        eq.add_band("Mid".into(), EqFilterType::Peaking, 1500.0, 0.0, 1.0);
+        eq.add_band("Hi-Mid".into(), EqFilterType::Peaking, 5000.0, 0.0, 1.0);
+        eq.add_band("High".into(), EqFilterType::HighShelf, 10000.0, 0.0, 0.707);
+        Self {
+            eq,
+            scratch: Vec::new(),
+            bypassed: false,
         }
     }
 
@@ -47,7 +69,19 @@ impl EqEffect {
         Self {
             eq,
             scratch: Vec::new(),
+            bypassed: false,
         }
+    }
+
+    /// Set bypass state.
+    pub fn set_bypassed(&mut self, bypassed: bool) {
+        self.bypassed = bypassed;
+    }
+
+    /// Get bypass state.
+    #[must_use]
+    pub fn is_bypassed(&self) -> bool {
+        self.bypassed
     }
 
     /// Get a reference to the inner EQ for parameter changes.
@@ -65,7 +99,9 @@ impl EqEffect {
 
 impl AudioEffect for EqEffect {
     fn process(&mut self, samples: &mut [f32]) {
-        // Convert f32 → f64, process through EQ, convert back.
+        if self.bypassed {
+            return;
+        }
         self.scratch.clear();
         self.scratch.extend(samples.iter().map(|&s| s as f64));
         self.eq.process_buffer(&mut self.scratch, 1);
