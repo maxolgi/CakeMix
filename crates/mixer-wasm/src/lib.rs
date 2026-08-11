@@ -45,8 +45,19 @@ pub struct MixerWasm {
     channel_ids: Vec<Option<ChannelId>>,
     /// Pending per-channel input audio (mono f32).
     channel_inputs: HashMap<u32, Vec<f32>>,
-    /// Maps TS PID → starting channel index (for pidmap events).
-    pid_to_channel: HashMap<u16, u32>,
+    /// Maps TS PID → PID mapping info (for pidmap events).
+    pid_map: HashMap<u16, PidMapping>,
+}
+
+/// Per-PID mapping metadata (from MPEG-2 component descriptors).
+#[derive(Clone, Copy, Debug)]
+struct PidMapping {
+    /// Starting channel index in the mixer.
+    ch_start: u32,
+    /// Number of audio channels in this PID (1, 2, 6, 8).
+    channel_count: u32,
+    /// Whether this PID is subscribed (audio is active).
+    subscribed: bool,
 }
 
 #[wasm_bindgen]
@@ -73,7 +84,7 @@ impl MixerWasm {
             buffer_size: buffer_size as usize,
             channel_ids: vec![None; max_channels as usize],
             channel_inputs: HashMap::new(),
-            pid_to_channel: HashMap::new(),
+            pid_map: HashMap::new(),
         })
     }
 
@@ -169,31 +180,102 @@ impl MixerWasm {
     // PID mapping (idempotent — safe for mid-stream reconfiguration)
     // ------------------------------------------------------------------
 
-    /// Map a TS PID to a starting channel index.
+    /// Map a TS PID to starting channel index with metadata.
     ///
-    /// When the demuxer delivers audio from this PID, JS calls
-    /// `set_channel_input_interleaved(mapped_channel, data, num_channels)`.
-    /// This mapping is stored so `handle_pidmap` can reconfigure channels
-    /// when the source changes its PID layout.
+    /// Aligns with the PidMap handoff contract from audioplan.md:
+    /// each PID carries channelCount (1/2/6/8) and is subscribed by default.
     ///
     /// Idempotent: calling twice with the same PID updates the mapping.
-    pub fn map_pid(&mut self, pid: u16, ch_start: u32) -> Result<(), JsValue> {
-        self.ensure_channel(ch_start)?;
-        self.pid_to_channel.insert(pid, ch_start);
+    /// Safe for mid-stream reconfiguration.
+    pub fn map_pid(
+        &mut self,
+        pid: u16,
+        ch_start: u32,
+        channel_count: u32,
+    ) -> Result<(), JsValue> {
+        for i in 0..channel_count {
+            self.ensure_channel(ch_start + i)?;
+        }
+        self.pid_map.insert(
+            pid,
+            PidMapping {
+                ch_start,
+                channel_count,
+                subscribed: true,
+            },
+        );
         Ok(())
     }
 
     /// Remove a PID mapping. Idempotent — safe to call on an unmapped PID.
     pub fn unmap_pid(&mut self, pid: u16) {
-        self.pid_to_channel.remove(&pid);
+        self.pid_map.remove(&pid);
     }
 
-    /// Get the channel index a PID is mapped to, or -1 if unmapped.
+    /// Get the starting channel index a PID is mapped to, or -1 if unmapped.
     pub fn pid_channel(&self, pid: u16) -> i32 {
-        self.pid_to_channel
+        self.pid_map
             .get(&pid)
-            .map(|&c| c as i32)
+            .map(|m| m.ch_start as i32)
             .unwrap_or(-1)
+    }
+
+    /// Get the channel count for a PID, or 0 if unmapped.
+    pub fn pid_channel_count(&self, pid: u16) -> u32 {
+        self.pid_map
+            .get(&pid)
+            .map(|m| m.channel_count)
+            .unwrap_or(0)
+    }
+
+    /// Subscribe to a PID (enable audio output). Default is subscribed.
+    pub fn subscribe_pid(&mut self, pid: u16) {
+        if let Some(m) = self.pid_map.get_mut(&pid) {
+            m.subscribed = true;
+            // Unmute all channels for this PID.
+            let ch_start = m.ch_start;
+            let count = m.channel_count;
+            for i in 0..count {
+                if let Some(&Some(id)) = self.channel_ids.get((ch_start + i) as usize) {
+                    if let Ok(ch) = self.engine.get_channel_mut(id) {
+                        ch.set_muted(false);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Unsubscribe from a PID (mute its channels).
+    pub fn unsubscribe_pid(&mut self, pid: u16) {
+        if let Some(m) = self.pid_map.get_mut(&pid) {
+            m.subscribed = false;
+            let ch_start = m.ch_start;
+            let count = m.channel_count;
+            for i in 0..count {
+                if let Some(&Some(id)) = self.channel_ids.get((ch_start + i) as usize) {
+                    if let Ok(ch) = self.engine.get_channel_mut(id) {
+                        ch.set_muted(true);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Convenience: feed PCM data for a specific PID directly.
+    /// Looks up the PID mapping and calls set_channel_input_interleaved.
+    /// This matches the PcmPacket handoff from the WebSRT worker.
+    pub fn feed_pcm(
+        &mut self,
+        pid: u16,
+        data: &js_sys::Float32Array,
+    ) -> Result<(), JsValue> {
+        let Some(mapping) = self.pid_map.get(&pid).copied() else {
+            return Ok(()); // unmapped PID — ignore
+        };
+        if !mapping.subscribed {
+            return Ok(()); // unsubscribed — drop
+        }
+        self.set_channel_input_interleaved(mapping.ch_start, data, mapping.channel_count)
     }
 
     // ------------------------------------------------------------------

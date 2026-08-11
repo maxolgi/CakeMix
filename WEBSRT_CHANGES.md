@@ -33,9 +33,9 @@ const OPUS_DESCRIPTOR: &[u8] = &[0x05, 0x04, 0x4F, 0x70, 0x75, 0x73, ...];
 ```rust
 /// LPCM (linear PCM) as a private stream with registration descriptor.
 /// Stream type 0x06 = "private section" (same as Opus-in-TS convention).
-const STREAM_TYPE_LPCM: u8 = 0x06;
-const LPCM_DESCRIPTOR: &[u8] = &[
-    0x05, 0x04, 0x4C, 0x50, 0x43, 0x4D, // registration "LPCM"
+const STREAM_TYPE_S302M: u8 = 0x06;
+const S302M_DESCRIPTOR: &[u8] = &[
+    0x05, 0x04, 0x43, 0x55, 0x45, 0x53, // registration "CUES" (SMPTE 302M)
 ];
 ```
 
@@ -51,8 +51,8 @@ Currently audio is always Opus. The muxer needs to know if audio is PCM.
 #[wasm_bindgen(js_name = setAudioCodec)]
 pub fn set_audio_codec(&mut self, codec: &str) {
     match codec {
-        "pcm" => {
-            self.audio_stream_type = STREAM_TYPE_LPCM;
+        "s302m" => {
+            self.audio_stream_type = STREAM_TYPE_S302M;
             self.audio_descriptor = LPCM_DESCRIPTOR.to_vec();
         }
         _ => {
@@ -95,7 +95,7 @@ When audio is PCM, push the raw bytes without the Opus header:
 ```rust
 pub fn push_audio(&mut self, data: &[u8], pts_us: f64) {
     let pts_90k = us_to_90k(pts_us);
-    let pes = if self.audio_stream_type == STREAM_TYPE_LPCM {
+    let pes = if self.audio_stream_type == STREAM_TYPE_S302M {
         // PCM: raw bytes, no codec framing
         build_pes_audio(data, pts_90k)
     } else {
@@ -192,5 +192,5 @@ The CakeMix JS layer reads the PES payload directly as PCM bytes.
 | `ts-muxer-wasm/src/lib.rs` | `write_pmt`: use configured audio type | lines ~165-185 |
 
 None of these changes affect existing SlopShady usage (Opus defaults are
-preserved). They are additive: new `set_audio_codec("pcm")` call activates
+preserved). They are additive: new `set_audio_codec("s302m")` call activates
 PCM mode; without it, behavior is unchanged.
