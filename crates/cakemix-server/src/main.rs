@@ -38,7 +38,8 @@ struct Cli {
 async fn serve_index() -> Response {
     match WebAsset::get("web/index.html") {
         Some(content) => (
-            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8"),
+             (header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")],
             content.data.to_vec(),
         )
             .into_response(),
@@ -86,7 +87,8 @@ async fn serve_web_file(uri: axum::http::Uri) -> Response {
             mime.as_ref()
         };
         return (
-            [(header::CONTENT_TYPE, mime_str)],
+            [(header::CONTENT_TYPE, mime_str),
+             (header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")],
             content.data.to_vec(),
         )
             .into_response();
