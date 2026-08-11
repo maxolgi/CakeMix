@@ -21,5 +21,7 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 # Real-time audio is single-threaded; we never want oxifft's threading on any target.
 [patch.crates-io]
 oxifft = { path = "vendor/oxifft/oxifft" }
-# Patch: use our fork where rayon is optional behind the 'parallel' feature.
+# Patch: all three oximedia crates from our fork to keep versions unified.
 oximedia-mixer = { git = "https://github.com/maxolgi/oximedia", branch = "master" }
+oximedia-core = { git = "https://github.com/maxolgi/oximedia", branch = "master" }
+oximedia-audio = { git = "https://github.com/maxolgi/oximedia", branch = "master" }

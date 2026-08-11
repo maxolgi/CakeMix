@@ -1,0 +1,28 @@
+/target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.log
+**/CLAUDE.md
+**/.claude/
+**/CLAUDE.md
+
+# Rustc ICE dumps
+rustc-ice-*.txt
+
+# Proptest failure persistence files (auto-generated during test runs)
+**/*.proptest-regressions
+
+
+# wasm-pack build outputs
+**/pkg/
+**/pkg_simd/
+**/pkg_node/
+
+target
