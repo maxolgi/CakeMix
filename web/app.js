@@ -18,13 +18,26 @@ async function initAudio() {
     audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
 
     // Register the worklet processor.
-    await audioCtx.audioWorklet.addModule('/mixer-worklet-processor.js');
+    try {
+        await audioCtx.audioWorklet.addModule('/mixer-worklet-processor.js');
+    } catch (e) {
+        document.getElementById('status').textContent = 'addModule FAILED: ' + e.message;
+        console.error('[app] addModule error:', e);
+        return;
+    }
 
+    try {
     mixerNode = new AudioWorkletNode(audioCtx, 'mixer-processor', {
         numberOfInputs: 0,
         numberOfOutputs: 1,
         outputChannelCount: [2],
     });
+
+    } catch (e) {
+        document.getElementById('status').textContent = 'AudioWorkletNode FAILED: ' + e.message;
+        console.error('[app] AudioWorkletNode error:', e);
+        return;
+    }
 
     mixerNode.connect(audioCtx.destination);
 
