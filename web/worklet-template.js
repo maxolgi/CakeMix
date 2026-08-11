@@ -1,3 +1,15 @@
+// Crypto polyfill for AudioWorkletGlobalScope (no crypto API)
+if (typeof globalThis.crypto === 'undefined') {
+    globalThis.crypto = {
+        getRandomValues: function(arr) {
+            for (var i = 0; i < arr.length; i++) {
+                arr[i] = Math.floor(Math.random() * 256);
+            }
+            return arr;
+        }
+    };
+}
+
 // AudioWorklet processor for CakeMix mixer
 var BLOCK_SIZE = 128;
 var SAMPLE_RATE = 48000;
@@ -15,7 +27,8 @@ class MixerProcessor extends AudioWorkletProcessor {
             var msg = e.data;
             if (msg.type === "init-wasm") {
                 try {
-                    initSync(msg.module);
+                    var module = msg.wasmBytes ? new WebAssembly.Module(msg.wasmBytes) : msg.module;
+                    initSync(module);
                     this._mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 32);
                     this.port.postMessage({ type: "wasm-ready" });
                 } catch(err) {

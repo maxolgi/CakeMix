@@ -12,6 +12,8 @@ let glue = fs.readFileSync(path.join(pkgDir, 'mixer_wasm.js'), 'utf-8');
 glue = glue.replace(/^export\s+/gm, '');
 glue = glue.replace(/^export\s*\{[^}]+\};?\s*$/gm, '');
 glue = glue.replace(/^\{\s*initSync[\s\S]*?\};\s*$/gm, '');
+glue = glue.replace(/^\{\s*\w+\s+as\s+\w+\s*\};?\s*$/gm, '');
+glue = glue.replace(/^export\s*\{[\s\S]*?\};?\s*$/gm, '');
 glue = glue.replace(/module_or_path\s*=\s*new URL\([^)]+\);/m,
     "module_or_path = undefined; // stripped for worklet");
 
