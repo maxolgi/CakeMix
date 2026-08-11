@@ -1,6 +1,6 @@
 // Minimal TextDecoder/TextEncoder for AudioWorkletGlobalScope
 (function() {
-    if (typeof TextDecoder === 'undefined') {
+    if (typeof globalThis.TextDecoder === 'undefined') {
         function TD(label, options) { this._fatal = options && options.fatal; }
         TD.prototype.decode = function(bytes) {
             if (!bytes) return '';
@@ -15,9 +15,9 @@
             }
             return r;
         };
-        TextDecoder = TD;
+        globalThis.TextDecoder = TD;
     }
-    if (typeof TextEncoder === 'undefined') {
+    if (typeof globalThis.TextEncoder === 'undefined') {
         function TE() {}
         TE.prototype.encode = function(s) {
             if (!s) return new Uint8Array(0);
@@ -37,6 +37,6 @@
             for (var i = 0; i < n; i++) view[i] = e[i];
             return { read: s.length, written: n };
         };
-        TextEncoder = TE;
+        globalThis.TextEncoder = TE;
     }
 })();
