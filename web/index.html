@@ -10,14 +10,32 @@
     <div id="app">
         <header>
             <h1>🍰 CakeMix</h1>
-            <p>Professional WASM Audio Mixer — M1 Demo</p>
-            <p id="status">Loading WASM…</p>
-            <div id="wasm-badge">WASM LOADING…</div>
+            <p class="subtitle">Professional WASM Audio Mixer</p>
+            <div class="status-bar">
+                <span id="status" class="status">Loading WASM…</span>
+                <span id="wasm-badge" class="badge">WASM LOADING…</span>
+            </div>
         </header>
 
+        <!-- Master Meter Section -->
+        <div class="master-meter-section">
+            <div class="meter-row">
+                <span class="meter-label">L</span>
+                <div class="meter-track"><div id="meter-l" class="meter-bar"></div></div>
+            </div>
+            <div class="meter-row">
+                <span class="meter-label">R</span>
+                <div class="meter-track"><div id="meter-r" class="meter-bar"></div></div>
+            </div>
+            <div class="meter-readout">
+                <span id="meter-text">—</span>
+                <span id="clip-indicator" class="clip">CLIP</span>
+            </div>
+        </div>
+
         <div class="controls">
-            <button id="start-btn" disabled>Initializing…</button>
-            <button id="stop-btn" disabled>Stop</button>
+            <button id="start-btn" class="btn-start" disabled>Initializing…</button>
+            <button id="stop-btn" class="btn-stop" disabled>Stop</button>
         </div>
 
         <div class="mixer-console">
@@ -89,10 +107,15 @@
             <!-- Master Section -->
             <div class="master-strip">
                 <h3>MASTER</h3>
-                <div class="knob-group">
-                    <label>Master</label>
-                    <input type="range" id="master" min="0" max="1.5" step="0.01" value="1.0" class="slider">
-                    <span id="master-val" class="value">1.00</span>
+                <div class="master-meter-mini">
+                    <div class="meter-row">
+                        <span class="meter-label">L</span>
+                        <div class="meter-track"><div id="master-meter-l" class="meter-bar"></div></div>
+                    </div>
+                    <div class="meter-row">
+                        <span class="meter-label">R</span>
+                        <div class="meter-track"><div id="master-meter-r" class="meter-bar"></div></div>
+                    </div>
                 </div>
             </div>
         </div>
