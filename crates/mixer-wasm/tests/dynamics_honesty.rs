@@ -431,7 +431,7 @@ fn test_gate_zero_crossing_never_opens_bug() {
     let sig = sine_from_zero(220.0, amp, 50_000);
 
     for &s in &sig {
-        gate.process_sample(s, SAMPLE_RATE);
+        let _ = gate.process_sample(s, SAMPLE_RATE);
     }
 
     // BUG: envelope poisoned by sin(0)=0, gate never opens.
