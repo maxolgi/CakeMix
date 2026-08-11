@@ -40,7 +40,7 @@ Integration is browser-only (worker PCM messages → mixer worklet).
 
 ### WASM Mixer Binding (`crates/mixer-wasm/`)
 
-**47 native tests, 9 WASM tests — all pass.**
+**51 native tests, 9 WASM tests — all pass.**
 
 The `MixerWasm` struct wraps `oximedia_mixer::AudioMixer` and exposes
 a JS-friendly API via `wasm-bindgen`. Key methods:
@@ -191,14 +191,24 @@ pan, and mute controls all work. Three polyfills for
 AudioWorkletGlobalScope are in place (TextDecoder/TextEncoder,
 crypto.getRandomValues, inlined glue with no dynamic import).
 
-### Allocation per process() call (M4 perf)
-The binding's `process()` allocates Vecs every call (~4/channel + 2 master).
-Not blocking at 2-4 channels but matters at 128. The engine has
-`buffer_pool` infrastructure that isn't wired into `process_mix` yet.
+### M4 improvements: DONE ✅
+- **Allocation-free process()**: master_left/right/stereo_out/deinterleave
+  buffers pre-allocated and reused. Only one unavoidable alloc (JS FFI copy).
+- **6-band EQ preset**: Fairlight-matching (HPF/Low/Lo-Mid/Mid/Hi-Mid/High).
+  Added to EqEffect + 4 honesty tests.
+- **Metering UI**: Worklet reports peak/RMS/clip every 10 blocks. Main
+  thread renders green/yellow/red meter bars in the UI.
+- **Live mode**: Worklet accepts external PCM via feed_pcm() for WebSRT.
+- **CI pipeline**: GitHub Actions (native tests + wasm build + node tests).
 
-### 6-band EQ preset
-ParametricEq is wired and working. Extending to a Fairlight-matching
-6-band preset is trivial but not done.
+### Buffer pool wiring (future)
+`process_mix` still allocates 4 Vecs/channel/block internally (engine-level).
+CakeMix binding is now allocation-free; remaining allocs are in the engine's
+`process_mix` itself. `buffer_pool.rs` exists in the engine but needs wiring.
+
+### Registration ID
+Correct value is "BSSD" (0x42535344), per ffmpeg s302m muxer.
+Not "CUES" as initially proposed.
 
 ---
 
@@ -223,7 +233,7 @@ The mixer binding is ready: `feed_pcm(pid, data)` implements the
 ## Repository
 
 - **Root:** `/home/flibb/CakeMix`
-- **Commits:** 26 local commits on `master`
+- **Commits:** 28 local commits on `master`
 - **Remote:** `git@github.com:maxolgi/CakeMix.git` (not created yet — user creates + pushes)
 - **Fork:** `maxolgi/oximedia` — 4 commits on `master` beyond upstream
 - **No push policy:** The user handles all git push operations.
