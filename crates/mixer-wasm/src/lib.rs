@@ -27,7 +27,7 @@ pub mod effects;
 ///   mixer channels starting at `ch_start`.
 ///
 /// PID mapping:
-/// - `map_pid(pid, ch_start)` — route a TS PID's audio to mixer channels.
+/// - `map_pid(pid, ch_start, channel_count)` — route a TS PID to mixer channels.
 /// - `unmap_pid(pid)` — remove mapping (idempotent, for mid-stream reconfig).
 ///
 /// Process via `process(block_size)` → interleaved stereo Float32Array.
@@ -50,16 +50,21 @@ pub struct MixerWasm {
     pid_map: HashMap<u16, PidMapping>,
     /// Master output meter (stereo peak/RMS).
     master_meter: Meter,
+    // ── Pre-allocated scratch buffers (zero per-call allocation) ──
+    master_left: Vec<f32>,
+    master_right: Vec<f32>,
+    stereo_out: Vec<f32>,
+    /// Reusable de-interleave scratch.
+    deinterleave_scratch: Vec<Vec<f32>>,
+    /// Reusable raw input copy buffer.
+    raw_input: Vec<f32>,
 }
 
 /// Per-PID mapping metadata (from MPEG-2 component descriptors).
 #[derive(Clone, Copy, Debug)]
 struct PidMapping {
-    /// Starting channel index in the mixer.
     ch_start: u32,
-    /// Number of audio channels in this PID (1, 2, 6, 8).
     channel_count: u32,
-    /// Whether this PID is subscribed (audio is active).
     subscribed: bool,
 }
 
@@ -74,9 +79,10 @@ impl MixerWasm {
     ) -> Result<MixerWasm, JsValue> {
         console_error_panic_hook::set_once();
 
+        let bs = buffer_size as usize;
         let config = MixerConfig {
             sample_rate,
-            buffer_size: buffer_size as usize,
+            buffer_size: bs,
             max_channels: max_channels as usize,
             ..Default::default()
         };
@@ -84,15 +90,19 @@ impl MixerWasm {
 
         Ok(MixerWasm {
             engine,
-            buffer_size: buffer_size as usize,
+            buffer_size: bs,
             channel_ids: vec![None; max_channels as usize],
             channel_inputs: HashMap::new(),
             pid_map: HashMap::new(),
             master_meter: Meter::new(2, sample_rate, MeterBallistics::Fast),
+            master_left: vec![0.0; bs],
+            master_right: vec![0.0; bs],
+            stereo_out: vec![0.0; bs * 2],
+            deinterleave_scratch: Vec::new(),
+            raw_input: Vec::new(),
         })
     }
 
-    /// Ensure a channel exists at the given index. Returns its engine ChannelId.
     fn ensure_channel(&mut self, idx: u32) -> Result<ChannelId, JsValue> {
         let i = idx as usize;
         if i >= self.channel_ids.len() {
@@ -110,7 +120,6 @@ impl MixerWasm {
                     ChannelLayout::Mono,
                 )
                 .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
-            // Use Linear pan law so center pan = 1:1 throughput.
             if let Ok(ch) = self.engine.get_channel_mut(id) {
                 ch.set_pan_law(PanLaw::Linear);
             }
@@ -123,22 +132,18 @@ impl MixerWasm {
     // Input
     // ------------------------------------------------------------------
 
-    /// Set pending input audio for a channel (planar f32, mono).
     pub fn set_channel_input(&mut self, ch: u32, data: &js_sys::Float32Array) -> Result<(), JsValue> {
         self.ensure_channel(ch)?;
-        let mut buf = vec![0.0f32; data.length() as usize];
-        data.copy_to(&mut buf);
-        self.channel_inputs.insert(ch, buf);
+        let len = data.length() as usize;
+        self.raw_input.resize(len, 0.0);
+        data.copy_to(&mut self.raw_input);
+        // Move into channel_inputs by swap (avoids Vec alloc if slot exists).
+        let slot = self.channel_inputs.entry(ch).or_insert_with(|| Vec::with_capacity(self.buffer_size));
+        slot.clear();
+        slot.extend_from_slice(&self.raw_input);
         Ok(())
     }
 
-    /// Set pending input audio from an interleaved Float32 buffer.
-    ///
-    /// WebSRT delivers PCM as interleaved Float32 per PID (s302m).
-    /// This de-interleaves into consecutive mixer channels starting at `ch_start`.
-    ///
-    /// For stereo: L,R,L,R,... → ch_start gets L stream, ch_start+1 gets R stream.
-    /// For mono: passes through as-is to ch_start.
     pub fn set_channel_input_interleaved(
         &mut self,
         ch_start: u32,
@@ -159,38 +164,41 @@ impl MixerWasm {
 
         let frames = total / nc;
 
-        // De-interleave into per-channel buffers.
-        let mut deinterleaved: Vec<Vec<f32>> = vec![Vec::with_capacity(frames); nc];
-        let mut raw = vec![0.0f32; total];
-        data.copy_to(&mut raw);
+        // Ensure scratch has nc channels, each with capacity frames.
+        if self.deinterleave_scratch.len() < nc {
+            self.deinterleave_scratch.resize(nc, Vec::new());
+        }
+        for c in 0..nc {
+            self.deinterleave_scratch[c].clear();
+            self.deinterleave_scratch[c].reserve(frames);
+        }
 
+        // Copy raw input.
+        self.raw_input.resize(total, 0.0);
+        data.copy_to(&mut self.raw_input);
+
+        // De-interleave into scratch.
         for f in 0..frames {
             for c in 0..nc {
-                deinterleaved[c].push(raw[f * nc + c]);
+                self.deinterleave_scratch[c].push(self.raw_input[f * nc + c]);
             }
         }
 
         // Assign to consecutive mixer channels.
-        for (c, buf) in deinterleaved.into_iter().enumerate() {
+        for c in 0..nc {
             let ch = ch_start + c as u32;
             self.ensure_channel(ch)?;
-            self.channel_inputs.insert(ch, buf);
+            let slot = self.channel_inputs.entry(ch).or_insert_with(|| Vec::with_capacity(self.buffer_size));
+            std::mem::swap(slot, &mut self.deinterleave_scratch[c]);
         }
 
         Ok(())
     }
 
     // ------------------------------------------------------------------
-    // PID mapping (idempotent — safe for mid-stream reconfiguration)
+    // PID mapping
     // ------------------------------------------------------------------
 
-    /// Map a TS PID to starting channel index with metadata.
-    ///
-    /// Aligns with the PidMap handoff contract from audioplan.md:
-    /// each PID carries channelCount (1/2/6/8) and is subscribed by default.
-    ///
-    /// Idempotent: calling twice with the same PID updates the mapping.
-    /// Safe for mid-stream reconfiguration.
     pub fn map_pid(
         &mut self,
         pid: u16,
@@ -211,12 +219,10 @@ impl MixerWasm {
         Ok(())
     }
 
-    /// Remove a PID mapping. Idempotent — safe to call on an unmapped PID.
     pub fn unmap_pid(&mut self, pid: u16) {
         self.pid_map.remove(&pid);
     }
 
-    /// Get the starting channel index a PID is mapped to, or -1 if unmapped.
     pub fn pid_channel(&self, pid: u16) -> i32 {
         self.pid_map
             .get(&pid)
@@ -224,7 +230,6 @@ impl MixerWasm {
             .unwrap_or(-1)
     }
 
-    /// Get the channel count for a PID, or 0 if unmapped.
     pub fn pid_channel_count(&self, pid: u16) -> u32 {
         self.pid_map
             .get(&pid)
@@ -232,11 +237,9 @@ impl MixerWasm {
             .unwrap_or(0)
     }
 
-    /// Subscribe to a PID (enable audio output). Default is subscribed.
     pub fn subscribe_pid(&mut self, pid: u16) {
         if let Some(m) = self.pid_map.get_mut(&pid) {
             m.subscribed = true;
-            // Unmute all channels for this PID.
             let ch_start = m.ch_start;
             let count = m.channel_count;
             for i in 0..count {
@@ -249,7 +252,6 @@ impl MixerWasm {
         }
     }
 
-    /// Unsubscribe from a PID (mute its channels).
     pub fn unsubscribe_pid(&mut self, pid: u16) {
         if let Some(m) = self.pid_map.get_mut(&pid) {
             m.subscribed = false;
@@ -265,19 +267,16 @@ impl MixerWasm {
         }
     }
 
-    /// Convenience: feed PCM data for a specific PID directly.
-    /// Looks up the PID mapping and calls set_channel_input_interleaved.
-    /// This matches the PcmPacket handoff from the WebSRT worker.
     pub fn feed_pcm(
         &mut self,
         pid: u16,
         data: &js_sys::Float32Array,
     ) -> Result<(), JsValue> {
         let Some(mapping) = self.pid_map.get(&pid).copied() else {
-            return Ok(()); // unmapped PID — ignore
+            return Ok(());
         };
         if !mapping.subscribed {
-            return Ok(()); // unsubscribed — drop
+            return Ok(());
         }
         self.set_channel_input_interleaved(mapping.ch_start, data, mapping.channel_count)
     }
@@ -286,7 +285,6 @@ impl MixerWasm {
     // Channel controls
     // ------------------------------------------------------------------
 
-    /// Set channel gain (linear 0.0–2.0).
     pub fn set_channel_gain(&mut self, ch: u32, gain: f32) -> Result<(), JsValue> {
         let id = self.ensure_channel(ch)?;
         self.engine
@@ -294,7 +292,6 @@ impl MixerWasm {
             .map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
 
-    /// Set channel pan (-1.0 left, 0.0 center, 1.0 right).
     pub fn set_channel_pan(&mut self, ch: u32, pan: f32) -> Result<(), JsValue> {
         let id = self.ensure_channel(ch)?;
         self.engine
@@ -302,7 +299,6 @@ impl MixerWasm {
             .map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
 
-    /// Mute a channel.
     pub fn set_channel_mute(&mut self, ch: u32, muted: bool) -> Result<(), JsValue> {
         let id = self.ensure_channel(ch)?;
         if let Ok(channel) = self.engine.get_channel_mut(id) {
@@ -312,14 +308,17 @@ impl MixerWasm {
     }
 
     // ------------------------------------------------------------------
-    // Processing
+    // Processing (allocation-free hot path)
     // ------------------------------------------------------------------
 
-    /// Process one block. Returns interleaved stereo (L, R, L, R, ...).
     pub fn process(&mut self, _block_size: u32) -> Result<js_sys::Float32Array, JsValue> {
         let bs = self.buffer_size;
-        let mut master_left = vec![0.0f32; bs];
-        let mut master_right = vec![0.0f32; bs];
+
+        // Clear master bus (reuse pre-allocated buffers).
+        for i in 0..bs {
+            self.master_left[i] = 0.0;
+            self.master_right[i] = 0.0;
+        }
 
         for (&ch_idx, samples) in &self.channel_inputs {
             let Some(&Some(id)) = self.channel_ids.get(ch_idx as usize) else {
@@ -353,56 +352,54 @@ impl MixerWasm {
                 self.engine.engine_mut().process_mix(&[(id, params)], samples);
 
             for i in 0..bs {
-                master_left[i] += ch_left[i];
-                master_right[i] += ch_right[i];
+                self.master_left[i] += ch_left[i];
+                self.master_right[i] += ch_right[i];
             }
         }
 
-        let mut out = vec![0.0f32; bs * 2];
+        // Interleave master into stereo output.
         for i in 0..bs {
-            out[i * 2] = master_left[i];
-            out[i * 2 + 1] = master_right[i];
+            self.stereo_out[i * 2] = self.master_left[i];
+            self.stereo_out[i * 2 + 1] = self.master_right[i];
         }
 
-        // Update master meter.
-        self.master_meter.process(&out);
+        self.master_meter.process(&self.stereo_out);
 
-        Ok(js_sys::Float32Array::from(&out[..]))
+        // Copy to JS-owned Float32Array (one alloc — unavoidable for the FFI).
+        let out = js_sys::Float32Array::new_with_length((bs * 2) as u32);
+        out.copy_from(&self.stereo_out);
+
+        Ok(out)
     }
 
     // ------------------------------------------------------------------
     // Metering
     // ------------------------------------------------------------------
 
-    /// Get master peak level in dB for left channel.
     pub fn master_peak_db_l(&self) -> f32 {
         self.master_meter.data().peak.first()
             .map(|p| p.current_db)
             .unwrap_or(-f32::INFINITY)
     }
 
-    /// Get master peak level in dB for right channel.
     pub fn master_peak_db_r(&self) -> f32 {
         self.master_meter.data().peak.get(1)
             .map(|p| p.current_db)
             .unwrap_or(-f32::INFINITY)
     }
 
-    /// Get master RMS level in dB for left channel.
     pub fn master_rms_db_l(&self) -> f32 {
         self.master_meter.data().rms.first()
             .map(|r| r.current_db)
             .unwrap_or(-f32::INFINITY)
     }
 
-    /// Get master RMS level in dB for right channel.
     pub fn master_rms_db_r(&self) -> f32 {
         self.master_meter.data().rms.get(1)
             .map(|r| r.current_db)
             .unwrap_or(-f32::INFINITY)
     }
 
-    /// Check if master output is clipping (peak ≥ 0 dBFS).
     pub fn master_clipping(&self) -> bool {
         self.master_meter.data().peak.iter().any(|p| p.clipped)
     }

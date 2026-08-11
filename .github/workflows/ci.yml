@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  native-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+        continue-on-error: true
+
+      - name: Build native
+        run: cargo build --verbose
+
+      - name: Run native tests
+        run: cargo test --verbose
+
+      - name: Build WASM
+        run: cargo build --target wasm32-unknown-unknown -p mixer-wasm
+
+      - name: Build WASM (wasm-pack web)
+        run: cd crates/mixer-wasm && wasm-pack build --target web --release
+
+      - name: Build WASM (wasm-pack nodejs)
+        run: cd crates/mixer-wasm && wasm-pack build --target nodejs --release
+
+      - name: Run WASM tests
+        run: cd crates/mixer-wasm && node tests/run_tests.mjs

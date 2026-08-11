@@ -3,6 +3,7 @@ const NUM_CHANNELS = 4;
 
 let audioCtx = null;
 let mixerNode = null;
+let mode = "demo"; // "demo" or "live"
 
 async function initAudio() {
     try {
@@ -28,12 +29,9 @@ async function initAudio() {
             } else if (msg.type === "error") {
                 document.getElementById("status").textContent = "Error: " + msg.msg;
                 document.getElementById("start-btn").disabled = false;
-                document.getElementById("start-btn").textContent = "Start Audio (JS fallback)";
-            } else if (msg.type === "status") {
-                const peakLDb = msg.peakL > 0 ? 20 * Math.log10(msg.peakL) : "-inf";
-                const peakRDb = msg.peakR > 0 ? 20 * Math.log10(msg.peakR) : "-inf";
-                document.getElementById("status").textContent =
-                    "[WASM] L: " + peakLDb.toFixed(1) + " dB | R: " + peakRDb.toFixed(1) + " dB";
+                document.getElementById("start-btn").textContent = "Retry";
+            } else if (msg.type === "meter") {
+                updateMeters(msg);
             }
         };
     } catch(e) {
@@ -57,6 +55,47 @@ function sendToWorklet(msg) {
     if (mixerNode) mixerNode.port.postMessage(msg);
 }
 
+function updateMeters(msg) {
+    const formatDb = (db) => db === -Infinity || db < -60 ? "-∞" : db.toFixed(1);
+    const peakL = msg.peakL, peakR = msg.peakR;
+    const rmsL = msg.rmsL, rmsR = msg.rmsR;
+
+    // Update meter bars (scale -60 to 0 dB → 0% to 100%)
+    const pct = (db) => Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
+    const lBar = document.getElementById("meter-l");
+    const rBar = document.getElementById("meter-r");
+    if (lBar) lBar.style.width = pct(peakL) + "%";
+    if (rBar) rBar.style.width = pct(peakR) + "%";
+
+    // Update text
+    const meterText = document.getElementById("meter-text");
+    if (meterText) {
+        meterText.textContent = `L: ${formatDb(rmsL)} / ${formatDb(peakL)} dB  |  R: ${formatDb(rmsR)} / ${formatDb(peakR)} dB`;
+    }
+
+    // Clip indicator
+    if (msg.clip) {
+        const clipEl = document.getElementById("clip-indicator");
+        if (clipEl) clipEl.classList.add("active");
+    }
+}
+
+// ── WebSRT Integration ──────────────────────────────────────────
+// When in live mode, the WebSRT worker posts {type:'pcm'} messages.
+// We relay them to the mixer worklet here.
+// In a full integration, this would come from WebSRT's worker via
+// window.postMessage or a shared MessagePort.
+function relayPcmData(pid, samples, channelCount) {
+    sendToWorklet({ type: "pcm", pid: pid, samples: samples });
+}
+
+// Handle PID map updates from WebSRT (PMT events)
+function handlePidMap(streams) {
+    for (const s of streams) {
+        sendToWorklet({ type: "map-pid", pid: s.pid, chStart: s.chStart, channelCount: s.channelCount });
+    }
+}
+
 function setupUI() {
     document.getElementById("start-btn").addEventListener("click", async () => {
         if (audioCtx && audioCtx.state === "suspended") await audioCtx.resume();
@@ -73,9 +112,12 @@ function setupUI() {
             document.getElementById("start-btn").disabled = false;
             document.getElementById("start-btn").textContent = "Resume";
             stopBtn.disabled = true;
+            const clipEl = document.getElementById("clip-indicator");
+            if (clipEl) clipEl.classList.remove("active");
         });
     }
 
+    // Channel controls
     for (let ch = 0; ch < NUM_CHANNELS; ch++) {
         const gainEl = document.getElementById("ch" + ch + "-gain");
         const panEl = document.getElementById("ch" + ch + "-pan");
@@ -83,11 +125,13 @@ function setupUI() {
 
         if (gainEl) gainEl.addEventListener("input", () => {
             sendToWorklet({ type: "set-gain", ch, gain: parseFloat(gainEl.value) });
-            document.getElementById("ch" + ch + "-gain-val").textContent = parseFloat(gainEl.value).toFixed(2);
+            const valEl = document.getElementById("ch" + ch + "-gain-val");
+            if (valEl) valEl.textContent = parseFloat(gainEl.value).toFixed(2);
         });
         if (panEl) panEl.addEventListener("input", () => {
             sendToWorklet({ type: "set-pan", ch, pan: parseFloat(panEl.value) });
-            document.getElementById("ch" + ch + "-pan-val").textContent = parseFloat(panEl.value).toFixed(2);
+            const valEl = document.getElementById("ch" + ch + "-pan-val");
+            if (valEl) valEl.textContent = parseFloat(panEl.value).toFixed(2);
         });
         if (muteEl) muteEl.addEventListener("click", () => {
             const muted = muteEl.classList.toggle("active");

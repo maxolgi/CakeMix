@@ -44,3 +44,16 @@ serve: build-web
 # Same but with HTTPS (auto-generates self-signed cert)
 serve-tls: build-web
 	cargo run -p cakemix-server -- --port 8200
+
+
+# Full CI check (matches .github/workflows/ci.yml)
+ci: test-native test-wasm build-web
+	@echo "✓ All CI checks pass"
+
+# Clippy lints
+clippy:
+	cargo clippy --all-targets -- -D warnings
+
+# Format check
+fmt-check:
+	cargo fmt --all -- --check

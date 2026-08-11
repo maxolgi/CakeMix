@@ -186,3 +186,59 @@ header p {
     background: #0a4d2e;
     color: #4f9;
 }
+
+
+/* Meters */
+.meter-section {
+    margin: 12px 0;
+    padding: 8px 12px;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 6px;
+}
+.meter-bar-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+.meter-label {
+    font-size: 12px;
+    font-weight: bold;
+    width: 16px;
+    color: #888;
+}
+.meter-track {
+    flex: 1;
+    height: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.meter-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #2ecc71 0%, #2ecc71 60%, #f1c40f 80%, #e74c3c 95%);
+    transition: width 0.05s linear;
+    border-radius: 4px;
+}
+.meter-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    color: #666;
+    margin-top: 4px;
+}
+.clip {
+    color: #555;
+    font-weight: bold;
+    font-size: 10px;
+    padding: 1px 6px;
+    border: 1px solid #333;
+    border-radius: 3px;
+}
+.clip.active {
+    color: #e74c3c;
+    border-color: #e74c3c;
+    background: rgba(231, 76, 60, 0.15);
+}
