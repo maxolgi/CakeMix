@@ -57,3 +57,13 @@ clippy:
 # Format check
 fmt-check:
 	cargo fmt --all -- --check
+
+
+# Build SolidJS frontend → web/ (one-time, no runtime dependency)
+build-ui:
+	cd frontend && npx vite build
+
+# Full rebuild: WASM + worklet + UI
+build-all: build-web
+	cd frontend && npx vite build
+	node build/build-worklet.js
