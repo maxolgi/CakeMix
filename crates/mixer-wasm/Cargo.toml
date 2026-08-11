@@ -1,0 +1,21 @@
+[package]
+name = "mixer-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "WASM bindings for the oximedia-mixer audio engine"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+oximedia-core.workspace = true
+oximedia-audio.workspace = true
+oximedia-mixer.workspace = true
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+console_error_panic_hook.workspace = true
+
+[dev-dependencies]
+wasm-bindgen-test = "0.2"

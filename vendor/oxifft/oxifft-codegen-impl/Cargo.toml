@@ -1,0 +1,39 @@
+[package]
+name = "oxifft-codegen-impl"
+description = "Internal codelet generation logic for OxiFFT (not a proc-macro; used by oxifft-codegen and benchmarks)"
+version = "0.3.2"
+edition = "2021"
+authors = ["COOLJAPAN OU (Team KitaSan)"]
+license = "Apache-2.0"
+repository = "https://github.com/cool-japan/oxifft"
+homepage = "https://github.com/cool-japan/oxifft"
+documentation = "https://docs.rs/oxifft-codegen-impl"
+readme = "README.md"
+rust-version = "1.75"
+keywords = ["fft", "codegen", "proc-macro", "simd"]
+categories = ["development-tools::procedural-macro-helpers"]
+exclude = [
+    "benches/",
+    "tests/",
+    "fuzz/",
+    ".github/",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "TODO.md",
+]
+
+[lib]
+name = "oxifft_codegen_impl"
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "parsing"] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
