@@ -69,7 +69,7 @@ All verified with known-answer honesty tests (per AGENTS.md honesty rule):
 | Mixer (gain/pan/sum) | ✅ | 9 native + 5 WASM | ✅ |
 | ParametricEq | ✅ (RBJ biquads) | 5 honesty + 3 integration | ✅ |
 | Compressor | ✅ | 16 honesty + 3 integration | ✅ |
-| Expander | ✅ | (in honesty suite) | ✅ |
+| Expander | ✅ | (in honesty suite) | ⚠️ adapter tested, not yet wired |
 | Gate | ✅ | (in honesty suite) | ✅ |
 | OversampledLimiter | ✅ | 3 | ✅ (in `process()`) |
 

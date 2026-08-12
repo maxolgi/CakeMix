@@ -38,11 +38,11 @@ clean:
 	rm -rf $(CRATE_DIR)/pkg
 
 # Build WASM pkg + start the server (http://localhost:8200)
-serve: build-web
+serve: build-web build-ui
 	cargo run -p cakemix-server -- --no-tls --port 8200
 
 # Same but with HTTPS (auto-generates self-signed cert)
-serve-tls: build-web
+serve-tls: build-web build-ui
 	cargo run -p cakemix-server -- --port 8200
 
 
