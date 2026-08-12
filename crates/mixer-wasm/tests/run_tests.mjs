@@ -28,6 +28,8 @@ function assert(cond, msg) {
 try {
     const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 4);
     mixer.set_limiter_enabled(false);
+    mixer.set_eq_bypass(0, true);
+    mixer.set_eq_bypass(1, true);
     const sineA = sineWave(220, 0.5, BLOCK_SIZE);
     const sineB = sineWave(330, 0.5, BLOCK_SIZE);
 
@@ -58,6 +60,8 @@ try {
 try {
     const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 2);
     mixer.set_limiter_enabled(false);
+    mixer.set_eq_bypass(0, true);
+    mixer.set_eq_bypass(1, true);
     const sine = sineWave(440, 1.0, BLOCK_SIZE);
     mixer.set_channel_input(0, sine);
     const output = mixer.process(BLOCK_SIZE);
@@ -76,6 +80,8 @@ try {
 try {
     const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 4);
     mixer.set_limiter_enabled(false);
+    mixer.set_eq_bypass(0, true);
+    mixer.set_eq_bypass(1, true);
     const sineA = sineWave(220, 0.5, BLOCK_SIZE);
     const zeros = new Float32Array(BLOCK_SIZE);
 
@@ -103,6 +109,8 @@ try {
 try {
     const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 2);
     mixer.set_limiter_enabled(false);
+    mixer.set_eq_bypass(0, true);
+    mixer.set_eq_bypass(1, true);
     const sine = sineWave(440, 0.5, BLOCK_SIZE);
     mixer.set_channel_input(0, sine);
     mixer.set_channel_mute(0, true);
@@ -122,6 +130,8 @@ try {
 try {
     const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 2);
     mixer.set_limiter_enabled(false);
+    mixer.set_eq_bypass(0, true);
+    mixer.set_eq_bypass(1, true);
     const sine = sineWave(440, 1.0, BLOCK_SIZE);
     mixer.set_channel_input(0, sine);
 
@@ -161,6 +171,8 @@ function stereoInterleave(leftBuf, rightBuf) {
 try {
     const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 4);
     mixer.set_limiter_enabled(false);
+    mixer.set_eq_bypass(0, true);
+    mixer.set_eq_bypass(1, true);
     const sineL = sineWave(220, 0.5, BLOCK_SIZE);
     const sineR = sineWave(330, 0.5, BLOCK_SIZE);
     const interleaved = stereoInterleave(sineL, sineR);
@@ -189,6 +201,8 @@ try {
 try {
     const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 4);
     mixer.set_limiter_enabled(false);
+    mixer.set_eq_bypass(0, true);
+    mixer.set_eq_bypass(1, true);
     const sine = sineWave(440, 1.0, BLOCK_SIZE);
     const stereoData = stereoInterleave(sine, sine);
 
@@ -214,6 +228,8 @@ try {
 try {
     const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 4);
     mixer.set_limiter_enabled(false);
+    mixer.set_eq_bypass(0, true);
+    mixer.set_eq_bypass(1, true);
     const sine = sineWave(440, 1.0, BLOCK_SIZE);
     const stereoData = stereoInterleave(sine, sine);
 
@@ -253,6 +269,8 @@ try {
 try {
     const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 4);
     mixer.set_limiter_enabled(false);
+    mixer.set_eq_bypass(0, true);
+    mixer.set_eq_bypass(1, true);
     const sine = sineWave(440, 1.0, BLOCK_SIZE);
     const stereoData = stereoInterleave(sine, sine);
 
@@ -295,6 +313,8 @@ try {
 try {
     const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 8);
     mixer.set_limiter_enabled(false);
+    mixer.set_eq_bypass(0, true);
+    mixer.set_eq_bypass(1, true);
     const input = sineWave(1000, 0.8, BLOCK_SIZE);
     mixer.set_channel_gain(0, 1.0);
     mixer.set_channel_input(0, input);

@@ -68,8 +68,9 @@ pub struct MixerWasm {
     user_muted: HashSet<u32>,
     eq_chains: HashMap<u32, EqEffect>,
     dynamics_chains: HashMap<u32, ChannelDynamics>,
-    // ── Master limiter ──
-    limiter: OversampledLimiter,
+    // ── Master limiter (stereo: independent L/R) ──
+    limiter_l: OversampledLimiter,
+    limiter_r: OversampledLimiter,
     limiter_enabled: bool,
     // ── Counters ──
     unmapped_pid_drops: u64,
@@ -115,7 +116,8 @@ impl MixerWasm {
             user_muted: HashSet::new(),
             eq_chains: HashMap::new(),
             dynamics_chains: HashMap::new(),
-            limiter: OversampledLimiter::new(-0.3, 50.0, 4, sample_rate as f32),
+            limiter_l: OversampledLimiter::new(-0.3, 50.0, 4, sample_rate as f32),
+            limiter_r: OversampledLimiter::new(-0.3, 50.0, 4, sample_rate as f32),
             limiter_enabled: true,
             unmapped_pid_drops: 0,
             sample_rate,
@@ -296,6 +298,7 @@ impl MixerWasm {
         Ok(())
     }
     pub fn set_eq_bypass(&mut self, ch: u32, bypassed: bool) -> Result<(), JsValue> {
+        self.ensure_channel(ch)?;
         if let Some(eq) = self.eq_chains.get_mut(&ch) { eq.set_bypassed(bypassed); }
         Ok(())
     }
@@ -323,7 +326,7 @@ impl MixerWasm {
     // ── Master limiter ─────────────────────────────────
 
     pub fn set_limiter_enabled(&mut self, enabled: bool) { self.limiter_enabled = enabled; }
-    pub fn limiter_gain_reduction_db(&self) -> f32 { self.limiter.gain_reduction_db() }
+    pub fn limiter_gain_reduction_db(&self) -> f32 { self.limiter_l.gain_reduction_db() }
 
     // ── Processing ─────────────────────────────────────
 
@@ -371,11 +374,10 @@ impl MixerWasm {
                 d.process(&mut self.eq_scratch[..bs]);
             }
 
-            // EQ (skip if all bands at 0 dB — pure passthrough)
+            // EQ (always process unless explicitly bypassed — HPF/LP bands
+            // are active even at 0 dB gain)
             if let Some(eq) = self.eq_chains.get_mut(&ch_idx) {
-                let any_active = eq.inner().bands.iter()
-                    .any(|b| b.gain_db.abs() > 0.01);
-                if any_active && !eq.is_bypassed() {
+                if !eq.is_bypassed() {
                     eq.process(&mut self.eq_scratch[..bs]);
                 }
             }
@@ -393,8 +395,8 @@ impl MixerWasm {
         // ── Master limiter (brick-wall) ──
         if self.limiter_enabled {
             for i in 0..bs {
-                self.master_left[i] = self.limiter.process_sample(self.master_left[i]);
-                self.master_right[i] = self.limiter.process_sample(self.master_right[i]);
+                self.master_left[i] = self.limiter_l.process_sample(self.master_left[i]);
+                self.master_right[i] = self.limiter_r.process_sample(self.master_right[i]);
             }
         }
 
