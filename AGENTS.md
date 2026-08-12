@@ -107,13 +107,17 @@ known-answer DSP test that runs under `wasm-bindgen-test` in node, plus
 `cargo check` on the wasm target). Every milestone ships with a test that
 proves the milestone's claim.
 
-### Frontend conventions (when the `web/` layer exists)
+### Frontend conventions
 
-- ES6 modules, relative paths, `.ts` for new files, `.js` extension in
-  import specifiers even in `.ts` (Bundler resolution). No framework.
-- All CSS in files, no inline styles. Reuse SlopShady's UI patterns as a
-  style reference (`.slider`, `.knob-group`, `.panel-section`, etc.) since
-  the visual language should feel familiar — but do not couple the repos.
+- **SolidJS** with TypeScript, built via Vite to static `web/` assets.
+  Source lives in `frontend/`, Vite builds to `web/assets/`. The Rust
+  server (rust-embed) serves the built output — no Vite at runtime.
+  Build: `cd frontend && npx vite build` or `make build-ui`.
+- All CSS in `frontend/src/global.css`, no inline styles.
+- Canvas-based meters via `requestAnimationFrame` — never update DOM
+  elements at 60fps for meter bars. See `MeterCanvas.tsx`.
+- EQ frequency response curves rendered via Canvas (biquad coefficient
+  math ported from Eyevinn audio-mixer, AGPL-compatible).
 - Every interactive element gets a tooltip.
 
 ### Commit posture

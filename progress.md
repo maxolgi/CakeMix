@@ -69,10 +69,10 @@ All verified with known-answer honesty tests per the AGENTS.md honesty rule.
 |--------|-----------|-------|-------------------|
 | Mixer (gain/pan/sum) | ✅ | 9 native + 9 WASM | ✅ |
 | ParametricEq (RBJ biquads) | ✅ | 5 honesty + 3 integration | ✅ via `EqEffect` adapter |
-| Compressor | ✅ | 16 honesty + 3 integration | ✅ via `CompressorEffect` adapter |
-| Expander | ✅ | (in honesty suite) | ✅ via `ExpanderEffect` adapter |
-| Gate | ✅ | (in honesty suite) | ✅ via `GateEffect` adapter |
-| OversampledLimiter | ✅ | 3 tests | ✅ in `process()` when `limiter_enabled` |
+| Compressor | ✅ | 16 honesty + 3 integration | ✅ via `enable_compressor()`, wired in `process()` |
+| Expander | ✅ | (in honesty suite) | ⚠️ adapter tested, not yet wired (`enable_expander` TBD) |
+| Gate | ✅ | (in honesty suite) | ✅ via `enable_gate()`, wired in `process()` |
+| OversampledLimiter | ✅ | 3 tests | ✅ on master bus in `process()` (always on) |
 | Metering (peak/RMS/clip) | ✅ | 5 tests | ✅ in MixerWasm binding |
 
 **Bugs found and fixed in the engine:**
@@ -192,8 +192,9 @@ AudioWorkletGlobalScope are in place (TextDecoder/TextEncoder,
 crypto.getRandomValues, inlined glue with no dynamic import).
 
 ### M4 improvements: DONE ✅
-- **Allocation-free process()**: master_left/right/stereo_out/deinterleave
-  buffers pre-allocated and reused. Only one unavoidable alloc (JS FFI copy).
+- **Allocation-light process()**: master_left/right/stereo_out/eq_scratch
+  buffers pre-allocated. One unavoidable JS FFI copy per block. Engine's
+  `process_mix` still allocates 2 Vecs/channel internally (known, documented).
 - **6-band EQ preset**: Fairlight-matching (HPF/Low/Lo-Mid/Mid/Hi-Mid/High).
   Added to EqEffect + 4 honesty tests.
 - **Metering UI**: Worklet reports peak/RMS/clip every 10 blocks. Main

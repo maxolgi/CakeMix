@@ -47,32 +47,14 @@ try {
 /**
  * WASM binding for the oximedia-mixer audio engine.
  *
- * Construction: `new(sample_rate, block_size, max_channels)`.
- *
- * # PCM transport contract
- *
- * Audio arrives from the WebSRT demuxer as **Float32 interleaved** per PID
- * (i32→f32 conversion done in the demuxer, not JS). 48 kHz is fixed.
- * PTS comes from PES PTS (s302m, ffmpeg-populated).
- *
- * Two input modes:
- * - `set_channel_input(ch, data)` — mono planar Float32 (one channel).
- * - `set_channel_input_interleaved(ch_start, data, num_channels)` —
- *   interleaved stereo/multichannel, de-interleaved into consecutive
- *   mixer channels starting at `ch_start`.
- *
- * PID mapping:
- * - `map_pid(pid, ch_start, channel_count)` — route a TS PID to mixer channels.
- * - `unmap_pid(pid)` — remove mapping (idempotent, for mid-stream reconfig).
- *
- * Process via `process(block_size)` → interleaved stereo Float32Array.
- *
- * # Per-channel input architecture
- *
- * The engine's `process()` feeds the SAME input to every channel.
- * We resolve this at the binding layer by calling `engine.process_mix()`
- * once per active channel with that channel's own input, then summing
- * the master outputs.
+ * # DSP chain per channel (all wired, all real):
+ * 1. Input gain + phase inversion (engine)
+ * 2. Gate (if enabled)
+ * 3. Compressor (if enabled)
+ * 4. Parametric EQ (6-band, always present, bypassable)
+ * 5. Fader gain × VCA (engine)
+ * 6. Pan (engine)
+ * → summed to master bus → OversampledLimiter → output
  */
 class MixerWasm {
     __destroy_into_raw() {
@@ -86,6 +68,37 @@ class MixerWasm {
         wasm.__wbg_mixerwasm_free(ptr, 0);
     }
     /**
+     * @param {number} ch
+     */
+    disable_compressor(ch) {
+        wasm.mixerwasm_disable_compressor(this.__wbg_ptr, ch);
+    }
+    /**
+     * @param {number} ch
+     */
+    disable_gate(ch) {
+        wasm.mixerwasm_disable_gate(this.__wbg_ptr, ch);
+    }
+    /**
+     * Enable compressor on a channel with broadcast defaults (-12 dB threshold, 3:1 ratio).
+     * @param {number} ch
+     */
+    enable_compressor(ch) {
+        const ret = wasm.mixerwasm_enable_compressor(this.__wbg_ptr, ch);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} ch
+     */
+    enable_gate(ch) {
+        const ret = wasm.mixerwasm_enable_gate(this.__wbg_ptr, ch);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {number} pid
      * @param {Float32Array} data
      */
@@ -94,6 +107,13 @@ class MixerWasm {
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
+    }
+    /**
+     * @returns {number}
+     */
+    limiter_gain_reduction_db() {
+        const ret = wasm.mixerwasm_limiter_gain_reduction_db(this.__wbg_ptr);
+        return ret;
     }
     /**
      * @param {number} pid
@@ -172,11 +192,11 @@ class MixerWasm {
         return ret >>> 0;
     }
     /**
-     * @param {number} _block_size
+     * @param {number} block_size
      * @returns {Float32Array}
      */
-    process(_block_size) {
-        const ret = wasm.mixerwasm_process(this.__wbg_ptr, _block_size);
+    process(block_size) {
+        const ret = wasm.mixerwasm_process(this.__wbg_ptr, block_size);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -234,7 +254,6 @@ class MixerWasm {
         }
     }
     /**
-     * Solo a channel (mutes all others).
      * @param {number} ch
      * @param {boolean} soloed
      */
@@ -245,7 +264,6 @@ class MixerWasm {
         }
     }
     /**
-     * Set EQ band frequency (Hz) for a channel.
      * @param {number} ch
      * @param {number} band
      * @param {number} freq_hz
@@ -257,8 +275,6 @@ class MixerWasm {
         }
     }
     /**
-     * Set EQ band gain (dB) for a channel's 6-band EQ.
-     * Band 0=HPF, 1=Low, 2=Lo-Mid, 3=Mid, 4=Hi-Mid, 5=High.
      * @param {number} ch
      * @param {number} band
      * @param {number} gain_db
@@ -270,7 +286,6 @@ class MixerWasm {
         }
     }
     /**
-     * Set EQ band Q for a channel.
      * @param {number} ch
      * @param {number} band
      * @param {number} q
@@ -282,7 +297,6 @@ class MixerWasm {
         }
     }
     /**
-     * Bypass/unbypass EQ for a channel.
      * @param {number} ch
      * @param {boolean} bypassed
      */
@@ -291,6 +305,12 @@ class MixerWasm {
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
+    }
+    /**
+     * @param {boolean} enabled
+     */
+    set_limiter_enabled(enabled) {
+        wasm.mixerwasm_set_limiter_enabled(this.__wbg_ptr, enabled);
     }
     /**
      * @param {number} pid
@@ -303,6 +323,14 @@ class MixerWasm {
      */
     unmap_pid(pid) {
         wasm.mixerwasm_unmap_pid(this.__wbg_ptr, pid);
+    }
+    /**
+     * Count of PCM packets dropped due to unmapped PID (for diagnostics).
+     * @returns {bigint}
+     */
+    unmapped_pid_count() {
+        const ret = wasm.mixerwasm_unmapped_pid_count(this.__wbg_ptr);
+        return BigInt.asUintN(64, ret);
     }
     /**
      * @param {number} pid

@@ -27,7 +27,9 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
-        continue-on-error: true
+
+      - name: Clippy lints
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Build native
         run: cargo build --verbose
