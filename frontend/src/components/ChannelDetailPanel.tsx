@@ -8,7 +8,7 @@ import {
   setExpanderEnabled, setExpanderThreshold, setExpanderRatio, setExpanderAttack, setExpanderRelease,
   setAuxSend,
   routeToBus, routeToMaster,
-  busChannels,
+  busChannels, setBusSource, clearBusSource, NUM_CHANNELS,
   faderToGain, gainToFader, formatGainDb,
   setChannels, sendToWorklet,
 } from "../stores/mixer";
@@ -35,7 +35,7 @@ const fmtRatio = (v: number) => (v >= 20 ? "20:1" : v.toFixed(1) + ":1");
 const fmtHz = (v: number) => (v >= 1000 ? (v / 1000).toFixed(1) + "k" : v.toFixed(0));
 const fmtMs = (v: number) => (v < 1 ? v.toFixed(2) : v < 10 ? v.toFixed(1) : v.toFixed(0));
 
-export function ChannelDetailPanel(props: { channelIndex: number }) {
+export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: number; slot: number } }) {
   const idx = props.channelIndex;
   const ch = () => channels[idx];
 
@@ -90,11 +90,31 @@ export function ChannelDetailPanel(props: { channelIndex: number }) {
         <input
           class="detail-name-input"
           type="text"
-          value={ch().name}
+          value={props.slot && ch().name.startsWith("ch") ? `B${props.slot.bus + 1}-S${props.slot.slot + 1}` : ch().name}
           onInput={(e) => setChannelName(idx, e.currentTarget.value)}
           title="Channel name"
         />
       </div>
+
+      {props.slot && (
+        <div class="slot-source-row">
+          <select
+            class="slot-source-select"
+            value={busChannels[props.slot.bus].sources[props.slot.slot] ?? ""}
+            onInput={(e) => {
+              const v = e.currentTarget.value;
+              if (v === "") clearBusSource(props.slot!.bus, props.slot!.slot);
+              else setBusSource(props.slot!.bus, props.slot!.slot, parseInt(v));
+            }}
+            title="Input source for this slot"
+          >
+            <option value="">—</option>
+            {Array.from({ length: NUM_CHANNELS }, (_, ch) => (
+              <option value={ch}>{channels[ch]?.name || `ch${ch + 1}`}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {/* ── INPUT / DYNAMICS (collapsible) ─────────────── */}
       <div class="detail-section">
@@ -262,6 +282,7 @@ export function ChannelDetailPanel(props: { channelIndex: number }) {
       </div>
 
       {/* ── SENDS (4 aux) ──────────────────────────────── */}
+      {!props.slot && (
       <div class="detail-section">
         <div class="detail-section-divider collapsible" onClick={() => toggle("SENDS")}>
           <span class="detail-section-label">SENDS</span>
@@ -312,6 +333,7 @@ export function ChannelDetailPanel(props: { channelIndex: number }) {
         </>
         )}
       </div>
+      )}
 
       {/* ── PAN + ROUTING ──────────────────────────────── */}
       <div class="detail-section">

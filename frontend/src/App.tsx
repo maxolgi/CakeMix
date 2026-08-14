@@ -1,12 +1,13 @@
 import { onMount, onCleanup, createSignal, For } from "solid-js";
 import { ChannelDetailPanel } from "./components/ChannelDetailPanel";
 import { MasterStrip } from "./components/MasterStrip";
+import { BusMasterStrip } from "./components/BusMasterStrip";
 import { BusManager } from "./components/BusManager";
 import {
   updateMeterData,
   wasmReady, setWasmReady, isRunning, setIsRunning,
   status, setStatus, setMixerNode, sendToWorklet,
-  selectedBus, setSelectedBus,
+  selectedBus, setSelectedBus, slotChannelIndex,
 } from "./stores/mixer";
 
 const SAMPLE_RATE = 48000;
@@ -66,9 +67,21 @@ export default function App() {
         onSelectBus={setSelectedBus}
       />
       <div class="mixer-console">
-        <For each={Array.from({ length: STRIPS_PER_BANK }, (_, i) => bank() * STRIPS_PER_BANK + i)}>
-          {(chIdx) => <ChannelDetailPanel channelIndex={chIdx} />}
-        </For>
+        {selectedBus() === null ? (
+          <For each={Array.from({ length: STRIPS_PER_BANK }, (_, i) => bank() * STRIPS_PER_BANK + i)}>
+            {(chIdx) => <ChannelDetailPanel channelIndex={chIdx} />}
+          </For>
+        ) : (
+          <For each={Array.from({ length: 16 }, (_, s) => s)}>
+            {(s) => (
+              <ChannelDetailPanel
+                channelIndex={slotChannelIndex(selectedBus()!, s)}
+                slot={{ bus: selectedBus()!, slot: s }}
+              />
+            )}
+          </For>
+        )}
+        {selectedBus() !== null && <BusMasterStrip bus={selectedBus()!} />}
         <MasterStrip />
       </div>
     </div>
