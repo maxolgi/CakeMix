@@ -329,23 +329,22 @@ export function ChannelDetailPanel(props: { channelIndex: number }) {
           />
         </div>
         <div class="detail-routing-row">
-          <label class="detail-select-label">ROUTE
-            <select
-              class="detail-select detail-routing-select"
-              value={ch().outputBus === "master" ? "master" : `bus-${ch().outputBus}`}
-              onInput={(e) => {
-                const val = e.currentTarget.value;
-                if (val === "master") routeToMaster(idx);
-                else routeToBus(idx, parseInt(val.replace("bus-", "")));
-              }}
-              title="Channel output routing — master or bus"
-            >
-              <option value="master">→ MASTER</option>
-              {buses().map((bus) => (
-                <option value={`bus-${bus.id}`}>→ {bus.name}</option>
-              ))}
-            </select>
-          </label>
+          <div class="detail-select-label">ROUTE</div>
+          <select
+            class="detail-select detail-routing-select"
+            value={ch().outputBus === "master" ? "master" : `bus-${ch().outputBus}`}
+            onInput={(e) => {
+              const val = e.currentTarget.value;
+              if (val === "master") routeToMaster(idx);
+              else routeToBus(idx, parseInt(val.replace("bus-", "")));
+            }}
+            title="Channel output routing — master or bus"
+          >
+            <option value="master">→ MASTER</option>
+            {buses().map((bus) => (
+              <option value={`bus-${bus.id}`}>→ {bus.name}</option>
+            ))}
+          </select>
         </div>
       </div>
 
