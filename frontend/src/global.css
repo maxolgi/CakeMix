@@ -275,20 +275,12 @@ body {
 .send-bus-select { background: #11111a; border: 1px solid #222230; border-radius: 3px; color: #ccc; font-size: 10px; padding: 2px 4px; flex: 1; min-width: 0; }
 .send-pre-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
-/* ── Pan + Routing ───────────────────── */
+/* ── Pan ─────────────────────────────── */
 .detail-pan-row { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 0; }
 .detail-pan-row .pan-slider { flex: 1; min-width: 0; }
-.detail-routing-row {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-    padding: 2px 0;
-}
 .detail-select {
     background: #11111a; border: 1px solid #222230; border-radius: 3px; color: #ccc; font-size: 0.85em; padding: 2px 4px; outline: none;
 }
-.detail-routing-select { width: 100%; max-width: 120px; }
 
 /* ── Output (meter + fader) ──────────── */
 .detail-output { margin-top: auto; padding-top: 8px; }

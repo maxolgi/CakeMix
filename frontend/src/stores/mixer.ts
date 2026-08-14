@@ -161,9 +161,6 @@ export function setAuxSend(ch: number, sendIdx: number, levelDb: number, preFade
   setChannels(ch, "sends", sendIdx, { levelDb, preFader, busId });
   if (busId !== null) sendToWorklet({ type: "set-aux-send", ch, sendIdx, busId, level: Math.pow(10, levelDb / 20), preFader });
 }
-export function routeToBus(ch: number, busId: number) { setChannels(ch, "outputBus", busId); sendToWorklet({ type: "route-to-bus", ch, busId }); }
-export function routeToMaster(ch: number) { setChannels(ch, "outputBus", "master"); sendToWorklet({ type: "route-to-master", ch }); }
-
 export function setMasterGain(gain: number) { setMasterGainState(gain); sendToWorklet({ type: "set-master-gain", gain }); }
 export function setLimiterEnabled(enabled: boolean) { setLimiterEnabledState(enabled); sendToWorklet({ type: "set-limiter", enabled }); }
 export function setLimiterCeiling(ceilingDb: number) { setLimiterCeilingState(ceilingDb); sendToWorklet({ type: "set-limiter-ceiling", ceilingDb }); }

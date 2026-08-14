@@ -521,19 +521,6 @@ impl MixerWasm {
         Ok(js_id)
     }
 
-    pub fn route_channel_to_bus(&mut self, ch: u32, bus_id: u32) -> Result<(), JsValue> {
-        let id = self.ensure_channel(ch)?;
-        let Some(&bid) = self.bus_map.get(&bus_id) else {
-            return Err(JsValue::from_str("unknown bus"));
-        };
-        self.engine.route_channel_to_bus(id, bid).map_err(|e| JsValue::from_str(&format!("{e:?}")))
-    }
-
-    pub fn route_channel_to_master(&mut self, ch: u32) -> Result<(), JsValue> {
-        let id = self.ensure_channel(ch)?;
-        self.engine.route_channel_to_master(id).map_err(|e| JsValue::from_str(&format!("{e:?}")))
-    }
-
     pub fn set_aux_send(&mut self, ch: u32, _send_idx: u32, bus_id: u32, level: f32, pre_fader: bool) -> Result<(), JsValue> {
         let id = self.ensure_channel(ch)?;
         let Some(&bid) = self.bus_map.get(&bus_id) else {

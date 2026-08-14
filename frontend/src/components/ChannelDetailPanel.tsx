@@ -7,7 +7,6 @@ import {
   setGateEnabled, setGateThreshold, setGateHysteresis, setGateAttack, setGateRelease, setGateHold,
   setExpanderEnabled, setExpanderThreshold, setExpanderRatio, setExpanderAttack, setExpanderRelease,
   setAuxSend,
-  routeToBus, routeToMaster,
   busChannels, setBusSource, clearBusSource, NUM_CHANNELS,
   faderToGain, gainToFader, formatGainDb,
   setChannels, sendToWorklet,
@@ -335,7 +334,7 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
       </div>
       )}
 
-      {/* ── PAN + ROUTING ──────────────────────────────── */}
+      {/* ── PAN ───────────────────────────────────────── */}
       <div class="detail-section">
         <div class="detail-section-divider">
           <span class="detail-section-label">PAN</span>
@@ -349,24 +348,6 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
             onInput={(e) => onPan(parseFloat(e.currentTarget.value))}
             title="Pan"
           />
-        </div>
-        <div class="detail-routing-row">
-          <div class="detail-select-label">ROUTE</div>
-          <select
-            class="detail-select detail-routing-select"
-            value={ch().outputBus === "master" ? "master" : `bus-${ch().outputBus}`}
-            onInput={(e) => {
-              const val = e.currentTarget.value;
-              if (val === "master") routeToMaster(idx);
-              else routeToBus(idx, parseInt(val.replace("bus-", "")));
-            }}
-            title="Channel output routing — master or bus"
-          >
-            <option value="master">MASTER</option>
-            {busChannels.map((bus, id) => (
-              <option value={`bus-${id}`}>{bus.name}</option>
-            ))}
-          </select>
         </div>
       </div>
 
