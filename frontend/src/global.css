@@ -272,7 +272,13 @@ body {
 /* ── Pan + Routing ───────────────────── */
 .detail-pan-row { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 0; }
 .detail-pan-row .pan-slider { flex: 1; min-width: 0; }
-.detail-routing-row { display: flex; align-items: center; min-width: 0; padding: 2px 0; }
+.detail-routing-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    padding: 2px 0;
+}
 .detail-routing-select { width: 100%; max-width: 120px; }
 
 /* ── Output (meter + fader) ──────────── */
