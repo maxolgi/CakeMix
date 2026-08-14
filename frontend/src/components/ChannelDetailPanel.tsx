@@ -340,9 +340,9 @@ export function ChannelDetailPanel(props: { channelIndex: number }) {
             }}
             title="Channel output routing — master or bus"
           >
-            <option value="master">→ MASTER</option>
+            <option value="master">MASTER</option>
             {buses().map((bus) => (
-              <option value={`bus-${bus.id}`}>→ {bus.name}</option>
+              <option value={`bus-${bus.id}`}>{bus.name}</option>
             ))}
           </select>
         </div>
