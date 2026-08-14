@@ -16,6 +16,9 @@ glue = glue.replace(/^\{\s*\w+\s+as\s+\w+\s*\};?\s*$/gm, '');
 glue = glue.replace(/^export\s*\{[\s\S]*?\};?\s*$/gm, '');
 glue = glue.replace(/module_or_path\s*=\s*new URL\([^)]+\);/m,
     "module_or_path = undefined; // stripped for worklet");
+glue = glue.replace(/^exports\.\w+\s*=\s*\w+;?\s*$/gm, '');
+glue = glue.replace(/^module\.exports\s*=\s*\{[\s\S]*?\};?\s*$/gm, '');
+glue = glue.replace(/^const\s+\w+\s*=\s*require\([^)]+\);?\s*$/gm, '');
 
 const polyfill = fs.readFileSync(path.join(webDir, 'text-encoder-decoder-polyfill.js'), 'utf-8');
 const processor = fs.readFileSync(path.join(webDir, 'worklet-template.js'), 'utf-8');

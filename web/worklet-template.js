@@ -31,8 +31,8 @@ class MixerProcessor extends AudioWorkletProcessor {
             if (msg.type === "init-wasm") {
                 try {
                     var module = msg.wasmBytes ? new WebAssembly.Module(msg.wasmBytes) : msg.module;
-                    initSync(module);
-                    this._mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 32);
+                    initSync({ module: module });
+                    this._mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 128);
                     this.port.postMessage({ type: "wasm-ready" });
                 } catch(err) {
                     this.port.postMessage({ type: "error", msg: String(err) });
@@ -63,6 +63,50 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (this._mixer) try { this._mixer.map_pid(msg.pid, msg.chStart, msg.channelCount); } catch(e) {}
             } else if (msg.type === "unmap-pid") {
                 if (this._mixer) try { this._mixer.unmap_pid(msg.pid); } catch(e) {}
+            } else if (msg.type === "set-input-gain") {
+                if (this._mixer) try { this._mixer.set_channel_input_gain(msg.ch, msg.gainDb); } catch(e) {}
+            } else if (msg.type === "set-phase") {
+                if (this._mixer) try { this._mixer.set_channel_phase(msg.ch, msg.inverted); } catch(e) {}
+            } else if (msg.type === "set-pan-law") {
+                if (this._mixer) try { this._mixer.set_channel_pan_law(msg.ch, msg.law); } catch(e) {}
+            } else if (msg.type === "set-name") {
+                if (this._mixer) try { this._mixer.set_channel_name(msg.ch, msg.name); } catch(e) {}
+            } else if (msg.type === "enable-compressor") {
+                if (this._mixer) try { this._mixer.enable_compressor(msg.ch); } catch(e) {}
+            } else if (msg.type === "disable-compressor") {
+                if (this._mixer) try { this._mixer.disable_compressor(msg.ch); } catch(e) {}
+            } else if (msg.type === "set-comp-param") {
+                if (this._mixer) try { this._mixer.set_comp_param(msg.ch, msg.param, msg.value); } catch(e) {}
+            } else if (msg.type === "enable-gate") {
+                if (this._mixer) try { this._mixer.enable_gate(msg.ch); } catch(e) {}
+            } else if (msg.type === "disable-gate") {
+                if (this._mixer) try { this._mixer.disable_gate(msg.ch); } catch(e) {}
+            } else if (msg.type === "set-gate-param") {
+                if (this._mixer) try { this._mixer.set_gate_param(msg.ch, msg.param, msg.value); } catch(e) {}
+            } else if (msg.type === "enable-expander") {
+                if (this._mixer) try { this._mixer.enable_expander(msg.ch); } catch(e) {}
+            } else if (msg.type === "disable-expander") {
+                if (this._mixer) try { this._mixer.disable_expander(msg.ch); } catch(e) {}
+            } else if (msg.type === "set-exp-param") {
+                if (this._mixer) try { this._mixer.set_expander_param(msg.ch, msg.param, msg.value); } catch(e) {}
+            } else if (msg.type === "set-master-gain") {
+                if (this._mixer) try { this._mixer.set_master_gain(msg.gain); } catch(e) {}
+            } else if (msg.type === "set-limiter") {
+                if (this._mixer) try { this._mixer.set_limiter_enabled(msg.enabled); } catch(e) {}
+            } else if (msg.type === "set-limiter-ceiling") {
+                if (this._mixer) try { this._mixer.set_limiter_ceiling(msg.ceilingDb); } catch(e) {}
+            } else if (msg.type === "set-limiter-release") {
+                if (this._mixer) try { this._mixer.set_limiter_release(msg.releaseMs); } catch(e) {}
+            } else if (msg.type === "add-bus") {
+                if (this._mixer) try { var busId = this._mixer.add_bus(msg.name, msg.busType); this.port.postMessage({type:"bus-added", busId: busId}); } catch(e) {}
+            } else if (msg.type === "route-to-bus") {
+                if (this._mixer) try { this._mixer.route_channel_to_bus(msg.ch, msg.busId); } catch(e) {}
+            } else if (msg.type === "route-to-master") {
+                if (this._mixer) try { this._mixer.route_channel_to_master(msg.ch); } catch(e) {}
+            } else if (msg.type === "set-aux-send") {
+                if (this._mixer) try { this._mixer.set_aux_send(msg.ch, msg.sendIdx, msg.busId, msg.level, msg.preFader); } catch(e) {}
+            } else if (msg.type === "remove-aux-send") {
+                if (this._mixer) try { this._mixer.remove_aux_send(msg.ch, msg.sendIdx); } catch(e) {}
             } else if (msg.type === "pcm") {
                 // External PCM from WebSRT worker (relayed via main thread).
                 // msg.samples is a Float32Array, msg.pid identifies the stream.
@@ -127,6 +171,8 @@ class MixerProcessor extends AudioWorkletProcessor {
                     rmsL: this._mixer.master_rms_db_l(),
                     rmsR: this._mixer.master_rms_db_r(),
                     clip: this._mixer.master_clipping(),
+                    limiterGr: this._mixer.limiter_gain_reduction_db(),
+                    channels: JSON.parse(this._mixer.channel_meters_json()),
                 });
             } catch(e) {}
         }

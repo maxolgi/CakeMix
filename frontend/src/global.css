@@ -6,11 +6,17 @@ body {
     color: #b0b0b8;
     font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
     min-height: 100vh;
-    overflow-x: auto;
+    overflow: hidden;
     user-select: none;
 }
 
-.app { min-width: 1200px; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0a0a0f; }
+::-webkit-scrollbar-thumb { background: #2a2a35; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #3a3a45; }
+* { scrollbar-width: thin; scrollbar-color: #2a2a35 #0a0a0f; }
+
+.app { min-width: 0; }
 
 /* ── Header ──────────────────────────── */
 .header {
@@ -195,3 +201,112 @@ body {
 
 /* ── Master ──────────────────────────── */
 .master-label { font-size: 0.55em; font-weight: 700; color: #999; text-align: center; padding: 2px 0; }
+
+/* ── Mixer Console ───────────────────── */
+.mixer-console {
+    display: flex; align-items: flex-start; gap: 2px;
+    padding: 4px 2px; overflow-x: auto; height: calc(100vh - 40px);
+}
+
+/* ── Detail Panel ────────────────────── */
+.detail-panel {
+    background: #0e0e14; border-left: 1px solid #1e1e28; padding: 8px 10px 8px;
+    display: flex; flex-direction: column; gap: 4px; font-size: 12px;
+    flex-shrink: 0; position: sticky; top: 0;
+    height: calc(100vh - 40px); overflow-y: auto; overflow-x: hidden;
+    transition: width 0.15s ease;
+}
+.detail-panel .knob-label { font-size: 9px; }
+.detail-panel .knob-value { font-size: 9px; min-height: 11px; }
+.detail-header { display: flex; align-items: center; gap: 8px; padding-bottom: 6px; margin-bottom: 2px; border-bottom: 1px solid #1e1e28; }
+.detail-name-input { flex: 1; min-width: 0; background: #11111a; border: 1px solid #222230; border-radius: 3px; color: #ccc; font-size: 0.95em; padding: 4px 6px; outline: none; font-family: 'SF Mono', monospace; }
+.detail-name-input:focus { border-color: #2a4a6a; }
+.detail-section { padding: 4px 0; border-top: 1px solid #1a1a25; }
+.detail-section:first-of-type { border-top: none; padding-top: 4px; }
+.detail-section-divider { display: flex; align-items: center; gap: 4px; padding: 2px 0; }
+.detail-section-divider::after { content: ''; flex: 1; height: 1px; background: #1a1a25; }
+.detail-section-header { display: flex; justify-content: space-between; align-items: center; padding: 2px 0; }
+.detail-section-label { font-size: 0.5em; color: #555; font-weight: 700; letter-spacing: 1px; }
+.detail-toggle { font-size: 0.45em; font-weight: 700; padding: 1px 5px; border-radius: 2px; border: 1px solid #333; background: #1a1a22; color: #555; cursor: pointer; }
+.detail-toggle.active { background: #1a3a1a; color: #4ade80; border-color: #2a5a2a; }
+.detail-toggle.bypassed { background: #2a1414; color: #f87171; border-color: #5a2a2a; }
+.detail-input-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 4px 0; }
+.phase-btn { width: 32px; height: 32px; border-radius: 4px; border: 1px solid #2a2a30; background: #16161e; color: #666; font-size: 1.1em; cursor: pointer; transition: all 0.1s; }
+.phase-btn:hover { border-color: #444; color: #aaa; }
+.phase-btn.active { background: #2a2a4a; color: #8ab4f8; border-color: #3a4a7a; box-shadow: 0 0 6px rgba(74,143,221,0.25); }
+.detail-select { background: #11111a; border: 1px solid #222230; border-radius: 3px; color: #ccc; font-size: 0.85em; padding: 2px 4px; outline: none; }
+.detail-select-label { display: flex; align-items: center; gap: 4px; font-size: 0.5em; color: #555; }
+
+/* ── Knob ────────────────────────────── */
+.knob-container { display: flex; flex-direction: column; align-items: center; gap: 1px; user-select: none; cursor: ns-resize; }
+.knob-canvas { display: block; }
+.knob-label { font-size: 0.42em; color: #666; font-weight: 600; letter-spacing: 0.5px; }
+.knob-value { font-size: 0.4em; color: #aaa; font-family: 'SF Mono', monospace; min-height: 8px; width: 48px; text-align: center; }
+
+/* ── Gain Reduction Meter ────────────── */
+.gr-meter-container { display: flex; align-items: center; gap: 4px; }
+.gr-meter-label { font-size: 11px; color: #555; font-weight: 700; min-width: 18px; }
+.gr-meter-bar-bg { position: relative; background: rgba(0,0,0,0.6); border-radius: 2px; border: 1px solid #111; overflow: hidden; }
+.gr-meter-bar-fill { height: 100%; border-radius: 2px; transition: width 0.05s linear, background-color 0.1s; }
+.gr-meter-value { font-size: 11px; color: #666; font-family: 'SF Mono', monospace; min-width: 32px; text-align: right; }
+
+/* ── Knob Row ────────────────────────── */
+.knob-row { display: flex; gap: 8px; justify-content: center; padding: 4px 0; }
+
+/* ── EQ Bands ────────────────────────── */
+.eq-bands { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; }
+.eq-band-row { display: flex; align-items: center; gap: 8px; }
+.eq-band-name { font-size: 0.5em; color: #666; min-width: 36px; }
+.eq-band-knobs { display: flex; gap: 4px; align-items: center; }
+.detail-eq-curve { width: 100%; padding: 2px; background: rgba(0,0,0,0.3); border-radius: 3px; margin: 2px 0; }
+
+/* ── Send Rows ───────────────────────── */
+.send-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.send-row.disabled { opacity: 0.45; }
+.send-num { font-size: 0.5em; color: #666; min-width: 20px; }
+.send-pre-btn { font-size: 0.45em; padding: 2px 6px; border-radius: 2px; border: 1px solid #333; background: #1a1a22; color: #666; cursor: pointer; }
+.send-pre-btn.active { background: #1a3a5a; color: #8ab4f8; border-color: #2a5a8a; }
+.send-bus-select { background: #11111a; border: 1px solid #222230; border-radius: 3px; color: #ccc; font-size: 0.45em; padding: 2px 4px; flex: 1; min-width: 0; }
+.send-pre-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* ── Pan + Routing ───────────────────── */
+.detail-pan-row { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 0; }
+.detail-pan-row .pan-slider { flex: 1; min-width: 0; }
+.detail-routing-row { display: flex; align-items: center; min-width: 0; padding: 2px 0; }
+.detail-routing-select { width: 100%; max-width: 120px; }
+
+/* ── Output (meter + fader) ──────────── */
+.detail-output { margin-top: auto; padding-top: 8px; }
+.detail-meter-fader { display: flex; align-items: flex-end; justify-content: center; position: relative; }
+.detail-meter-fader canvas { position: absolute; left: 0; bottom: 0; }
+.master-detail .detail-meter-fader canvas { position: static; }
+.fader-col { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.fader-col .fader-val { font-size: 0.95em; color: #aaa; width: 50px; text-align: center; }
+.detail-controls { display: flex; gap: 6px; justify-content: center; padding-top: 4px; }
+.detail-controls .btn-sm { width: 36px; height: 26px; font-size: 0.8em; }
+
+/* ── Collapsible sections ────────────── */
+.detail-section-divider.collapsible, .detail-section-header.collapsible { cursor: pointer; user-select: none; }
+.detail-section-divider.collapsible:hover, .detail-section-header.collapsible:hover { background: rgba(255,255,255,0.03); }
+
+/* ── Master meter readout ────────────── */
+.master-meter-readout { display: flex; justify-content: center; gap: 6px; font-size: 13px; font-family: 'SF Mono', monospace; color: #888; padding-bottom: 4px; }
+.master-meter-readout .clip { font-size: 11px; font-weight: 700; padding: 1px 4px; border: 1px solid #333; border-radius: 2px; color: #444; transition: all 0.1s; }
+.master-meter-readout .clip.active { color: #f00; border-color: #f00; background: rgba(255,0,0,0.1); }
+
+/* ── Master detail ───────────────────── */
+.master-detail { position: sticky !important; top: 0; right: 0; z-index: 10; }
+
+/* ── Fader ───────────────────────────── */
+.fader { -webkit-appearance: none; appearance: none; width: 36px; height: 160px; padding: 0; margin: 0; border: none; background: transparent; writing-mode: vertical-lr; direction: rtl; cursor: ns-resize; }
+.fader::-webkit-slider-runnable-track { width: 36px; height: 160px; background: #222230; border-radius: 2px; }
+.fader::-webkit-slider-thumb, .eq-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 36px; height: 6px; background: linear-gradient(180deg, #444, #2a2a2a); border: 1px solid #1a1a1a; border-radius: 2px; box-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+.fader::-webkit-slider-thumb:hover { background: linear-gradient(180deg, #555, #3a3a3a); }
+.fader::-moz-range-track { width: 36px; height: 160px; background: #222230; border: none; border-radius: 2px; }
+.fader::-moz-range-thumb { width: 36px; height: 6px; background: linear-gradient(180deg, #444, #2a2a2a); border: 1px solid #1a1a1a; border-radius: 2px; }
+
+/* ── Bank Selector ───────────────────── */
+.bank-selector { display: flex; gap: 2px; margin-left: 8px; }
+.bank-btn { width: 24px; height: 22px; font-size: 0.7em; font-weight: 600; border: 1px solid #2a2a30; border-radius: 2px; background: #16161e; color: #666; cursor: pointer; transition: all 0.1s; }
+.bank-btn:hover { border-color: #444; color: #aaa; }
+.bank-btn.active { background: #1a3a5a; color: #8ab4f8; border-color: #2a5a8a; }

@@ -121,6 +121,7 @@ use oximedia_mixer::dynamics::{Compressor, CompressorConfig, Expander, ExpanderC
 /// Adapter wrapping `Compressor` as an `AudioEffect`.
 pub struct CompressorEffect {
     compressor: Compressor,
+    config: CompressorConfig,
     sample_rate: u32,
 }
 
@@ -128,13 +129,12 @@ impl CompressorEffect {
     #[must_use]
     pub fn new(config: CompressorConfig, sample_rate: u32) -> Self {
         Self {
-            compressor: Compressor::new(config),
+            compressor: Compressor::new(config.clone()),
+            config,
             sample_rate,
         }
     }
 
-    /// Create a compressor with standard broadcast settings.
-    /// -12 dB threshold, 3:1 ratio, 5ms attack, 100ms release, +3dB makeup.
     #[must_use]
     pub fn broadcast(sample_rate: u32) -> Self {
         Self::new(
@@ -150,10 +150,15 @@ impl CompressorEffect {
         )
     }
 
-    #[must_use]
-    pub fn inner_mut(&mut self) -> &mut Compressor {
-        &mut self.compressor
+    pub fn config(&self) -> &CompressorConfig { &self.config }
+
+    pub fn update_config(&mut self, f: impl FnOnce(&mut CompressorConfig)) {
+        f(&mut self.config);
+        self.compressor = Compressor::new(self.config.clone());
     }
+
+    #[must_use]
+    pub fn inner_mut(&mut self) -> &mut Compressor { &mut self.compressor }
 }
 
 impl AudioEffect for CompressorEffect {
@@ -171,6 +176,7 @@ impl AudioEffect for CompressorEffect {
 /// Adapter wrapping `Gate` as an `AudioEffect`.
 pub struct GateEffect {
     gate: Gate,
+    config: GateConfig,
     sample_rate: u32,
 }
 
@@ -178,13 +184,12 @@ impl GateEffect {
     #[must_use]
     pub fn new(config: GateConfig, sample_rate: u32) -> Self {
         Self {
-            gate: Gate::new(config),
+            gate: Gate::new(config.clone()),
+            config,
             sample_rate,
         }
     }
 
-    /// Create a gate with standard settings for cleaning up background noise.
-    /// -50 dB threshold, 2ms attack, 100ms release.
     #[must_use]
     pub fn denoise(sample_rate: u32) -> Self {
         Self::new(
@@ -198,10 +203,15 @@ impl GateEffect {
         )
     }
 
-    #[must_use]
-    pub fn inner_mut(&mut self) -> &mut Gate {
-        &mut self.gate
+    pub fn config(&self) -> &GateConfig { &self.config }
+
+    pub fn update_config(&mut self, f: impl FnOnce(&mut GateConfig)) {
+        f(&mut self.config);
+        self.gate = Gate::new(self.config.clone());
     }
+
+    #[must_use]
+    pub fn inner_mut(&mut self) -> &mut Gate { &mut self.gate }
 }
 
 impl AudioEffect for GateEffect {
@@ -219,6 +229,7 @@ impl AudioEffect for GateEffect {
 /// Adapter wrapping `Expander` as an `AudioEffect`.
 pub struct ExpanderEffect {
     expander: Expander,
+    config: ExpanderConfig,
     sample_rate: u32,
 }
 
@@ -226,15 +237,26 @@ impl ExpanderEffect {
     #[must_use]
     pub fn new(config: ExpanderConfig, sample_rate: u32) -> Self {
         Self {
-            expander: Expander::new(config),
+            expander: Expander::new(config.clone()),
+            config,
             sample_rate,
         }
     }
 
     #[must_use]
-    pub fn inner_mut(&mut self) -> &mut Expander {
-        &mut self.expander
+    pub fn gentle(sample_rate: u32) -> Self {
+        Self::new(ExpanderConfig::default(), sample_rate)
     }
+
+    pub fn config(&self) -> &ExpanderConfig { &self.config }
+
+    pub fn update_config(&mut self, f: impl FnOnce(&mut ExpanderConfig)) {
+        f(&mut self.config);
+        self.expander = Expander::new(self.config.clone());
+    }
+
+    #[must_use]
+    pub fn inner_mut(&mut self) -> &mut Expander { &mut self.expander }
 }
 
 impl AudioEffect for ExpanderEffect {

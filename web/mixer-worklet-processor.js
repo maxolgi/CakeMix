@@ -68,10 +68,61 @@ class MixerWasm {
         wasm.__wbg_mixerwasm_free(ptr, 0);
     }
     /**
+     * @param {string} name
+     * @param {number} bus_type
+     * @returns {number}
+     */
+    add_bus(name, bus_type) {
+        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.mixerwasm_add_bus(this.__wbg_ptr, ptr0, len0, bus_type);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * @returns {string}
+     */
+    channel_meters_json() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.mixerwasm_channel_meters_json(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {number} ch
+     * @returns {number}
+     */
+    channel_peak_db(ch) {
+        const ret = wasm.mixerwasm_channel_peak_db(this.__wbg_ptr, ch);
+        return ret;
+    }
+    /**
+     * @param {number} ch
+     * @returns {number}
+     */
+    channel_rms_db(ch) {
+        const ret = wasm.mixerwasm_channel_rms_db(this.__wbg_ptr, ch);
+        return ret;
+    }
+    /**
      * @param {number} ch
      */
     disable_compressor(ch) {
         wasm.mixerwasm_disable_compressor(this.__wbg_ptr, ch);
+    }
+    /**
+     * @param {number} ch
+     */
+    disable_expander(ch) {
+        wasm.mixerwasm_disable_expander(this.__wbg_ptr, ch);
     }
     /**
      * @param {number} ch
@@ -85,6 +136,15 @@ class MixerWasm {
      */
     enable_compressor(ch) {
         const ret = wasm.mixerwasm_enable_compressor(this.__wbg_ptr, ch);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} ch
+     */
+    enable_expander(ch) {
+        const ret = wasm.mixerwasm_enable_expander(this.__wbg_ptr, ch);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -204,6 +264,48 @@ class MixerWasm {
     }
     /**
      * @param {number} ch
+     * @param {number} send_idx
+     */
+    remove_aux_send(ch, send_idx) {
+        const ret = wasm.mixerwasm_remove_aux_send(this.__wbg_ptr, ch, send_idx);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} ch
+     * @param {number} bus_id
+     */
+    route_channel_to_bus(ch, bus_id) {
+        const ret = wasm.mixerwasm_route_channel_to_bus(this.__wbg_ptr, ch, bus_id);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} ch
+     */
+    route_channel_to_master(ch) {
+        const ret = wasm.mixerwasm_route_channel_to_master(this.__wbg_ptr, ch);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} ch
+     * @param {number} _send_idx
+     * @param {number} bus_id
+     * @param {number} level
+     * @param {boolean} pre_fader
+     */
+    set_aux_send(ch, _send_idx, bus_id, level, pre_fader) {
+        const ret = wasm.mixerwasm_set_aux_send(this.__wbg_ptr, ch, _send_idx, bus_id, level, pre_fader);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} ch
      * @param {number} gain
      */
     set_channel_gain(ch, gain) {
@@ -218,6 +320,16 @@ class MixerWasm {
      */
     set_channel_input(ch, data) {
         const ret = wasm.mixerwasm_set_channel_input(this.__wbg_ptr, ch, data);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} ch
+     * @param {number} gain_db
+     */
+    set_channel_input_gain(ch, gain_db) {
+        const ret = wasm.mixerwasm_set_channel_input_gain(this.__wbg_ptr, ch, gain_db);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -245,6 +357,18 @@ class MixerWasm {
     }
     /**
      * @param {number} ch
+     * @param {string} name
+     */
+    set_channel_name(ch, name) {
+        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.mixerwasm_set_channel_name(this.__wbg_ptr, ch, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} ch
      * @param {number} pan
      */
     set_channel_pan(ch, pan) {
@@ -255,10 +379,41 @@ class MixerWasm {
     }
     /**
      * @param {number} ch
+     * @param {number} law
+     */
+    set_channel_pan_law(ch, law) {
+        const ret = wasm.mixerwasm_set_channel_pan_law(this.__wbg_ptr, ch, law);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} ch
+     * @param {boolean} inverted
+     */
+    set_channel_phase(ch, inverted) {
+        const ret = wasm.mixerwasm_set_channel_phase(this.__wbg_ptr, ch, inverted);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} ch
      * @param {boolean} soloed
      */
     set_channel_solo(ch, soloed) {
         const ret = wasm.mixerwasm_set_channel_solo(this.__wbg_ptr, ch, soloed);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} ch
+     * @param {number} param
+     * @param {number} value
+     */
+    set_comp_param(ch, param, value) {
+        const ret = wasm.mixerwasm_set_comp_param(this.__wbg_ptr, ch, param, value);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -307,10 +462,50 @@ class MixerWasm {
         }
     }
     /**
+     * @param {number} ch
+     * @param {number} param
+     * @param {number} value
+     */
+    set_expander_param(ch, param, value) {
+        const ret = wasm.mixerwasm_set_expander_param(this.__wbg_ptr, ch, param, value);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} ch
+     * @param {number} param
+     * @param {number} value
+     */
+    set_gate_param(ch, param, value) {
+        const ret = wasm.mixerwasm_set_gate_param(this.__wbg_ptr, ch, param, value);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} ceiling_db
+     */
+    set_limiter_ceiling(ceiling_db) {
+        wasm.mixerwasm_set_limiter_ceiling(this.__wbg_ptr, ceiling_db);
+    }
+    /**
      * @param {boolean} enabled
      */
     set_limiter_enabled(enabled) {
         wasm.mixerwasm_set_limiter_enabled(this.__wbg_ptr, enabled);
+    }
+    /**
+     * @param {number} release_ms
+     */
+    set_limiter_release(release_ms) {
+        wasm.mixerwasm_set_limiter_release(this.__wbg_ptr, release_ms);
+    }
+    /**
+     * @param {number} gain
+     */
+    set_master_gain(gain) {
+        wasm.mixerwasm_set_master_gain(this.__wbg_ptr, gain);
     }
     /**
      * @param {number} pid
@@ -667,8 +862,8 @@ class MixerProcessor extends AudioWorkletProcessor {
             if (msg.type === "init-wasm") {
                 try {
                     var module = msg.wasmBytes ? new WebAssembly.Module(msg.wasmBytes) : msg.module;
-                    initSync(module);
-                    this._mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 32);
+                    initSync({ module: module });
+                    this._mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 128);
                     this.port.postMessage({ type: "wasm-ready" });
                 } catch(err) {
                     this.port.postMessage({ type: "error", msg: String(err) });
@@ -699,6 +894,50 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (this._mixer) try { this._mixer.map_pid(msg.pid, msg.chStart, msg.channelCount); } catch(e) {}
             } else if (msg.type === "unmap-pid") {
                 if (this._mixer) try { this._mixer.unmap_pid(msg.pid); } catch(e) {}
+            } else if (msg.type === "set-input-gain") {
+                if (this._mixer) try { this._mixer.set_channel_input_gain(msg.ch, msg.gainDb); } catch(e) {}
+            } else if (msg.type === "set-phase") {
+                if (this._mixer) try { this._mixer.set_channel_phase(msg.ch, msg.inverted); } catch(e) {}
+            } else if (msg.type === "set-pan-law") {
+                if (this._mixer) try { this._mixer.set_channel_pan_law(msg.ch, msg.law); } catch(e) {}
+            } else if (msg.type === "set-name") {
+                if (this._mixer) try { this._mixer.set_channel_name(msg.ch, msg.name); } catch(e) {}
+            } else if (msg.type === "enable-compressor") {
+                if (this._mixer) try { this._mixer.enable_compressor(msg.ch); } catch(e) {}
+            } else if (msg.type === "disable-compressor") {
+                if (this._mixer) try { this._mixer.disable_compressor(msg.ch); } catch(e) {}
+            } else if (msg.type === "set-comp-param") {
+                if (this._mixer) try { this._mixer.set_comp_param(msg.ch, msg.param, msg.value); } catch(e) {}
+            } else if (msg.type === "enable-gate") {
+                if (this._mixer) try { this._mixer.enable_gate(msg.ch); } catch(e) {}
+            } else if (msg.type === "disable-gate") {
+                if (this._mixer) try { this._mixer.disable_gate(msg.ch); } catch(e) {}
+            } else if (msg.type === "set-gate-param") {
+                if (this._mixer) try { this._mixer.set_gate_param(msg.ch, msg.param, msg.value); } catch(e) {}
+            } else if (msg.type === "enable-expander") {
+                if (this._mixer) try { this._mixer.enable_expander(msg.ch); } catch(e) {}
+            } else if (msg.type === "disable-expander") {
+                if (this._mixer) try { this._mixer.disable_expander(msg.ch); } catch(e) {}
+            } else if (msg.type === "set-exp-param") {
+                if (this._mixer) try { this._mixer.set_expander_param(msg.ch, msg.param, msg.value); } catch(e) {}
+            } else if (msg.type === "set-master-gain") {
+                if (this._mixer) try { this._mixer.set_master_gain(msg.gain); } catch(e) {}
+            } else if (msg.type === "set-limiter") {
+                if (this._mixer) try { this._mixer.set_limiter_enabled(msg.enabled); } catch(e) {}
+            } else if (msg.type === "set-limiter-ceiling") {
+                if (this._mixer) try { this._mixer.set_limiter_ceiling(msg.ceilingDb); } catch(e) {}
+            } else if (msg.type === "set-limiter-release") {
+                if (this._mixer) try { this._mixer.set_limiter_release(msg.releaseMs); } catch(e) {}
+            } else if (msg.type === "add-bus") {
+                if (this._mixer) try { var busId = this._mixer.add_bus(msg.name, msg.busType); this.port.postMessage({type:"bus-added", busId: busId}); } catch(e) {}
+            } else if (msg.type === "route-to-bus") {
+                if (this._mixer) try { this._mixer.route_channel_to_bus(msg.ch, msg.busId); } catch(e) {}
+            } else if (msg.type === "route-to-master") {
+                if (this._mixer) try { this._mixer.route_channel_to_master(msg.ch); } catch(e) {}
+            } else if (msg.type === "set-aux-send") {
+                if (this._mixer) try { this._mixer.set_aux_send(msg.ch, msg.sendIdx, msg.busId, msg.level, msg.preFader); } catch(e) {}
+            } else if (msg.type === "remove-aux-send") {
+                if (this._mixer) try { this._mixer.remove_aux_send(msg.ch, msg.sendIdx); } catch(e) {}
             } else if (msg.type === "pcm") {
                 // External PCM from WebSRT worker (relayed via main thread).
                 // msg.samples is a Float32Array, msg.pid identifies the stream.
@@ -763,6 +1002,8 @@ class MixerProcessor extends AudioWorkletProcessor {
                     rmsL: this._mixer.master_rms_db_l(),
                     rmsR: this._mixer.master_rms_db_r(),
                     clip: this._mixer.master_clipping(),
+                    limiterGr: this._mixer.limiter_gain_reduction_db(),
+                    channels: JSON.parse(this._mixer.channel_meters_json()),
                 });
             } catch(e) {}
         }

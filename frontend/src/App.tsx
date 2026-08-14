@@ -1,18 +1,20 @@
-import { onMount, onCleanup, createEffect } from "solid-js";
-import { ChannelStrip } from "./components/ChannelStrip";
+import { onMount, onCleanup, createSignal, For } from "solid-js";
+import { ChannelDetailPanel } from "./components/ChannelDetailPanel";
 import { MasterStrip } from "./components/MasterStrip";
-import { TransportBar } from "./components/TransportBar";
+import { BusManager } from "./components/BusManager";
 import {
-  channels, setChannels, meterData, setMeterData,
+  updateMeterData,
   wasmReady, setWasmReady, isRunning, setIsRunning,
   status, setStatus, setMixerNode, sendToWorklet,
-  NUM_CHANNELS,
+  confirmBusAdded,
 } from "./stores/mixer";
 
 const SAMPLE_RATE = 48000;
+const STRIPS_PER_BANK = 16;
 
 export default function App() {
   let audioCtx: AudioContext | null = null;
+  const [bank, setBank] = createSignal(0);
 
   onMount(async () => {
     try {
@@ -26,34 +28,23 @@ export default function App() {
 
       node.port.onmessage = (e: MessageEvent) => {
         const msg = e.data;
-        if (msg.type === "ready") {
-          loadWasm();
-        } else if (msg.type === "wasm-ready") {
-          setWasmReady(true);
-          setStatus("Ready");
-        } else if (msg.type === "error") {
-          setStatus("Error: " + msg.msg);
-        } else if (msg.type === "meter") {
-          setMeterData(msg);
-        }
+        if (msg.type === "ready") { loadWasm(); }
+        else if (msg.type === "wasm-ready") { setWasmReady(true); setStatus("Ready"); }
+        else if (msg.type === "error") { setStatus("Error: " + msg.msg); }
+        else if (msg.type === "meter") { updateMeterData(msg); }
+        else if (msg.type === "bus-added") { confirmBusAdded(msg.busId); }
       };
-    } catch (e: any) {
-      setStatus("Init failed: " + e.message);
-    }
+    } catch (e: any) { setStatus("Init failed: " + e.message); }
   });
 
-  onCleanup(() => {
-    audioCtx?.close();
-  });
+  onCleanup(() => { audioCtx?.close(); });
 
   async function loadWasm() {
     try {
       const resp = await fetch("/pkg/mixer_wasm_bg.wasm");
       const wasmBytes = await resp.arrayBuffer();
       sendToWorklet({ type: "init-wasm", wasmBytes });
-    } catch (e) {
-      setStatus("WASM load failed");
-    }
+    } catch (e) { setStatus("WASM load failed"); }
   }
 
   const start = async () => {
@@ -61,40 +52,16 @@ export default function App() {
     sendToWorklet({ type: "start" });
     setIsRunning(true);
   };
-
-  const stop = () => {
-    sendToWorklet({ type: "stop" });
-    setIsRunning(false);
-  };
+  const stop = () => { sendToWorklet({ type: "stop" }); setIsRunning(false); };
 
   return (
     <div class="app">
-      <header class="header">
-        <div class="brand">
-          <h1>🍰 CakeMix</h1>
-          <span class="subtitle">WASM Audio Mixer</span>
-        </div>
-        <div class="header-right">
-          <span class={`badge ${wasmReady() ? "active" : ""}`}>
-            {wasmReady() ? "WASM ACTIVE" : "WASM LOADING…"}
-          </span>
-          <span class="status">{status()}</span>
-        </div>
-      </header>
-
-      <TransportBar
-        running={isRunning()}
-        wasmReady={wasmReady()}
-        meter={meterData()}
-        onStart={start}
-        onStop={stop}
-      />
-
+      <BusManager running={isRunning()} wasmReady={wasmReady()} onStart={start} onStop={stop} bank={bank()} onBank={setBank} />
       <div class="mixer-console">
-        {channels.map((_, i) => (
-          <ChannelStrip index={i} />
-        ))}
-        <MasterStrip meter={meterData()} />
+        <For each={Array.from({ length: STRIPS_PER_BANK }, (_, i) => bank() * STRIPS_PER_BANK + i)}>
+          {(chIdx) => <ChannelDetailPanel channelIndex={chIdx} />}
+        </For>
+        <MasterStrip />
       </div>
     </div>
   );
