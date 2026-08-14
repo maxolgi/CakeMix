@@ -280,7 +280,6 @@ body {
     padding: 2px 0;
 }
 .detail-select {
-    appearance: none; -webkit-appearance: none; -moz-appearance: none;
     background: #11111a; border: 1px solid #222230; border-radius: 3px; color: #ccc; font-size: 0.85em; padding: 2px 4px; outline: none;
 }
 .detail-routing-select { width: 100%; max-width: 120px; }
