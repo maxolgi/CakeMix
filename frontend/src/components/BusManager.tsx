@@ -1,5 +1,5 @@
-import { For, createSignal } from "solid-js";
-import { buses, addBus } from "../stores/mixer";
+import { For } from "solid-js";
+import { busChannels } from "../stores/mixer";
 
 const BUS_TYPE_LABELS = ["Group", "Aux", "Matrix"];
 
@@ -11,11 +11,6 @@ export function BusManager(props: {
   bank: number;
   onBank: (n: number) => void;
 }) {
-  const onAdd = () => {
-    const n = buses().length + 1;
-    addBus(`Bus ${n}`, 1);
-  };
-
   return (
     <div class="bus-manager" title="Buses">
       <button
@@ -30,18 +25,17 @@ export function BusManager(props: {
       >Stop</button>
       <span class="bus-manager-label">BUSES</span>
       <div class="bus-manager-list">
-        <For each={buses()}>
-          {(bus) => (
-            <span class="bus-item" title={`${bus.name} (${BUS_TYPE_LABELS[bus.type] ?? "?"})`}>
-              <span class="bus-item-id">#{bus.id}</span>
+        <For each={busChannels}>
+          {(bus, i) => (
+            <span class="bus-item" title={`${bus.name} (${BUS_TYPE_LABELS[1]})`}>
+              <span class="bus-item-id">#{i()}</span>
               <span class="bus-item-name">{bus.name}</span>
-              <span class="bus-item-type">{BUS_TYPE_LABELS[bus.type] ?? "?"}</span>
+              <span class="bus-item-type">{BUS_TYPE_LABELS[1]}</span>
             </span>
           )}
         </For>
-        {buses().length === 0 && <span class="bus-manager-empty">No buses</span>}
+        {busChannels.length === 0 && <span class="bus-manager-empty">No buses</span>}
       </div>
-      <button class="bus-add-btn" onClick={onAdd} title="Create a new Auxiliary bus">+ BUS</button>
       <div class="bank-selector">
         <For each={[0, 1, 2, 3, 4, 5, 6, 7]}>
           {(b) => (

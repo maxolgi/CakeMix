@@ -7,6 +7,24 @@ export interface EqBand { gainDb: number; freqHz: number; q: number; }
 export interface AuxSend { levelDb: number; preFader: boolean; busId: number | null; }
 export interface ChannelMeter { ch: number; peak: number; rms: number; }
 
+export interface BusState {
+  name: string;
+  sources: (number | null)[];  // 16 slots
+  gain: number;
+  muted: boolean;
+  eqBypassed: boolean;
+  eqBands: EqBand[];
+  gateEnabled: boolean; gateThresholdDb: number; gateHysteresisDb: number;
+  gateAttackMs: number; gateReleaseMs: number; gateHoldMs: number;
+  compEnabled: boolean; compThresholdDb: number; compRatio: number; compKneeDb: number;
+  compAttackMs: number; compReleaseMs: number; compMakeupDb: number;
+  expanderEnabled: boolean; expanderThresholdDb: number; expanderRatio: number;
+  expanderAttackMs: number; expanderReleaseMs: number;
+  peakDb: number; rmsDb: number;
+}
+
+export interface BusMeter { bus: number; peak: number; rms: number; }
+
 export interface ChannelState {
   name: string;
   gain: number; inputGainDb: number; phaseInverted: boolean;
@@ -27,6 +45,7 @@ export interface ChannelState {
 export interface MeterData {
   peakL: number; peakR: number; rmsL: number; rmsR: number;
   clip: boolean; limiterGr: number; channels: ChannelMeter[];
+  buses: BusMeter[];
 }
 
 const EQ_BAND_DEFAULTS: EqBand[] = [
@@ -58,9 +77,27 @@ export const [channels, setChannels] = createStore<ChannelState[]>(
   Array.from({ length: NUM_CHANNELS }, (_, i) => defaultChannel(i))
 );
 
+function defaultBus(index: number): BusState {
+  return {
+    name: `Bus ${index + 1}`,
+    sources: Array.from({ length: 16 }, () => null),
+    gain: 1.0, muted: false,
+    eqBypassed: false, eqBands: EQ_BAND_DEFAULTS.map(b => ({ ...b })),
+    gateEnabled: false, gateThresholdDb: -50, gateHysteresisDb: 6, gateAttackMs: 2, gateReleaseMs: 100, gateHoldMs: 10,
+    compEnabled: false, compThresholdDb: -12, compRatio: 3, compKneeDb: 3, compAttackMs: 5, compReleaseMs: 100, compMakeupDb: 3,
+    expanderEnabled: false, expanderThresholdDb: -40, expanderRatio: 2, expanderAttackMs: 5, expanderReleaseMs: 100,
+    peakDb: -Infinity, rmsDb: -Infinity,
+  };
+}
+
+export const [busChannels, setBusChannels] = createStore<BusState[]>(
+  Array.from({ length: 8 }, (_, i) => defaultBus(i))
+);
+export const [selectedBus, setSelectedBus] = createSignal<number | null>(null);
+
 export const [meterData, setMeterData] = createSignal<MeterData>({
   peakL: -Infinity, peakR: -Infinity, rmsL: -Infinity, rmsR: -Infinity,
-  clip: false, limiterGr: 0, channels: [],
+  clip: false, limiterGr: 0, channels: [], buses: [],
 });
 export const [wasmReady, setWasmReady] = createSignal(false);
 export const [isRunning, setIsRunning] = createSignal(false);
@@ -69,7 +106,6 @@ export const [masterGain, setMasterGainState] = createSignal(1.0);
 export const [limiterEnabled, setLimiterEnabledState] = createSignal(true);
 export const [limiterCeiling, setLimiterCeilingState] = createSignal(-0.3);
 export const [limiterRelease, setLimiterReleaseState] = createSignal(50);
-export const [buses, setBuses] = createSignal<{id: number; name: string; type: number}[]>([]);
 
 let mixerNode: AudioWorkletNode | null = null;
 export function setMixerNode(node: AudioWorkletNode) { mixerNode = node; }
@@ -96,6 +132,10 @@ export function updateMeterData(msg: MeterData) {
   if (msg.channels) for (const cm of msg.channels) {
     setChannels(cm.ch, "peakDb", cm.peak);
     setChannels(cm.ch, "rmsDb", cm.rms);
+  }
+  if (msg.buses) for (const bm of msg.buses) {
+    setBusChannels(bm.bus, "peakDb", bm.peak);
+    setBusChannels(bm.bus, "rmsDb", bm.rms);
   }
 }
 
@@ -133,11 +173,74 @@ export function setAuxSend(ch: number, sendIdx: number, levelDb: number, preFade
 export function routeToBus(ch: number, busId: number) { setChannels(ch, "outputBus", busId); sendToWorklet({ type: "route-to-bus", ch, busId }); }
 export function routeToMaster(ch: number) { setChannels(ch, "outputBus", "master"); sendToWorklet({ type: "route-to-master", ch }); }
 
-let pendingBusName = ""; let pendingBusType = 0;
-export function addBus(name: string, type: number) { pendingBusName = name; pendingBusType = type; sendToWorklet({ type: "add-bus", name, busType: type }); }
-export function confirmBusAdded(busId: number) { setBuses([...buses(), { id: busId, name: pendingBusName, type: pendingBusType }]); pendingBusName = ""; pendingBusType = 0; }
-
 export function setMasterGain(gain: number) { setMasterGainState(gain); sendToWorklet({ type: "set-master-gain", gain }); }
 export function setLimiterEnabled(enabled: boolean) { setLimiterEnabledState(enabled); sendToWorklet({ type: "set-limiter", enabled }); }
 export function setLimiterCeiling(ceilingDb: number) { setLimiterCeilingState(ceilingDb); sendToWorklet({ type: "set-limiter-ceiling", ceilingDb }); }
 export function setLimiterRelease(releaseMs: number) { setLimiterReleaseState(releaseMs); sendToWorklet({ type: "set-limiter-release", releaseMs }); }
+
+// ── Bus helpers ──────────────────────────────────────────────────────────────
+
+// Source routing
+export function setBusSource(bus: number, slot: number, ch: number) {
+  setBusChannels(bus, "sources", slot, ch);
+  sendToWorklet({ type: "set-bus-source", bus, slot, ch });
+}
+export function clearBusSource(bus: number, slot: number) {
+  setBusChannels(bus, "sources", slot, null);
+  sendToWorklet({ type: "clear-bus-source", bus, slot });
+}
+
+// Gain / mute
+export function setBusGain(bus: number, gain: number) {
+  setBusChannels(bus, "gain", gain);
+  sendToWorklet({ type: "set-bus-gain", bus, gain });
+}
+export function setBusMute(bus: number, muted: boolean) {
+  setBusChannels(bus, "muted", muted);
+  sendToWorklet({ type: "set-bus-mute", bus, muted });
+}
+
+// EQ
+export function setBusEqGain(bus: number, band: number, gainDb: number) {
+  setBusChannels(bus, "eqBands", band, "gainDb", gainDb);
+  sendToWorklet({ type: "set-bus-eq-gain", bus, band, gainDb });
+}
+export function setBusEqFreq(bus: number, band: number, freqHz: number) {
+  setBusChannels(bus, "eqBands", band, "freqHz", freqHz);
+  sendToWorklet({ type: "set-bus-eq-freq", bus, band, freqHz });
+}
+export function setBusEqQ(bus: number, band: number, q: number) {
+  setBusChannels(bus, "eqBands", band, "q", q);
+  sendToWorklet({ type: "set-bus-eq-q", bus, band, q });
+}
+export function setBusEqBypass(bus: number, bypassed: boolean) {
+  setBusChannels(bus, "eqBypassed", bypassed);
+  sendToWorklet({ type: "set-bus-eq-bypass", bus, bypassed });
+}
+
+// Compressor
+export function setBusCompEnabled(bus: number, enabled: boolean) {
+  setBusChannels(bus, "compEnabled", enabled);
+  sendToWorklet({ type: enabled ? "enable-bus-comp" : "disable-bus-comp", bus });
+}
+export function setBusCompThreshold(bus: number, v: number) { setBusChannels(bus, "compThresholdDb", v); sendToWorklet({ type: "set-bus-comp-param", bus, param: 0, value: v }); }
+export function setBusCompRatio(bus: number, v: number) { setBusChannels(bus, "compRatio", v); sendToWorklet({ type: "set-bus-comp-param", bus, param: 1, value: v }); }
+export function setBusCompAttack(bus: number, v: number) { setBusChannels(bus, "compAttackMs", v); sendToWorklet({ type: "set-bus-comp-param", bus, param: 2, value: v }); }
+export function setBusCompRelease(bus: number, v: number) { setBusChannels(bus, "compReleaseMs", v); sendToWorklet({ type: "set-bus-comp-param", bus, param: 3, value: v }); }
+export function setBusCompMakeup(bus: number, v: number) { setBusChannels(bus, "compMakeupDb", v); sendToWorklet({ type: "set-bus-comp-param", bus, param: 4, value: v }); }
+export function setBusCompKnee(bus: number, v: number) { setBusChannels(bus, "compKneeDb", v); sendToWorklet({ type: "set-bus-comp-param", bus, param: 5, value: v }); }
+
+// Gate
+export function setBusGateEnabled(bus: number, enabled: boolean) { setBusChannels(bus, "gateEnabled", enabled); sendToWorklet({ type: enabled ? "enable-bus-gate" : "disable-bus-gate", bus }); }
+export function setBusGateThreshold(bus: number, v: number) { setBusChannels(bus, "gateThresholdDb", v); sendToWorklet({ type: "set-bus-gate-param", bus, param: 0, value: v }); }
+export function setBusGateHysteresis(bus: number, v: number) { setBusChannels(bus, "gateHysteresisDb", v); sendToWorklet({ type: "set-bus-gate-param", bus, param: 1, value: v }); }
+export function setBusGateAttack(bus: number, v: number) { setBusChannels(bus, "gateAttackMs", v); sendToWorklet({ type: "set-bus-gate-param", bus, param: 2, value: v }); }
+export function setBusGateRelease(bus: number, v: number) { setBusChannels(bus, "gateReleaseMs", v); sendToWorklet({ type: "set-bus-gate-param", bus, param: 3, value: v }); }
+export function setBusGateHold(bus: number, v: number) { setBusChannels(bus, "gateHoldMs", v); sendToWorklet({ type: "set-bus-gate-param", bus, param: 4, value: v }); }
+
+// Expander
+export function setBusExpanderEnabled(bus: number, enabled: boolean) { setBusChannels(bus, "expanderEnabled", enabled); sendToWorklet({ type: enabled ? "enable-bus-expander" : "disable-bus-expander", bus }); }
+export function setBusExpanderThreshold(bus: number, v: number) { setBusChannels(bus, "expanderThresholdDb", v); sendToWorklet({ type: "set-bus-expander-param", bus, param: 0, value: v }); }
+export function setBusExpanderRatio(bus: number, v: number) { setBusChannels(bus, "expanderRatio", v); sendToWorklet({ type: "set-bus-expander-param", bus, param: 1, value: v }); }
+export function setBusExpanderAttack(bus: number, v: number) { setBusChannels(bus, "expanderAttackMs", v); sendToWorklet({ type: "set-bus-expander-param", bus, param: 2, value: v }); }
+export function setBusExpanderRelease(bus: number, v: number) { setBusChannels(bus, "expanderReleaseMs", v); sendToWorklet({ type: "set-bus-expander-param", bus, param: 3, value: v }); }

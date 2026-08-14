@@ -6,7 +6,6 @@ import {
   updateMeterData,
   wasmReady, setWasmReady, isRunning, setIsRunning,
   status, setStatus, setMixerNode, sendToWorklet,
-  confirmBusAdded,
 } from "./stores/mixer";
 
 const SAMPLE_RATE = 48000;
@@ -32,7 +31,6 @@ export default function App() {
         else if (msg.type === "wasm-ready") { setWasmReady(true); setStatus("Ready"); }
         else if (msg.type === "error") { setStatus("Error: " + msg.msg); }
         else if (msg.type === "meter") { updateMeterData(msg); }
-        else if (msg.type === "bus-added") { confirmBusAdded(msg.busId); }
       };
     } catch (e: any) { setStatus("Init failed: " + e.message); }
   });

@@ -8,7 +8,7 @@ import {
   setExpanderEnabled, setExpanderThreshold, setExpanderRatio, setExpanderAttack, setExpanderRelease,
   setAuxSend,
   routeToBus, routeToMaster,
-  buses,
+  busChannels,
   faderToGain, gainToFader, formatGainDb,
   setChannels, sendToWorklet,
 } from "../stores/mixer";
@@ -302,8 +302,8 @@ export function ChannelDetailPanel(props: { channelIndex: number }) {
                 title={hasBus() ? "Send target bus" : "Pick a bus to enable this send"}
               >
                 <option value="">—</option>
-                {buses().map((bus) => (
-                  <option value={bus.id}>{bus.name}</option>
+                {busChannels.map((bus, id) => (
+                  <option value={id}>{bus.name}</option>
                 ))}
               </select>
             </div>
@@ -341,8 +341,8 @@ export function ChannelDetailPanel(props: { channelIndex: number }) {
             title="Channel output routing — master or bus"
           >
             <option value="master">MASTER</option>
-            {buses().map((bus) => (
-              <option value={`bus-${bus.id}`}>{bus.name}</option>
+            {busChannels.map((bus, id) => (
+              <option value={`bus-${id}`}>{bus.name}</option>
             ))}
           </select>
         </div>
