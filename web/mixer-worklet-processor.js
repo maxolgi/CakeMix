@@ -964,6 +964,8 @@ class MixerProcessor extends AudioWorkletProcessor {
                     peakL: -Infinity, peakR: -Infinity,
                     rmsL: -Infinity, rmsR: -Infinity,
                     clip: false,
+                    limiterGr: 0,
+                    channels: [],
                 });
             }
             return true;
