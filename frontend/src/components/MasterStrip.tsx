@@ -49,10 +49,13 @@ export function MasterStrip() {
         )}
       </div>
 
+      <div class="master-clip-indicator">
+        <span class={`clip ${meterData().clip ? "active" : ""}`}>CLIP</span>
+      </div>
+
       <div class="detail-section detail-output">
         <div class="master-meter-readout">
           <span>{fmtDbInf(meterData().peakL)}</span>
-          <span class={`clip ${meterData().clip ? "active" : ""}`}>CLIP</span>
           <span>{fmtDbInf(meterData().peakR)}</span>
         </div>
         <div class="detail-meter-fader">

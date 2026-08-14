@@ -305,8 +305,10 @@ body {
 
 /* ── Master meter readout ────────────── */
 .master-meter-readout { display: flex; justify-content: center; gap: 6px; font-size: 13px; font-family: 'SF Mono', monospace; color: #888; padding-bottom: 4px; }
+.master-clip-indicator { display: flex; justify-content: center; padding: 4px 0; }
 .master-meter-readout .clip { font-size: 11px; font-weight: 700; padding: 1px 4px; border: 1px solid #333; border-radius: 2px; color: #444; transition: all 0.1s; }
-.master-meter-readout .clip.active { color: #f00; border-color: #f00; background: rgba(255,0,0,0.1); }
+.master-meter-readout .clip.active, .master-clip-indicator .clip { font-size: 11px; font-weight: 700; padding: 1px 4px; border: 1px solid #333; border-radius: 2px; color: #444; transition: all 0.1s; }
+.master-clip-indicator .clip.active { color: #f00; border-color: #f00; background: rgba(255,0,0,0.1); }
 
 /* ── Master detail ───────────────────── */
 .master-detail { position: sticky !important; top: 0; right: 0; z-index: 10; }
