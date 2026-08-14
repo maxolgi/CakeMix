@@ -97,16 +97,6 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (this._mixer) try { this._mixer.set_limiter_ceiling(msg.ceilingDb); } catch(e) {}
             } else if (msg.type === "set-limiter-release") {
                 if (this._mixer) try { this._mixer.set_limiter_release(msg.releaseMs); } catch(e) {}
-            } else if (msg.type === "add-bus") {
-                if (this._mixer) try { var busId = this._mixer.add_bus(msg.name, msg.busType); this.port.postMessage({type:"bus-added", busId: busId}); } catch(e) {}
-            } else if (msg.type === "route-to-bus") {
-                if (this._mixer) try { this._mixer.route_channel_to_bus(msg.ch, msg.busId); } catch(e) {}
-            } else if (msg.type === "route-to-master") {
-                if (this._mixer) try { this._mixer.route_channel_to_master(msg.ch); } catch(e) {}
-            } else if (msg.type === "set-aux-send") {
-                if (this._mixer) try { this._mixer.set_aux_send(msg.ch, msg.sendIdx, msg.busId, msg.level, msg.preFader); } catch(e) {}
-            } else if (msg.type === "remove-aux-send") {
-                if (this._mixer) try { this._mixer.remove_aux_send(msg.ch, msg.sendIdx); } catch(e) {}
             } else if (msg.type === "set-bus-source") {
                 if (this._mixer) try { this._mixer.set_bus_source(msg.bus, msg.slot, msg.ch); } catch(e) {}
             } else if (msg.type === "clear-bus-source") {

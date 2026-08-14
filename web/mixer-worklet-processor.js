@@ -68,20 +68,6 @@ class MixerWasm {
         wasm.__wbg_mixerwasm_free(ptr, 0);
     }
     /**
-     * @param {string} name
-     * @param {number} bus_type
-     * @returns {number}
-     */
-    add_bus(name, bus_type) {
-        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.mixerwasm_add_bus(this.__wbg_ptr, ptr0, len0, bus_type);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
      * @returns {string}
      */
     bus_meters_json() {
@@ -299,48 +285,6 @@ class MixerWasm {
             throw takeFromExternrefTable0(ret[1]);
         }
         return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * @param {number} ch
-     * @param {number} send_idx
-     */
-    remove_aux_send(ch, send_idx) {
-        const ret = wasm.mixerwasm_remove_aux_send(this.__wbg_ptr, ch, send_idx);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * @param {number} ch
-     * @param {number} bus_id
-     */
-    route_channel_to_bus(ch, bus_id) {
-        const ret = wasm.mixerwasm_route_channel_to_bus(this.__wbg_ptr, ch, bus_id);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * @param {number} ch
-     */
-    route_channel_to_master(ch) {
-        const ret = wasm.mixerwasm_route_channel_to_master(this.__wbg_ptr, ch);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * @param {number} ch
-     * @param {number} _send_idx
-     * @param {number} bus_id
-     * @param {number} level
-     * @param {boolean} pre_fader
-     */
-    set_aux_send(ch, _send_idx, bus_id, level, pre_fader) {
-        const ret = wasm.mixerwasm_set_aux_send(this.__wbg_ptr, ch, _send_idx, bus_id, level, pre_fader);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
     }
     /**
      * @param {number} bus
@@ -991,16 +935,6 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (this._mixer) try { this._mixer.set_limiter_ceiling(msg.ceilingDb); } catch(e) {}
             } else if (msg.type === "set-limiter-release") {
                 if (this._mixer) try { this._mixer.set_limiter_release(msg.releaseMs); } catch(e) {}
-            } else if (msg.type === "add-bus") {
-                if (this._mixer) try { var busId = this._mixer.add_bus(msg.name, msg.busType); this.port.postMessage({type:"bus-added", busId: busId}); } catch(e) {}
-            } else if (msg.type === "route-to-bus") {
-                if (this._mixer) try { this._mixer.route_channel_to_bus(msg.ch, msg.busId); } catch(e) {}
-            } else if (msg.type === "route-to-master") {
-                if (this._mixer) try { this._mixer.route_channel_to_master(msg.ch); } catch(e) {}
-            } else if (msg.type === "set-aux-send") {
-                if (this._mixer) try { this._mixer.set_aux_send(msg.ch, msg.sendIdx, msg.busId, msg.level, msg.preFader); } catch(e) {}
-            } else if (msg.type === "remove-aux-send") {
-                if (this._mixer) try { this._mixer.remove_aux_send(msg.ch, msg.sendIdx); } catch(e) {}
             } else if (msg.type === "set-bus-source") {
                 if (this._mixer) try { this._mixer.set_bus_source(msg.bus, msg.slot, msg.ch); } catch(e) {}
             } else if (msg.type === "clear-bus-source") {

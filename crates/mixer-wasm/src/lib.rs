@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use wasm_bindgen::prelude::*;
 
 use oximedia_mixer::{
-    bus::{BusId, BusType},
     channel::{ChannelType, PanLaw},
     ChannelId, ChannelProcessParams, MixerConfig, PanLawType,
 };
@@ -77,9 +76,6 @@ pub struct MixerWasm {
     // ── Per-channel metering ──
     channel_peak: HashMap<u32, f32>,
     channel_rms: HashMap<u32, f32>,
-    // ── Bus routing ──
-    bus_map: HashMap<u32, BusId>,
-    bus_counter: u32,
     // ── 8 summing buses: each bus sums its 16 slot channels ──
     // Slot index (u32) = 128 + bus*16 + slot, bus 0-7, slot 0-15.
     bus_sources: Vec<Vec<Option<u32>>>,
@@ -145,8 +141,6 @@ impl MixerWasm {
             master_gain: 1.0,
             channel_peak: HashMap::new(),
             channel_rms: HashMap::new(),
-            bus_map: HashMap::new(),
-            bus_counter: 0,
             bus_sources: (0..8).map(|_| vec![None; 16]).collect(),
             bus_gains: vec![1.0; 8],
             bus_muted: vec![false; 8],
@@ -502,56 +496,6 @@ impl MixerWasm {
         let sr = self.sample_rate as f32;
         self.limiter_l = OversampledLimiter::new(self.limiter_ceiling, release_ms, 4, sr);
         self.limiter_r = OversampledLimiter::new(self.limiter_ceiling, release_ms, 4, sr);
-    }
-
-    // ── Bus routing ────────────────────────────────────
-
-    pub fn add_bus(&mut self, name: String, bus_type: u32) -> Result<u32, JsValue> {
-        let bt = match bus_type {
-            0 => BusType::Group,
-            1 => BusType::Auxiliary,
-            2 => BusType::Matrix,
-            _ => return Err(JsValue::from_str("invalid bus type")),
-        };
-        let bus_id = self.engine.add_bus(name, bt, ChannelLayout::Stereo)
-            .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
-        let js_id = self.bus_counter;
-        self.bus_counter += 1;
-        self.bus_map.insert(js_id, bus_id);
-        Ok(js_id)
-    }
-
-    pub fn route_channel_to_bus(&mut self, ch: u32, bus_id: u32) -> Result<(), JsValue> {
-        let id = self.ensure_channel(ch)?;
-        let Some(&bid) = self.bus_map.get(&bus_id) else {
-            return Err(JsValue::from_str("unknown bus"));
-        };
-        self.engine.route_channel_to_bus(id, bid).map_err(|e| JsValue::from_str(&format!("{e:?}")))
-    }
-
-    pub fn route_channel_to_master(&mut self, ch: u32) -> Result<(), JsValue> {
-        let id = self.ensure_channel(ch)?;
-        self.engine.route_channel_to_master(id).map_err(|e| JsValue::from_str(&format!("{e:?}")))
-    }
-
-    pub fn set_aux_send(&mut self, ch: u32, _send_idx: u32, bus_id: u32, level: f32, pre_fader: bool) -> Result<(), JsValue> {
-        let id = self.ensure_channel(ch)?;
-        let Some(&bid) = self.bus_map.get(&bus_id) else {
-            return Err(JsValue::from_str("unknown bus"));
-        };
-        self.engine.add_aux_send(id, bid, level, pre_fader).map_err(|e| JsValue::from_str(&format!("{e:?}")))
-    }
-
-    pub fn remove_aux_send(&mut self, ch: u32, send_idx: u32) -> Result<(), JsValue> {
-        let Some(id) = self.channel_ids.get(ch as usize).and_then(|o| *o) else {
-            return Ok(());
-        };
-        if let Some(sends) = self.engine.engine_mut().channel_sends.get_mut(&id) {
-            if (send_idx as usize) < sends.len() {
-                sends.remove(send_idx as usize);
-            }
-        }
-        Ok(())
     }
 
     // ── Bus mixing (8 buses × 16 full-channel-strip slots) ──

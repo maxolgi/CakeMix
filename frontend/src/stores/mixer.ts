@@ -6,7 +6,6 @@ export const NUM_SLOTS = 128;
 export const SLOT_BASE = 128;
 
 export interface EqBand { gainDb: number; freqHz: number; q: number; }
-export interface AuxSend { levelDb: number; preFader: boolean; busId: number | null; }
 export interface ChannelMeter { ch: number; peak: number; rms: number; }
 
 export interface BusState {
@@ -32,8 +31,6 @@ export interface ChannelState {
   compAttackMs: number; compReleaseMs: number; compMakeupDb: number;
   expanderEnabled: boolean; expanderThresholdDb: number; expanderRatio: number;
   expanderAttackMs: number; expanderReleaseMs: number;
-  sends: AuxSend[];
-  outputBus: number | "master";
   peakDb: number; rmsDb: number;
 }
 
@@ -62,8 +59,6 @@ function defaultChannel(index: number): ChannelState {
     gateEnabled: false, gateThresholdDb: -50, gateHysteresisDb: 6, gateAttackMs: 2, gateReleaseMs: 100, gateHoldMs: 10,
     compEnabled: false, compThresholdDb: -12, compRatio: 3, compKneeDb: 3, compAttackMs: 5, compReleaseMs: 100, compMakeupDb: 3,
     expanderEnabled: false, expanderThresholdDb: -40, expanderRatio: 2, expanderAttackMs: 5, expanderReleaseMs: 100,
-    sends: Array.from({ length: 4 }, () => ({ levelDb: -Infinity, preFader: false, busId: null })),
-    outputBus: "master",
     peakDb: -Infinity, rmsDb: -Infinity,
   };
 }
@@ -157,12 +152,6 @@ export function setExpanderThreshold(ch: number, v: number) { setChannels(ch, "e
 export function setExpanderRatio(ch: number, v: number) { setChannels(ch, "expanderRatio", v); sendToWorklet({ type: "set-exp-param", ch, param: 1, value: v }); }
 export function setExpanderAttack(ch: number, v: number) { setChannels(ch, "expanderAttackMs", v); sendToWorklet({ type: "set-exp-param", ch, param: 2, value: v }); }
 export function setExpanderRelease(ch: number, v: number) { setChannels(ch, "expanderReleaseMs", v); sendToWorklet({ type: "set-exp-param", ch, param: 3, value: v }); }
-export function setAuxSend(ch: number, sendIdx: number, levelDb: number, preFader: boolean, busId: number | null) {
-  setChannels(ch, "sends", sendIdx, { levelDb, preFader, busId });
-  if (busId !== null) sendToWorklet({ type: "set-aux-send", ch, sendIdx, busId, level: Math.pow(10, levelDb / 20), preFader });
-}
-export function routeToBus(ch: number, busId: number) { setChannels(ch, "outputBus", busId); sendToWorklet({ type: "route-to-bus", ch, busId }); }
-export function routeToMaster(ch: number) { setChannels(ch, "outputBus", "master"); sendToWorklet({ type: "route-to-master", ch }); }
 
 export function setMasterGain(gain: number) { setMasterGainState(gain); sendToWorklet({ type: "set-master-gain", gain }); }
 export function setLimiterEnabled(enabled: boolean) { setLimiterEnabledState(enabled); sendToWorklet({ type: "set-limiter", enabled }); }
