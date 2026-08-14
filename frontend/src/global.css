@@ -328,12 +328,21 @@ body {
 .bank-btn:hover { border-color: #444; color: #aaa; }
 .bank-btn.active { background: #1a3a5a; color: #8ab4f8; border-color: #2a5a8a; }
 
+.mode-toggle {
+    height: 22px; padding: 0 10px;
+    font-size: 0.65em; font-weight: 700; letter-spacing: 0.5px;
+    border: 1px solid #2a2a30; border-radius: 2px;
+    background: #16161e; color: #888; cursor: pointer;
+    transition: all 0.1s;
+}
+.mode-toggle.bus { background: #3a2a10; color: #e0b050; border-color: #6a4a10; }
+.mode-toggle:hover { border-color: #444; }
+
 /* ── Bus Manager Bar ─────────────────── */
 .bus-manager {
     display: flex; align-items: center; gap: 10px;
     padding: 6px 12px; background: #0e0e14; border-bottom: 1px solid #1e1e28;
 }
-.bus-manager-label { font-size: 0.65em; color: #555; font-weight: 700; letter-spacing: 1px; }
 .bus-manager-list { display: flex; gap: 6px; flex: 1; overflow: hidden; }
 .bus-manager-empty { font-size: 0.65em; color: #444; }
 .bus-item {
@@ -364,6 +373,3 @@ body {
 /* Bus master strip */
 .bus-master { position: sticky !important; top: 0; z-index: 10; overflow-y: hidden !important; }
 .bus-master .detail-meter-fader canvas { position: static; }
-
-/* Bus selector in top bar */
-.bus-selector { display: flex; gap: 2px; align-items: center; }

@@ -15,6 +15,7 @@ const STRIPS_PER_BANK = 16;
 
 export default function App() {
   let audioCtx: AudioContext | null = null;
+  const [mode, setMode] = createSignal<"inputs" | "bus">("inputs");
   const [bank, setBank] = createSignal(0);
 
   onMount(async () => {
@@ -54,6 +55,17 @@ export default function App() {
   };
   const stop = () => { sendToWorklet({ type: "stop" }); setIsRunning(false); };
 
+  const onSelectIndex = (i: number) => {
+    if (mode() === "inputs") { setBank(i); }
+    else { setSelectedBus(i); }
+  };
+
+  const onMode = (m: "inputs" | "bus") => {
+    setMode(m);
+    if (m === "inputs") { setSelectedBus(null); }
+    else { setSelectedBus(selectedBus() ?? bank()); }
+  };
+
   return (
     <div class="app">
       <BusManager
@@ -61,10 +73,10 @@ export default function App() {
         wasmReady={wasmReady()}
         onStart={start}
         onStop={stop}
-        bank={bank()}
-        onBank={setBank}
-        selectedBus={selectedBus()}
-        onSelectBus={setSelectedBus}
+        mode={mode()}
+        onMode={onMode}
+        index={mode() === "bus" ? (selectedBus() ?? 0) : bank()}
+        onIndex={onSelectIndex}
       />
       <div class="mixer-console">
         {selectedBus() === null ? (

@@ -5,10 +5,10 @@ export function BusManager(props: {
   wasmReady: boolean;
   onStart: () => void;
   onStop: () => void;
-  bank: number;
-  onBank: (n: number) => void;
-  selectedBus: number | null;
-  onSelectBus: (b: number | null) => void;
+  mode: "inputs" | "bus";
+  onMode: (m: "inputs" | "bus") => void;
+  index: number;
+  onIndex: (i: number) => void;
 }) {
   return (
     <div class="bus-manager" title="Buses">
@@ -22,25 +22,20 @@ export function BusManager(props: {
         disabled={!props.running}
         onClick={props.onStop}
       >Stop</button>
-      <div class="bus-selector">
-        <span class="bus-manager-label">BUS</span>
-        <For each={[0, 1, 2, 3, 4, 5, 6, 7]}>
-          {(b) => (
-            <button
-              class={`bank-btn ${props.selectedBus === b ? "active" : ""}`}
-              onClick={() => props.selectedBus === b ? props.onSelectBus(null) : props.onSelectBus(b)}
-              title={`Bus ${b + 1}`}
-            >{b + 1}</button>
-          )}
-        </For>
-      </div>
+      <button
+        class={`mode-toggle ${props.mode === "bus" ? "bus" : ""}`}
+        onClick={() => props.onMode(props.mode === "inputs" ? "bus" : "inputs")}
+        title={props.mode === "inputs" ? "Switch to bus view" : "Switch to inputs view"}
+      >{props.mode === "inputs" ? "INPUTS" : "BUS"}</button>
       <div class="bank-selector">
         <For each={[0, 1, 2, 3, 4, 5, 6, 7]}>
           {(b) => (
             <button
-              class={`bank-btn ${props.bank === b ? "active" : ""}`}
-              onClick={() => props.onBank(b)}
-              title={`Channels ${b * 16 + 1}–${(b + 1) * 16}`}
+              class={`bank-btn ${props.index === b ? "active" : ""}`}
+              onClick={() => props.onIndex(b)}
+              title={props.mode === "inputs"
+                ? `Channels ${b * 16 + 1}–${(b + 1) * 16}`
+                : `Bus ${b + 1}`}
             >{b + 1}</button>
           )}
         </For>
