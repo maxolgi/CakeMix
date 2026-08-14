@@ -8,3 +8,4 @@ dist/
 *.wasm
 cert.pem
 key.pem
+tmp/
