@@ -59,6 +59,7 @@ pub struct MixerWasm {
     master_right: Vec<f32>,
     stereo_out: Vec<f32>,
     eq_scratch: Vec<f32>,
+    eq_scratch2: Vec<f32>,
     deinterleave_scratch: Vec<Vec<f32>>,
     raw_input: Vec<f32>,
     // ── Per-channel state ──
@@ -80,14 +81,17 @@ pub struct MixerWasm {
     // ── Bus routing ──
     bus_map: HashMap<u32, BusId>,
     bus_counter: u32,
-    // ── 8 independent summing buses (each sums up to 16 source channels) ──
+    // ── 8 summing buses: each bus sums its 16 slot channels ──
+    // Slot index (u32) = 128 + bus*16 + slot, bus 0-7, slot 0-15.
     bus_sources: Vec<Vec<Option<u32>>>,
     bus_gains: Vec<f32>,
     bus_muted: Vec<bool>,
+    // Bus accumulators: sum of the bus's slot outputs (pre bus-gain)
     bus_left: Vec<Vec<f32>>,
     bus_right: Vec<Vec<f32>>,
-    bus_eq_chains: HashMap<u32, EqEffect>,
-    bus_dynamics_chains: HashMap<u32, ChannelDynamics>,
+    // Slot stereo input buffers (128 slots; written by pass 1, consumed by pass 2)
+    slot_in_l: Vec<Vec<f32>>,
+    slot_in_r: Vec<Vec<f32>>,
     bus_peak: HashMap<u32, f32>,
     bus_rms: HashMap<u32, f32>,
     // ── Counters ──
@@ -109,10 +113,13 @@ impl MixerWasm {
         console_error_panic_hook::set_once();
 
         let bs = buffer_size as usize;
+        // Internally support at least 256 channels: 128 inputs (0-127) +
+        // 128 bus slots (128-255, slot = 128 + bus*16 + slot).
+        let n = (max_channels as usize).max(256);
         let config = MixerConfig {
             sample_rate,
             buffer_size: bs,
-            max_channels: max_channels as usize,
+            max_channels: n,
             ..Default::default()
         };
         let engine = oximedia_mixer::AudioMixer::new(config);
@@ -120,7 +127,7 @@ impl MixerWasm {
         Ok(MixerWasm {
             engine,
             buffer_size: bs,
-            channel_ids: vec![None; max_channels as usize],
+            channel_ids: vec![None; n],
             channel_inputs: HashMap::new(),
             pid_map: HashMap::new(),
             master_meter: Meter::new(2, sample_rate, MeterBallistics::Fast),
@@ -128,6 +135,7 @@ impl MixerWasm {
             master_right: vec![0.0; bs],
             stereo_out: vec![0.0; bs * 2],
             eq_scratch: vec![0.0; bs],
+            eq_scratch2: vec![0.0; bs],
             deinterleave_scratch: Vec::new(),
             raw_input: Vec::new(),
             soloed_channels: HashSet::new(),
@@ -149,8 +157,8 @@ impl MixerWasm {
             bus_muted: vec![false; 8],
             bus_left: (0..8).map(|_| vec![0.0; bs]).collect(),
             bus_right: (0..8).map(|_| vec![0.0; bs]).collect(),
-            bus_eq_chains: HashMap::new(),
-            bus_dynamics_chains: HashMap::new(),
+            slot_in_l: (0..128).map(|_| vec![0.0; bs]).collect(),
+            slot_in_r: (0..128).map(|_| vec![0.0; bs]).collect(),
             bus_peak: HashMap::new(),
             bus_rms: HashMap::new(),
             unmapped_pid_drops: 0,
@@ -179,13 +187,22 @@ impl MixerWasm {
         Ok(self.channel_ids[i].unwrap())
     }
 
-    fn ensure_bus(&mut self, bus: u32) -> Result<(), JsValue> {
-        if bus >= 8 { return Err(JsValue::from_str("bus index out of range (max 8)")); }
-        if !self.bus_eq_chains.contains_key(&bus) {
-            self.bus_eq_chains.insert(bus, EqEffect::six_band(self.sample_rate));
-            self.bus_dynamics_chains.insert(bus, ChannelDynamics::new());
-        }
-        Ok(())
+    /// Build engine process params for a channel index (input or slot).
+    fn params_for(&self, ch_idx: u32) -> Option<(ChannelId, ChannelProcessParams)> {
+        let id = self.channel_ids.get(ch_idx as usize)?.as_ref().copied()?;
+        let ch = self.engine.get_channel(id).ok()?;
+        let pan_law = match ch.pan_law() {
+            PanLaw::Linear => PanLawType::Linear,
+            PanLaw::Minus3dB => PanLawType::Minus3dB,
+            PanLaw::Minus4Dot5dB => PanLawType::Minus4Dot5dB,
+            PanLaw::Minus6dB => PanLawType::Minus6dB,
+        };
+        let params = ChannelProcessParams {
+            fader_gain: ch.gain(), pan: ch.pan(), muted: ch.is_muted(),
+            input_gain_db: ch.input().gain_db, phase_inverted: ch.is_phase_inverted(),
+            pan_law,
+        };
+        Some((id, params))
     }
 
     // ── Input ──────────────────────────────────────────
@@ -544,12 +561,14 @@ impl MixerWasm {
         Ok(())
     }
 
-    // ── Bus mixing (8 independent summing buses) ───────
+    // ── Bus mixing (8 buses × 16 full-channel-strip slots) ──
 
     pub fn set_bus_source(&mut self, bus: u32, slot: u32, ch: u32) -> Result<(), JsValue> {
-        self.ensure_bus(bus)?;
-        if (slot as usize) >= 16 { return Err(JsValue::from_str("slot out of range (max 16)")); }
+        if bus >= 8 { return Err(JsValue::from_str("bus index out of range (max 8)")); }
+        if slot >= 16 { return Err(JsValue::from_str("slot out of range (max 16)")); }
         self.bus_sources[bus as usize][slot as usize] = Some(ch);
+        // Lazily create the slot's engine channel / EQ / dynamics (idx 128-255)
+        self.ensure_channel(128 + bus * 16 + slot)?;
         Ok(())
     }
 
@@ -564,120 +583,6 @@ impl MixerWasm {
     }
     pub fn set_bus_mute(&mut self, bus: u32, muted: bool) {
         if (bus as usize) < 8 { self.bus_muted[bus as usize] = muted; }
-    }
-
-    // ── Bus EQ controls ────────────────────────────────
-
-    pub fn set_bus_eq_band_gain(&mut self, bus: u32, band: usize, gain_db: f32) -> Result<(), JsValue> {
-        self.ensure_bus(bus)?;
-        if let Some(eq) = self.bus_eq_chains.get_mut(&bus) {
-            if band < eq.inner().bands.len() {
-                eq.inner_mut().bands[band].set_gain_db(gain_db as f64);
-                eq.inner_mut().bands[band].update_coefficients();
-            }
-        }
-        Ok(())
-    }
-    pub fn set_bus_eq_band_freq(&mut self, bus: u32, band: usize, freq_hz: f32) -> Result<(), JsValue> {
-        self.ensure_bus(bus)?;
-        if let Some(eq) = self.bus_eq_chains.get_mut(&bus) {
-            if band < eq.inner().bands.len() {
-                eq.inner_mut().bands[band].set_frequency(freq_hz as f64);
-                eq.inner_mut().bands[band].update_coefficients();
-            }
-        }
-        Ok(())
-    }
-    pub fn set_bus_eq_band_q(&mut self, bus: u32, band: usize, q: f32) -> Result<(), JsValue> {
-        self.ensure_bus(bus)?;
-        if let Some(eq) = self.bus_eq_chains.get_mut(&bus) {
-            if band < eq.inner().bands.len() {
-                eq.inner_mut().bands[band].set_q(q as f64);
-                eq.inner_mut().bands[band].update_coefficients();
-            }
-        }
-        Ok(())
-    }
-    pub fn set_bus_eq_bypass(&mut self, bus: u32, bypassed: bool) -> Result<(), JsValue> {
-        self.ensure_bus(bus)?;
-        if let Some(eq) = self.bus_eq_chains.get_mut(&bus) { eq.set_bypassed(bypassed); }
-        Ok(())
-    }
-
-    // ── Bus dynamics controls ──────────────────────────
-
-    pub fn enable_bus_compressor(&mut self, bus: u32) -> Result<(), JsValue> {
-        self.ensure_bus(bus)?;
-        self.bus_dynamics_chains.entry(bus).or_default().compressor = Some(CompressorEffect::broadcast(self.sample_rate));
-        Ok(())
-    }
-    pub fn disable_bus_compressor(&mut self, bus: u32) {
-        if let Some(d) = self.bus_dynamics_chains.get_mut(&bus) { d.compressor = None; }
-    }
-    pub fn enable_bus_gate(&mut self, bus: u32) -> Result<(), JsValue> {
-        self.ensure_bus(bus)?;
-        self.bus_dynamics_chains.entry(bus).or_default().gate = Some(GateEffect::denoise(self.sample_rate));
-        Ok(())
-    }
-    pub fn disable_bus_gate(&mut self, bus: u32) {
-        if let Some(d) = self.bus_dynamics_chains.get_mut(&bus) { d.gate = None; }
-    }
-    pub fn enable_bus_expander(&mut self, bus: u32) -> Result<(), JsValue> {
-        self.ensure_bus(bus)?;
-        self.bus_dynamics_chains.entry(bus).or_default().expander = Some(ExpanderEffect::gentle(self.sample_rate));
-        Ok(())
-    }
-    pub fn disable_bus_expander(&mut self, bus: u32) {
-        if let Some(d) = self.bus_dynamics_chains.get_mut(&bus) { d.expander = None; }
-    }
-
-    pub fn set_bus_comp_param(&mut self, bus: u32, param: u32, value: f32) -> Result<(), JsValue> {
-        self.ensure_bus(bus)?;
-        if let Some(d) = self.bus_dynamics_chains.get_mut(&bus) {
-            if let Some(c) = &mut d.compressor {
-                c.update_config(|cfg| match param {
-                    0 => cfg.threshold_db = value,
-                    1 => cfg.ratio = value,
-                    2 => cfg.attack_ms = value,
-                    3 => cfg.release_ms = value,
-                    4 => cfg.makeup_gain_db = value,
-                    5 => cfg.knee_db = value,
-                    _ => (),
-                });
-            }
-        }
-        Ok(())
-    }
-    pub fn set_bus_gate_param(&mut self, bus: u32, param: u32, value: f32) -> Result<(), JsValue> {
-        self.ensure_bus(bus)?;
-        if let Some(d) = self.bus_dynamics_chains.get_mut(&bus) {
-            if let Some(g) = &mut d.gate {
-                g.update_config(|cfg| match param {
-                    0 => cfg.threshold_db = value,
-                    1 => cfg.hysteresis_db = value,
-                    2 => cfg.attack_ms = value,
-                    3 => cfg.release_ms = value,
-                    4 => cfg.hold_ms = value,
-                    _ => (),
-                });
-            }
-        }
-        Ok(())
-    }
-    pub fn set_bus_expander_param(&mut self, bus: u32, param: u32, value: f32) -> Result<(), JsValue> {
-        self.ensure_bus(bus)?;
-        if let Some(d) = self.bus_dynamics_chains.get_mut(&bus) {
-            if let Some(e) = &mut d.expander {
-                e.update_config(|cfg| match param {
-                    0 => cfg.threshold_db = value,
-                    1 => cfg.ratio = value,
-                    2 => cfg.attack_ms = value,
-                    3 => cfg.release_ms = value,
-                    _ => (),
-                });
-            }
-        }
-        Ok(())
     }
 
     // ── Bus metering ───────────────────────────────────
@@ -713,42 +618,39 @@ impl MixerWasm {
         // Clear master bus
         for i in 0..self.buffer_size { self.master_left[i] = 0.0; self.master_right[i] = 0.0; }
 
-        // Clear bus accumulators
+        // Clear bus accumulators and slot input buffers
         for b in 0..8 {
             for s in 0..self.buffer_size {
                 self.bus_left[b][s] = 0.0;
                 self.bus_right[b][s] = 0.0;
             }
         }
-
-        // Build reverse mapping: channel → bus index (if assigned to any bus)
-        let mut ch_to_bus: HashMap<u32, u32> = HashMap::new();
-        for (bus_idx, slots) in self.bus_sources.iter().enumerate() {
-            for ch in slots.iter().flatten() {
-                ch_to_bus.insert(*ch, bus_idx as u32);
+        for s in 0..128 {
+            for i in 0..self.buffer_size {
+                self.slot_in_l[s][i] = 0.0;
+                self.slot_in_r[s][i] = 0.0;
             }
         }
 
-        // Collect channel data upfront (avoid borrow conflicts)
+        // Build reverse mapping: input channel → slot index (if assigned to a bus slot)
+        let mut ch_to_slot: HashMap<u32, u32> = HashMap::new();
+        for (bus_idx, slots) in self.bus_sources.iter().enumerate() {
+            for (slot_idx, ch) in slots.iter().enumerate() {
+                if let Some(&ch) = ch.as_ref() {
+                    ch_to_slot.insert(ch, 128 + (bus_idx as u32) * 16 + slot_idx as u32);
+                }
+            }
+        }
+
+        // Collect channel data upfront (avoid borrow conflicts).
+        // Pass 1 covers input channels only (indices 0-127); slot channels
+        // (128-255) are handled in pass 2 below.
         let ch_data: Vec<(u32, ChannelId, ChannelProcessParams)> = self.channel_inputs.keys()
-            .filter_map(|&ch_idx| {
-                let id = self.channel_ids.get(ch_idx as usize)?.as_ref().copied()?;
-                let ch = self.engine.get_channel(id).ok()?;
-                let pan_law = match ch.pan_law() {
-                    PanLaw::Linear => PanLawType::Linear,
-                    PanLaw::Minus3dB => PanLawType::Minus3dB,
-                    PanLaw::Minus4Dot5dB => PanLawType::Minus4Dot5dB,
-                    PanLaw::Minus6dB => PanLawType::Minus6dB,
-                };
-                let params = ChannelProcessParams {
-                    fader_gain: ch.gain(), pan: ch.pan(), muted: ch.is_muted(),
-                    input_gain_db: ch.input().gain_db, phase_inverted: ch.is_phase_inverted(),
-                    pan_law,
-                };
-                Some((ch_idx, id, params))
-            })
+            .filter(|&&ch_idx| ch_idx < 128)
+            .filter_map(|&ch_idx| self.params_for(ch_idx).map(|(id, p)| (ch_idx, id, p)))
             .collect();
 
+        // ── Pass 1: input channels ──
         for (ch_idx, id, params) in ch_data {
             if params.muted { continue; }
 
@@ -781,15 +683,17 @@ impl MixerWasm {
             self.channel_peak.insert(ch_idx, if peak > 1e-10 { 20.0 * peak.log10() } else { -200.0 });
             self.channel_rms.insert(ch_idx, if rms > 1e-10 { 20.0 * rms.log10() } else { -200.0 });
 
-            // Engine: input gain, fader, pan, sum to master
+            // Engine: input gain, fader, pan → stereo pair
             let (ch_left, ch_right) = self.engine.engine_mut()
                 .process_mix(&[(id, params)], &self.eq_scratch[..bs]);
 
-            if let Some(&bus_idx) = ch_to_bus.get(&ch_idx) {
-                let bi = bus_idx as usize;
+            // Route: if this channel feeds a bus slot, write to the slot's
+            // stereo input; else go directly to master.
+            if let Some(&slot_idx) = ch_to_slot.get(&ch_idx) {
+                let si = (slot_idx - 128) as usize;
                 for i in 0..bs {
-                    self.bus_left[bi][i] += ch_left[i];
-                    self.bus_right[bi][i] += ch_right[i];
+                    self.slot_in_l[si][i] += ch_left[i];
+                    self.slot_in_r[si][i] += ch_right[i];
                 }
             } else {
                 for i in 0..bs {
@@ -799,29 +703,79 @@ impl MixerWasm {
             }
         }
 
-        // Process buses
+        // ── Pass 2: bus slots (indices 128-255) are full channel strips ──
+        // Each slot receives a stereo signal (its assigned inputs' processed
+        // output), runs dynamics → EQ, then fader/pan via the engine, and
+        // feeds its bus accumulator.
+        for bus_idx in 0..8u32 {
+            for slot in 0..16u32 {
+                let slot_idx = 128 + bus_idx * 16 + slot;
+                let si = slot_idx as usize - 128;
+
+                let Some((id, params)) = self.params_for(slot_idx) else { continue; };
+                if params.muted { continue; }
+
+                // Process L through the slot's dynamics → EQ into eq_scratch2
+                self.eq_scratch2[..bs].copy_from_slice(&self.slot_in_l[si][..bs]);
+                if let Some(d) = self.dynamics_chains.get_mut(&slot_idx) {
+                    d.process(&mut self.eq_scratch2[..bs]);
+                }
+                if let Some(eq) = self.eq_chains.get_mut(&slot_idx) {
+                    if !eq.is_bypassed() {
+                        eq.process(&mut self.eq_scratch2[..bs]);
+                    }
+                }
+
+                // Process R through the same dynamics → EQ into eq_scratch
+                self.eq_scratch[..bs].copy_from_slice(&self.slot_in_r[si][..bs]);
+                if let Some(d) = self.dynamics_chains.get_mut(&slot_idx) {
+                    d.process(&mut self.eq_scratch[..bs]);
+                }
+                if let Some(eq) = self.eq_chains.get_mut(&slot_idx) {
+                    if !eq.is_bypassed() {
+                        eq.process(&mut self.eq_scratch[..bs]);
+                    }
+                }
+
+                // Slot metering (post-dynamics, post-EQ, pre-fader, over L+R)
+                let peak = self.eq_scratch2[..bs].iter().chain(self.eq_scratch[..bs].iter())
+                    .map(|s| s.abs()).fold(0.0f32, f32::max);
+                let sq_sum: f32 = self.eq_scratch2[..bs].iter().chain(self.eq_scratch[..bs].iter())
+                    .map(|s| s * s).sum();
+                let rms = (sq_sum / (bs as f32 * 2.0)).sqrt();
+                self.channel_peak.insert(slot_idx, if peak > 1e-10 { 20.0 * peak.log10() } else { -200.0 });
+                self.channel_rms.insert(slot_idx, if rms > 1e-10 { 20.0 * rms.log10() } else { -200.0 });
+
+                // Engine: input gain, fader, pan on L and R separately, then
+                // sum. process_mix is linear, so the result is the pan-
+                // weighted sum of both halves of the stereo input.
+                let bi = bus_idx as usize;
+                let (l1, r1) = self.engine.engine_mut()
+                    .process_mix(&[(id, params.clone())], &self.eq_scratch2[..bs]);
+                for i in 0..bs {
+                    self.bus_left[bi][i] += l1[i];
+                    self.bus_right[bi][i] += r1[i];
+                }
+                let (l2, r2) = self.engine.engine_mut()
+                    .process_mix(&[(id, params)], &self.eq_scratch[..bs]);
+                for i in 0..bs {
+                    self.bus_left[bi][i] += l2[i];
+                    self.bus_right[bi][i] += r2[i];
+                }
+            }
+        }
+
+        // ── Pass 3: buses to master ──
         for bus_idx in 0..8u32 {
             if self.bus_muted[bus_idx as usize] { continue; }
 
-            // Apply bus dynamics (L then R independently)
-            if let Some(d) = self.bus_dynamics_chains.get_mut(&bus_idx) {
-                d.process(&mut self.bus_left[bus_idx as usize][..bs]);
-                d.process(&mut self.bus_right[bus_idx as usize][..bs]);
-            }
-
-            // Apply bus EQ (L then R)
-            if let Some(eq) = self.bus_eq_chains.get_mut(&bus_idx) {
-                if !eq.is_bypassed() {
-                    eq.process(&mut self.bus_left[bus_idx as usize][..bs]);
-                    eq.process(&mut self.bus_right[bus_idx as usize][..bs]);
-                }
-            }
-
-            // Bus metering (post-dynamics, post-EQ, pre-fader)
+            // Bus metering on the accumulator (sum of slot outputs, pre-gain)
             let bl = &self.bus_left[bus_idx as usize];
-            let peak = bl[..bs].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-            let sq: f32 = bl[..bs].iter().map(|s| s * s).sum();
-            let rms = (sq / bs as f32).sqrt();
+            let br = &self.bus_right[bus_idx as usize];
+            let peak = bl[..bs].iter().chain(br[..bs].iter())
+                .map(|s| s.abs()).fold(0.0f32, f32::max);
+            let sq: f32 = bl[..bs].iter().chain(br[..bs].iter()).map(|s| s * s).sum();
+            let rms = (sq / (bs as f32 * 2.0)).sqrt();
             self.bus_peak.insert(bus_idx, if peak > 1e-10 { 20.0 * peak.log10() } else { -200.0 });
             self.bus_rms.insert(bus_idx, if rms > 1e-10 { 20.0 * rms.log10() } else { -200.0 });
 
