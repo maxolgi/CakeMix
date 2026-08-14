@@ -216,8 +216,8 @@ body {
     height: calc(100vh - 40px); overflow-y: auto; overflow-x: hidden;
     transition: width 0.15s ease;
 }
-.detail-panel .knob-label { font-size: 9px; }
-.detail-panel .knob-value { font-size: 9px; min-height: 11px; }
+.detail-panel .knob-label { font-size: 10px; }
+.detail-panel .knob-value { font-size: 10px; min-height: 12px; }
 .detail-header { display: flex; align-items: center; gap: 8px; padding-bottom: 6px; margin-bottom: 2px; border-bottom: 1px solid #1e1e28; }
 .detail-name-input { flex: 1; min-width: 0; background: #11111a; border: 1px solid #222230; border-radius: 3px; color: #ccc; font-size: 0.95em; padding: 4px 6px; outline: none; font-family: 'SF Mono', monospace; }
 .detail-name-input:focus { border-color: #2a4a6a; }
@@ -226,8 +226,8 @@ body {
 .detail-section-divider { display: flex; align-items: center; gap: 4px; padding: 2px 0; }
 .detail-section-divider::after { content: ''; flex: 1; height: 1px; background: #1a1a25; }
 .detail-section-header { display: flex; justify-content: space-between; align-items: center; padding: 2px 0; }
-.detail-section-label { font-size: 0.5em; color: #555; font-weight: 700; letter-spacing: 1px; }
-.detail-toggle { font-size: 0.45em; font-weight: 700; padding: 1px 5px; border-radius: 2px; border: 1px solid #333; background: #1a1a22; color: #555; cursor: pointer; }
+.detail-section-label { font-size: 11px; color: #888; font-weight: 700; letter-spacing: 1px; }
+.detail-toggle { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 2px; border: 1px solid #333; background: #1a1a22; color: #555; cursor: pointer; }
 .detail-toggle.active { background: #1a3a1a; color: #4ade80; border-color: #2a5a2a; }
 .detail-toggle.bypassed { background: #2a1414; color: #f87171; border-color: #5a2a2a; }
 .detail-input-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 4px 0; }
@@ -235,13 +235,13 @@ body {
 .phase-btn:hover { border-color: #444; color: #aaa; }
 .phase-btn.active { background: #2a2a4a; color: #8ab4f8; border-color: #3a4a7a; box-shadow: 0 0 6px rgba(74,143,221,0.25); }
 .detail-select { background: #11111a; border: 1px solid #222230; border-radius: 3px; color: #ccc; font-size: 0.85em; padding: 2px 4px; outline: none; }
-.detail-select-label { display: flex; align-items: center; gap: 4px; font-size: 0.5em; color: #555; }
+.detail-select-label { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #888; }
 
 /* ── Knob ────────────────────────────── */
 .knob-container { display: flex; flex-direction: column; align-items: center; gap: 1px; user-select: none; cursor: ns-resize; }
 .knob-canvas { display: block; }
-.knob-label { font-size: 0.42em; color: #666; font-weight: 600; letter-spacing: 0.5px; }
-.knob-value { font-size: 0.4em; color: #aaa; font-family: 'SF Mono', monospace; min-height: 8px; width: 48px; text-align: center; }
+.knob-label { font-size: 11px; color: #888; font-weight: 600; letter-spacing: 0.5px; }
+.knob-value { font-size: 11px; color: #aaa; font-family: 'SF Mono', monospace; min-height: 14px; width: 48px; text-align: center; }
 
 /* ── Gain Reduction Meter ────────────── */
 .gr-meter-container { display: flex; align-items: center; gap: 4px; }
@@ -256,17 +256,17 @@ body {
 /* ── EQ Bands ────────────────────────── */
 .eq-bands { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; }
 .eq-band-row { display: flex; align-items: center; gap: 8px; }
-.eq-band-name { font-size: 0.5em; color: #666; min-width: 36px; }
+.eq-band-name { font-size: 11px; color: #888; min-width: 36px; }
 .eq-band-knobs { display: flex; gap: 4px; align-items: center; }
 .detail-eq-curve { width: 100%; padding: 2px; background: rgba(0,0,0,0.3); border-radius: 3px; margin: 2px 0; }
 
 /* ── Send Rows ───────────────────────── */
 .send-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
 .send-row.disabled { opacity: 0.45; }
-.send-num { font-size: 0.5em; color: #666; min-width: 20px; }
-.send-pre-btn { font-size: 0.45em; padding: 2px 6px; border-radius: 2px; border: 1px solid #333; background: #1a1a22; color: #666; cursor: pointer; }
+.send-num { font-size: 11px; color: #888; min-width: 20px; }
+.send-pre-btn { font-size: 10px; padding: 3px 8px; border-radius: 2px; border: 1px solid #333; background: #1a1a22; color: #777; cursor: pointer; }
 .send-pre-btn.active { background: #1a3a5a; color: #8ab4f8; border-color: #2a5a8a; }
-.send-bus-select { background: #11111a; border: 1px solid #222230; border-radius: 3px; color: #ccc; font-size: 0.45em; padding: 2px 4px; flex: 1; min-width: 0; }
+.send-bus-select { background: #11111a; border: 1px solid #222230; border-radius: 3px; color: #ccc; font-size: 10px; padding: 2px 4px; flex: 1; min-width: 0; }
 .send-pre-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
 /* ── Pan + Routing ───────────────────── */
