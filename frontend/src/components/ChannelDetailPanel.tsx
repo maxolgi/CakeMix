@@ -6,6 +6,8 @@ import {
   setCompEnabled, setCompThreshold, setCompRatio, setCompAttack, setCompRelease, setCompKnee, setCompMakeup,
   setGateEnabled, setGateThreshold, setGateHysteresis, setGateAttack, setGateRelease, setGateHold,
   setExpanderEnabled, setExpanderThreshold, setExpanderRatio, setExpanderAttack, setExpanderRelease,
+  setAuxSend,
+  routeToBus, routeToMaster,
   busChannels, setBusSource, clearBusSource, NUM_CHANNELS,
   faderToGain, gainToFader, formatGainDb,
   setChannels, sendToWorklet,
@@ -39,7 +41,7 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
 
   // Section collapse state (default some to collapsed)
   const [collapsed, setCollapsed] = createSignal<Record<string, boolean>>({
-    INPUT: true, EQ: true,
+    INPUT: true, EQ: true, SENDS: true,
   });
   const toggle = (s: string) => setCollapsed(c => ({ ...c, [s]: !c[s] }));
   const isCollapsed = (s: string) => !!collapsed()[s];
@@ -50,6 +52,7 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
     let w = 100; // minimum
     if (!isCollapsed("INPUT")) w = Math.max(w, 360); // 6 comp knobs + labels + GR meter
     if (!isCollapsed("EQ")) w = Math.max(w, 230);
+    if (!isCollapsed("SENDS")) w = Math.max(w, 250);
     return w;
   };
 
@@ -278,7 +281,61 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
         )}
       </div>
 
-      {/* ── PAN ────────────────────────────────────────── */}
+      {/* ── SENDS (4 aux) ──────────────────────────────── */}
+      {!props.slot && (
+      <div class="detail-section">
+        <div class="detail-section-divider collapsible" onClick={() => toggle("SENDS")}>
+          <span class="detail-section-label">SENDS</span>
+        </div>
+        {!isCollapsed("SENDS") && (
+        <>
+        {[0, 1, 2, 3].map((si) => {
+          const s = () => ch().sends[si];
+          const level = () => {
+            const l = s().levelDb;
+            return isFinite(l) ? l : -60;
+          };
+          const hasBus = () => s().busId !== null;
+          return (
+            <div class={`send-row ${hasBus() ? "" : "disabled"}`}>
+              <span class="send-num">S{si + 1}</span>
+              <Knob
+                label="LVL"
+                value={level()}
+                min={-60} max={6} defaultValue={-60}
+                unit="dB" format={fmtDb} size={36} log
+                onChange={(v) => { if (hasBus()) setAuxSend(idx, si, v, s().preFader, s().busId); }}
+              />
+              <button
+                class={`send-pre-btn ${s().preFader ? "active" : ""}`}
+                onClick={() => setAuxSend(idx, si, level(), !s().preFader, s().busId)}
+                disabled={!hasBus()}
+                title={s().preFader ? "Pre-fader send (click for post)" : "Post-fader send (click for pre)"}
+              >{s().preFader ? "PRE" : "PST"}</button>
+              <select
+                class="send-bus-select"
+                value={s().busId ?? ""}
+                onInput={(e) => {
+                  const v = e.currentTarget.value;
+                  const busId = v ? parseInt(v) : null;
+                  setAuxSend(idx, si, level(), s().preFader, busId);
+                }}
+                title={hasBus() ? "Send target bus" : "Pick a bus to enable this send"}
+              >
+                <option value="">—</option>
+                {busChannels.map((bus, id) => (
+                  <option value={id}>{bus.name}</option>
+                ))}
+              </select>
+            </div>
+          );
+        })}
+        </>
+        )}
+      </div>
+      )}
+
+      {/* ── PAN + ROUTING ──────────────────────────────── */}
       <div class="detail-section">
         <div class="detail-section-divider">
           <span class="detail-section-label">PAN</span>
@@ -292,6 +349,24 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
             onInput={(e) => onPan(parseFloat(e.currentTarget.value))}
             title="Pan"
           />
+        </div>
+        <div class="detail-routing-row">
+          <div class="detail-select-label">ROUTE</div>
+          <select
+            class="detail-select detail-routing-select"
+            value={ch().outputBus === "master" ? "master" : `bus-${ch().outputBus}`}
+            onInput={(e) => {
+              const val = e.currentTarget.value;
+              if (val === "master") routeToMaster(idx);
+              else routeToBus(idx, parseInt(val.replace("bus-", "")));
+            }}
+            title="Channel output routing — master or bus"
+          >
+            <option value="master">MASTER</option>
+            {busChannels.map((bus, id) => (
+              <option value={`bus-${id}`}>{bus.name}</option>
+            ))}
+          </select>
         </div>
       </div>
 
