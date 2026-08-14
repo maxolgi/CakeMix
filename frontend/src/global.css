@@ -210,7 +210,8 @@ body {
 /* ── Mixer Console ───────────────────── */
 .mixer-console {
     display: flex; align-items: flex-start; gap: 2px;
-    padding: 4px 2px; overflow-x: auto; height: calc(100vh - 40px);
+    padding: 4px 2px; overflow-x: auto; overflow-y: hidden;
+    height: calc(100vh - 40px);
 }
 
 /* ── Detail Panel ────────────────────── */
