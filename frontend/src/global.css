@@ -310,3 +310,26 @@ body {
 .bank-btn { width: 24px; height: 22px; font-size: 0.7em; font-weight: 600; border: 1px solid #2a2a30; border-radius: 2px; background: #16161e; color: #666; cursor: pointer; transition: all 0.1s; }
 .bank-btn:hover { border-color: #444; color: #aaa; }
 .bank-btn.active { background: #1a3a5a; color: #8ab4f8; border-color: #2a5a8a; }
+
+/* ── Bus Manager Bar ─────────────────── */
+.bus-manager {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 12px; background: #0e0e14; border-bottom: 1px solid #1e1e28;
+}
+.bus-manager-label { font-size: 0.65em; color: #555; font-weight: 700; letter-spacing: 1px; }
+.bus-manager-list { display: flex; gap: 6px; flex: 1; overflow: hidden; }
+.bus-manager-empty { font-size: 0.65em; color: #444; }
+.bus-item {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 0.6em; padding: 2px 6px; border-radius: 3px;
+    background: #16161e; border: 1px solid #222230; color: #777;
+}
+.bus-item-id { color: #555; font-family: 'SF Mono', monospace; }
+.bus-item-name { color: #aaa; }
+.bus-item-type { color: #555; }
+.bus-add-btn {
+    font-size: 0.6em; font-weight: 700; padding: 3px 8px; border-radius: 3px;
+    border: 1px solid #2a3a4a; background: #16202a; color: #6a8aaa; cursor: pointer;
+    transition: all 0.1s;
+}
+.bus-add-btn:hover { background: #1a2a3a; color: #8ab4f8; border-color: #3a4a5a; }
