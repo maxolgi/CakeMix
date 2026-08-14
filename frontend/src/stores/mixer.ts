@@ -2,6 +2,8 @@ import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 
 export const NUM_CHANNELS = 128;
+export const NUM_SLOTS = 128;
+export const SLOT_BASE = 128;
 
 export interface EqBand { gainDb: number; freqHz: number; q: number; }
 export interface AuxSend { levelDb: number; preFader: boolean; busId: number | null; }
@@ -12,15 +14,8 @@ export interface BusState {
   sources: (number | null)[];  // 16 slots
   gain: number;
   muted: boolean;
-  eqBypassed: boolean;
-  eqBands: EqBand[];
-  gateEnabled: boolean; gateThresholdDb: number; gateHysteresisDb: number;
-  gateAttackMs: number; gateReleaseMs: number; gateHoldMs: number;
-  compEnabled: boolean; compThresholdDb: number; compRatio: number; compKneeDb: number;
-  compAttackMs: number; compReleaseMs: number; compMakeupDb: number;
-  expanderEnabled: boolean; expanderThresholdDb: number; expanderRatio: number;
-  expanderAttackMs: number; expanderReleaseMs: number;
-  peakDb: number; rmsDb: number;
+  peakDb: number;
+  rmsDb: number;
 }
 
 export interface BusMeter { bus: number; peak: number; rms: number; }
@@ -74,7 +69,7 @@ function defaultChannel(index: number): ChannelState {
 }
 
 export const [channels, setChannels] = createStore<ChannelState[]>(
-  Array.from({ length: NUM_CHANNELS }, (_, i) => defaultChannel(i))
+  Array.from({ length: NUM_CHANNELS + NUM_SLOTS }, (_, i) => defaultChannel(i))
 );
 
 function defaultBus(index: number): BusState {
@@ -82,10 +77,6 @@ function defaultBus(index: number): BusState {
     name: `Bus ${index + 1}`,
     sources: Array.from({ length: 16 }, () => null),
     gain: 1.0, muted: false,
-    eqBypassed: false, eqBands: EQ_BAND_DEFAULTS.map(b => ({ ...b })),
-    gateEnabled: false, gateThresholdDb: -50, gateHysteresisDb: 6, gateAttackMs: 2, gateReleaseMs: 100, gateHoldMs: 10,
-    compEnabled: false, compThresholdDb: -12, compRatio: 3, compKneeDb: 3, compAttackMs: 5, compReleaseMs: 100, compMakeupDb: 3,
-    expanderEnabled: false, expanderThresholdDb: -40, expanderRatio: 2, expanderAttackMs: 5, expanderReleaseMs: 100,
     peakDb: -Infinity, rmsDb: -Infinity,
   };
 }
@@ -200,47 +191,9 @@ export function setBusMute(bus: number, muted: boolean) {
   sendToWorklet({ type: "set-bus-mute", bus, muted });
 }
 
-// EQ
-export function setBusEqGain(bus: number, band: number, gainDb: number) {
-  setBusChannels(bus, "eqBands", band, "gainDb", gainDb);
-  sendToWorklet({ type: "set-bus-eq-gain", bus, band, gainDb });
+// Slots are full channel strips at indices 128-255.
+// Slot idx = SLOT_BASE + bus*16 + slot; use the channel helpers
+// (setEqGain, setCompEnabled, …) with this index.
+export function slotChannelIndex(bus: number, slot: number): number {
+  return SLOT_BASE + bus * 16 + slot;
 }
-export function setBusEqFreq(bus: number, band: number, freqHz: number) {
-  setBusChannels(bus, "eqBands", band, "freqHz", freqHz);
-  sendToWorklet({ type: "set-bus-eq-freq", bus, band, freqHz });
-}
-export function setBusEqQ(bus: number, band: number, q: number) {
-  setBusChannels(bus, "eqBands", band, "q", q);
-  sendToWorklet({ type: "set-bus-eq-q", bus, band, q });
-}
-export function setBusEqBypass(bus: number, bypassed: boolean) {
-  setBusChannels(bus, "eqBypassed", bypassed);
-  sendToWorklet({ type: "set-bus-eq-bypass", bus, bypassed });
-}
-
-// Compressor
-export function setBusCompEnabled(bus: number, enabled: boolean) {
-  setBusChannels(bus, "compEnabled", enabled);
-  sendToWorklet({ type: enabled ? "enable-bus-comp" : "disable-bus-comp", bus });
-}
-export function setBusCompThreshold(bus: number, v: number) { setBusChannels(bus, "compThresholdDb", v); sendToWorklet({ type: "set-bus-comp-param", bus, param: 0, value: v }); }
-export function setBusCompRatio(bus: number, v: number) { setBusChannels(bus, "compRatio", v); sendToWorklet({ type: "set-bus-comp-param", bus, param: 1, value: v }); }
-export function setBusCompAttack(bus: number, v: number) { setBusChannels(bus, "compAttackMs", v); sendToWorklet({ type: "set-bus-comp-param", bus, param: 2, value: v }); }
-export function setBusCompRelease(bus: number, v: number) { setBusChannels(bus, "compReleaseMs", v); sendToWorklet({ type: "set-bus-comp-param", bus, param: 3, value: v }); }
-export function setBusCompMakeup(bus: number, v: number) { setBusChannels(bus, "compMakeupDb", v); sendToWorklet({ type: "set-bus-comp-param", bus, param: 4, value: v }); }
-export function setBusCompKnee(bus: number, v: number) { setBusChannels(bus, "compKneeDb", v); sendToWorklet({ type: "set-bus-comp-param", bus, param: 5, value: v }); }
-
-// Gate
-export function setBusGateEnabled(bus: number, enabled: boolean) { setBusChannels(bus, "gateEnabled", enabled); sendToWorklet({ type: enabled ? "enable-bus-gate" : "disable-bus-gate", bus }); }
-export function setBusGateThreshold(bus: number, v: number) { setBusChannels(bus, "gateThresholdDb", v); sendToWorklet({ type: "set-bus-gate-param", bus, param: 0, value: v }); }
-export function setBusGateHysteresis(bus: number, v: number) { setBusChannels(bus, "gateHysteresisDb", v); sendToWorklet({ type: "set-bus-gate-param", bus, param: 1, value: v }); }
-export function setBusGateAttack(bus: number, v: number) { setBusChannels(bus, "gateAttackMs", v); sendToWorklet({ type: "set-bus-gate-param", bus, param: 2, value: v }); }
-export function setBusGateRelease(bus: number, v: number) { setBusChannels(bus, "gateReleaseMs", v); sendToWorklet({ type: "set-bus-gate-param", bus, param: 3, value: v }); }
-export function setBusGateHold(bus: number, v: number) { setBusChannels(bus, "gateHoldMs", v); sendToWorklet({ type: "set-bus-gate-param", bus, param: 4, value: v }); }
-
-// Expander
-export function setBusExpanderEnabled(bus: number, enabled: boolean) { setBusChannels(bus, "expanderEnabled", enabled); sendToWorklet({ type: enabled ? "enable-bus-expander" : "disable-bus-expander", bus }); }
-export function setBusExpanderThreshold(bus: number, v: number) { setBusChannels(bus, "expanderThresholdDb", v); sendToWorklet({ type: "set-bus-expander-param", bus, param: 0, value: v }); }
-export function setBusExpanderRatio(bus: number, v: number) { setBusChannels(bus, "expanderRatio", v); sendToWorklet({ type: "set-bus-expander-param", bus, param: 1, value: v }); }
-export function setBusExpanderAttack(bus: number, v: number) { setBusChannels(bus, "expanderAttackMs", v); sendToWorklet({ type: "set-bus-expander-param", bus, param: 2, value: v }); }
-export function setBusExpanderRelease(bus: number, v: number) { setBusChannels(bus, "expanderReleaseMs", v); sendToWorklet({ type: "set-bus-expander-param", bus, param: 3, value: v }); }

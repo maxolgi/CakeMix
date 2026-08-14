@@ -32,7 +32,7 @@ class MixerProcessor extends AudioWorkletProcessor {
                 try {
                     var module = msg.wasmBytes ? new WebAssembly.Module(msg.wasmBytes) : msg.module;
                     initSync({ module: module });
-                    this._mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 128);
+                    this._mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 256);
                     this.port.postMessage({ type: "wasm-ready" });
                 } catch(err) {
                     this.port.postMessage({ type: "error", msg: String(err) });
@@ -115,32 +115,6 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (this._mixer) try { this._mixer.set_bus_gain(msg.bus, msg.gain); } catch(e) {}
             } else if (msg.type === "set-bus-mute") {
                 if (this._mixer) try { this._mixer.set_bus_mute(msg.bus, msg.muted); } catch(e) {}
-            } else if (msg.type === "set-bus-eq-gain") {
-                if (this._mixer) try { this._mixer.set_bus_eq_band_gain(msg.bus, msg.band, msg.gainDb); } catch(e) {}
-            } else if (msg.type === "set-bus-eq-freq") {
-                if (this._mixer) try { this._mixer.set_bus_eq_band_freq(msg.bus, msg.band, msg.freqHz); } catch(e) {}
-            } else if (msg.type === "set-bus-eq-q") {
-                if (this._mixer) try { this._mixer.set_bus_eq_band_q(msg.bus, msg.band, msg.q); } catch(e) {}
-            } else if (msg.type === "set-bus-eq-bypass") {
-                if (this._mixer) try { this._mixer.set_bus_eq_bypass(msg.bus, msg.bypassed); } catch(e) {}
-            } else if (msg.type === "enable-bus-comp") {
-                if (this._mixer) try { this._mixer.enable_bus_compressor(msg.bus); } catch(e) {}
-            } else if (msg.type === "disable-bus-comp") {
-                if (this._mixer) try { this._mixer.disable_bus_compressor(msg.bus); } catch(e) {}
-            } else if (msg.type === "set-bus-comp-param") {
-                if (this._mixer) try { this._mixer.set_bus_comp_param(msg.bus, msg.param, msg.value); } catch(e) {}
-            } else if (msg.type === "enable-bus-gate") {
-                if (this._mixer) try { this._mixer.enable_bus_gate(msg.bus); } catch(e) {}
-            } else if (msg.type === "disable-bus-gate") {
-                if (this._mixer) try { this._mixer.disable_bus_gate(msg.bus); } catch(e) {}
-            } else if (msg.type === "set-bus-gate-param") {
-                if (this._mixer) try { this._mixer.set_bus_gate_param(msg.bus, msg.param, msg.value); } catch(e) {}
-            } else if (msg.type === "enable-bus-expander") {
-                if (this._mixer) try { this._mixer.enable_bus_expander(msg.bus); } catch(e) {}
-            } else if (msg.type === "disable-bus-expander") {
-                if (this._mixer) try { this._mixer.disable_bus_expander(msg.bus); } catch(e) {}
-            } else if (msg.type === "set-bus-expander-param") {
-                if (this._mixer) try { this._mixer.set_bus_expander_param(msg.bus, msg.param, msg.value); } catch(e) {}
             } else if (msg.type === "pcm") {
                 // External PCM from WebSRT worker (relayed via main thread).
                 // msg.samples is a Float32Array, msg.pid identifies the stream.

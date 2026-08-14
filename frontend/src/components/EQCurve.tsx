@@ -1,5 +1,5 @@
 import { onMount, onCleanup, createEffect, on } from "solid-js";
-import { channels, busChannels } from "../stores/mixer";
+import { channels } from "../stores/mixer";
 
 function biquadResponse(type: string, f0: number, q: number, dbGain: number, freq: number, sampleRate: number): number {
   if (type === "none" || dbGain === 0) return 0;
@@ -59,11 +59,10 @@ const BAND_INFO = [
   { type: "high_shelf", freq: 10000, q: 0.707 },
 ];
 
-export function EQCurve(props: { channelIndex: number; bus?: boolean }) {
+export function EQCurve(props: { channelIndex: number }) {
   let canvas: HTMLCanvasElement | undefined;
 
-  // When `bus` is set, channelIndex selects a bus; otherwise a channel.
-  const eqState = () => props.bus ? busChannels[props.channelIndex] : channels[props.channelIndex];
+  const eqState = () => channels[props.channelIndex];
 
   function draw() {
     if (!canvas) return;

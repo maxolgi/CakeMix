@@ -151,24 +151,6 @@ class MixerWasm {
         wasm.mixerwasm_clear_bus_source(this.__wbg_ptr, bus, slot);
     }
     /**
-     * @param {number} bus
-     */
-    disable_bus_compressor(bus) {
-        wasm.mixerwasm_disable_bus_compressor(this.__wbg_ptr, bus);
-    }
-    /**
-     * @param {number} bus
-     */
-    disable_bus_expander(bus) {
-        wasm.mixerwasm_disable_bus_expander(this.__wbg_ptr, bus);
-    }
-    /**
-     * @param {number} bus
-     */
-    disable_bus_gate(bus) {
-        wasm.mixerwasm_disable_bus_gate(this.__wbg_ptr, bus);
-    }
-    /**
      * @param {number} ch
      */
     disable_compressor(ch) {
@@ -185,33 +167,6 @@ class MixerWasm {
      */
     disable_gate(ch) {
         wasm.mixerwasm_disable_gate(this.__wbg_ptr, ch);
-    }
-    /**
-     * @param {number} bus
-     */
-    enable_bus_compressor(bus) {
-        const ret = wasm.mixerwasm_enable_bus_compressor(this.__wbg_ptr, bus);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * @param {number} bus
-     */
-    enable_bus_expander(bus) {
-        const ret = wasm.mixerwasm_enable_bus_expander(this.__wbg_ptr, bus);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * @param {number} bus
-     */
-    enable_bus_gate(bus) {
-        const ret = wasm.mixerwasm_enable_bus_gate(this.__wbg_ptr, bus);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
     }
     /**
      * Enable compressor on a channel with broadcast defaults (-12 dB threshold, 3:1 ratio).
@@ -389,86 +344,10 @@ class MixerWasm {
     }
     /**
      * @param {number} bus
-     * @param {number} param
-     * @param {number} value
-     */
-    set_bus_comp_param(bus, param, value) {
-        const ret = wasm.mixerwasm_set_bus_comp_param(this.__wbg_ptr, bus, param, value);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * @param {number} bus
-     * @param {number} band
-     * @param {number} freq_hz
-     */
-    set_bus_eq_band_freq(bus, band, freq_hz) {
-        const ret = wasm.mixerwasm_set_bus_eq_band_freq(this.__wbg_ptr, bus, band, freq_hz);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * @param {number} bus
-     * @param {number} band
-     * @param {number} gain_db
-     */
-    set_bus_eq_band_gain(bus, band, gain_db) {
-        const ret = wasm.mixerwasm_set_bus_eq_band_gain(this.__wbg_ptr, bus, band, gain_db);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * @param {number} bus
-     * @param {number} band
-     * @param {number} q
-     */
-    set_bus_eq_band_q(bus, band, q) {
-        const ret = wasm.mixerwasm_set_bus_eq_band_q(this.__wbg_ptr, bus, band, q);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * @param {number} bus
-     * @param {boolean} bypassed
-     */
-    set_bus_eq_bypass(bus, bypassed) {
-        const ret = wasm.mixerwasm_set_bus_eq_bypass(this.__wbg_ptr, bus, bypassed);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * @param {number} bus
-     * @param {number} param
-     * @param {number} value
-     */
-    set_bus_expander_param(bus, param, value) {
-        const ret = wasm.mixerwasm_set_bus_expander_param(this.__wbg_ptr, bus, param, value);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * @param {number} bus
      * @param {number} gain
      */
     set_bus_gain(bus, gain) {
         wasm.mixerwasm_set_bus_gain(this.__wbg_ptr, bus, gain);
-    }
-    /**
-     * @param {number} bus
-     * @param {number} param
-     * @param {number} value
-     */
-    set_bus_gate_param(bus, param, value) {
-        const ret = wasm.mixerwasm_set_bus_gate_param(this.__wbg_ptr, bus, param, value);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
     }
     /**
      * @param {number} bus
@@ -1047,7 +926,7 @@ class MixerProcessor extends AudioWorkletProcessor {
                 try {
                     var module = msg.wasmBytes ? new WebAssembly.Module(msg.wasmBytes) : msg.module;
                     initSync({ module: module });
-                    this._mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 128);
+                    this._mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 256);
                     this.port.postMessage({ type: "wasm-ready" });
                 } catch(err) {
                     this.port.postMessage({ type: "error", msg: String(err) });
@@ -1130,32 +1009,6 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (this._mixer) try { this._mixer.set_bus_gain(msg.bus, msg.gain); } catch(e) {}
             } else if (msg.type === "set-bus-mute") {
                 if (this._mixer) try { this._mixer.set_bus_mute(msg.bus, msg.muted); } catch(e) {}
-            } else if (msg.type === "set-bus-eq-gain") {
-                if (this._mixer) try { this._mixer.set_bus_eq_band_gain(msg.bus, msg.band, msg.gainDb); } catch(e) {}
-            } else if (msg.type === "set-bus-eq-freq") {
-                if (this._mixer) try { this._mixer.set_bus_eq_band_freq(msg.bus, msg.band, msg.freqHz); } catch(e) {}
-            } else if (msg.type === "set-bus-eq-q") {
-                if (this._mixer) try { this._mixer.set_bus_eq_band_q(msg.bus, msg.band, msg.q); } catch(e) {}
-            } else if (msg.type === "set-bus-eq-bypass") {
-                if (this._mixer) try { this._mixer.set_bus_eq_bypass(msg.bus, msg.bypassed); } catch(e) {}
-            } else if (msg.type === "enable-bus-comp") {
-                if (this._mixer) try { this._mixer.enable_bus_compressor(msg.bus); } catch(e) {}
-            } else if (msg.type === "disable-bus-comp") {
-                if (this._mixer) try { this._mixer.disable_bus_compressor(msg.bus); } catch(e) {}
-            } else if (msg.type === "set-bus-comp-param") {
-                if (this._mixer) try { this._mixer.set_bus_comp_param(msg.bus, msg.param, msg.value); } catch(e) {}
-            } else if (msg.type === "enable-bus-gate") {
-                if (this._mixer) try { this._mixer.enable_bus_gate(msg.bus); } catch(e) {}
-            } else if (msg.type === "disable-bus-gate") {
-                if (this._mixer) try { this._mixer.disable_bus_gate(msg.bus); } catch(e) {}
-            } else if (msg.type === "set-bus-gate-param") {
-                if (this._mixer) try { this._mixer.set_bus_gate_param(msg.bus, msg.param, msg.value); } catch(e) {}
-            } else if (msg.type === "enable-bus-expander") {
-                if (this._mixer) try { this._mixer.enable_bus_expander(msg.bus); } catch(e) {}
-            } else if (msg.type === "disable-bus-expander") {
-                if (this._mixer) try { this._mixer.disable_bus_expander(msg.bus); } catch(e) {}
-            } else if (msg.type === "set-bus-expander-param") {
-                if (this._mixer) try { this._mixer.set_bus_expander_param(msg.bus, msg.param, msg.value); } catch(e) {}
             } else if (msg.type === "pcm") {
                 // External PCM from WebSRT worker (relayed via main thread).
                 // msg.samples is a Float32Array, msg.pid identifies the stream.

@@ -1,6 +1,5 @@
 import { onMount, onCleanup, createSignal, For } from "solid-js";
 import { ChannelDetailPanel } from "./components/ChannelDetailPanel";
-import { BusStrip } from "./components/BusStrip";
 import { MasterStrip } from "./components/MasterStrip";
 import { BusManager } from "./components/BusManager";
 import {
@@ -70,7 +69,6 @@ export default function App() {
         <For each={Array.from({ length: STRIPS_PER_BANK }, (_, i) => bank() * STRIPS_PER_BANK + i)}>
           {(chIdx) => <ChannelDetailPanel channelIndex={chIdx} />}
         </For>
-        {selectedBus() !== null && <BusStrip busIndex={selectedBus()!} />}
         <MasterStrip />
       </div>
     </div>
