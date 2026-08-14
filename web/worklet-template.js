@@ -107,6 +107,40 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (this._mixer) try { this._mixer.set_aux_send(msg.ch, msg.sendIdx, msg.busId, msg.level, msg.preFader); } catch(e) {}
             } else if (msg.type === "remove-aux-send") {
                 if (this._mixer) try { this._mixer.remove_aux_send(msg.ch, msg.sendIdx); } catch(e) {}
+            } else if (msg.type === "set-bus-source") {
+                if (this._mixer) try { this._mixer.set_bus_source(msg.bus, msg.slot, msg.ch); } catch(e) {}
+            } else if (msg.type === "clear-bus-source") {
+                if (this._mixer) try { this._mixer.clear_bus_source(msg.bus, msg.slot); } catch(e) {}
+            } else if (msg.type === "set-bus-gain") {
+                if (this._mixer) try { this._mixer.set_bus_gain(msg.bus, msg.gain); } catch(e) {}
+            } else if (msg.type === "set-bus-mute") {
+                if (this._mixer) try { this._mixer.set_bus_mute(msg.bus, msg.muted); } catch(e) {}
+            } else if (msg.type === "set-bus-eq-gain") {
+                if (this._mixer) try { this._mixer.set_bus_eq_band_gain(msg.bus, msg.band, msg.gainDb); } catch(e) {}
+            } else if (msg.type === "set-bus-eq-freq") {
+                if (this._mixer) try { this._mixer.set_bus_eq_band_freq(msg.bus, msg.band, msg.freqHz); } catch(e) {}
+            } else if (msg.type === "set-bus-eq-q") {
+                if (this._mixer) try { this._mixer.set_bus_eq_band_q(msg.bus, msg.band, msg.q); } catch(e) {}
+            } else if (msg.type === "set-bus-eq-bypass") {
+                if (this._mixer) try { this._mixer.set_bus_eq_bypass(msg.bus, msg.bypassed); } catch(e) {}
+            } else if (msg.type === "enable-bus-comp") {
+                if (this._mixer) try { this._mixer.enable_bus_compressor(msg.bus); } catch(e) {}
+            } else if (msg.type === "disable-bus-comp") {
+                if (this._mixer) try { this._mixer.disable_bus_compressor(msg.bus); } catch(e) {}
+            } else if (msg.type === "set-bus-comp-param") {
+                if (this._mixer) try { this._mixer.set_bus_comp_param(msg.bus, msg.param, msg.value); } catch(e) {}
+            } else if (msg.type === "enable-bus-gate") {
+                if (this._mixer) try { this._mixer.enable_bus_gate(msg.bus); } catch(e) {}
+            } else if (msg.type === "disable-bus-gate") {
+                if (this._mixer) try { this._mixer.disable_bus_gate(msg.bus); } catch(e) {}
+            } else if (msg.type === "set-bus-gate-param") {
+                if (this._mixer) try { this._mixer.set_bus_gate_param(msg.bus, msg.param, msg.value); } catch(e) {}
+            } else if (msg.type === "enable-bus-expander") {
+                if (this._mixer) try { this._mixer.enable_bus_expander(msg.bus); } catch(e) {}
+            } else if (msg.type === "disable-bus-expander") {
+                if (this._mixer) try { this._mixer.disable_bus_expander(msg.bus); } catch(e) {}
+            } else if (msg.type === "set-bus-expander-param") {
+                if (this._mixer) try { this._mixer.set_bus_expander_param(msg.bus, msg.param, msg.value); } catch(e) {}
             } else if (msg.type === "pcm") {
                 // External PCM from WebSRT worker (relayed via main thread).
                 // msg.samples is a Float32Array, msg.pid identifies the stream.
@@ -135,6 +169,7 @@ class MixerProcessor extends AudioWorkletProcessor {
                     clip: false,
                     limiterGr: 0,
                     channels: [],
+                    buses: [],
                 });
             }
             return true;
@@ -175,6 +210,7 @@ class MixerProcessor extends AudioWorkletProcessor {
                     clip: this._mixer.master_clipping(),
                     limiterGr: this._mixer.limiter_gain_reduction_db(),
                     channels: JSON.parse(this._mixer.channel_meters_json()),
+                    buses: JSON.parse(this._mixer.bus_meters_json()),
                 });
             } catch(e) {}
         }
