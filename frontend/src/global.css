@@ -311,7 +311,7 @@ body {
 .master-clip-indicator .clip.active { color: #f00; border-color: #f00; background: rgba(255,0,0,0.1); }
 
 /* ── Master detail ───────────────────── */
-.master-detail { position: sticky !important; top: 0; right: 0; z-index: 10; }
+.master-detail { position: sticky !important; top: 0; right: 0; z-index: 10; overflow-y: hidden !important; }
 
 /* ── Fader ───────────────────────────── */
 .fader { -webkit-appearance: none; appearance: none; width: 36px; height: 160px; padding: 0; margin: 0; border: none; background: transparent; writing-mode: vertical-lr; direction: rtl; cursor: ns-resize; }
