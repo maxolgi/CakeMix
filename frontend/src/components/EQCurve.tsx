@@ -1,5 +1,5 @@
 import { onMount, onCleanup, createEffect, on } from "solid-js";
-import { channels } from "../stores/mixer";
+import { channels, busChannels } from "../stores/mixer";
 
 function biquadResponse(type: string, f0: number, q: number, dbGain: number, freq: number, sampleRate: number): number {
   if (type === "none" || dbGain === 0) return 0;
@@ -59,8 +59,11 @@ const BAND_INFO = [
   { type: "high_shelf", freq: 10000, q: 0.707 },
 ];
 
-export function EQCurve(props: { channelIndex: number }) {
+export function EQCurve(props: { channelIndex: number; bus?: boolean }) {
   let canvas: HTMLCanvasElement | undefined;
+
+  // When `bus` is set, channelIndex selects a bus; otherwise a channel.
+  const eqState = () => props.bus ? busChannels[props.channelIndex] : channels[props.channelIndex];
 
   function draw() {
     if (!canvas) return;
@@ -80,7 +83,7 @@ export function EQCurve(props: { channelIndex: number }) {
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
     });
 
-    const ch = channels[props.channelIndex];
+    const ch = eqState();
     if (!ch) return;
     if (ch.eqBypassed) {
       ctx.strokeStyle = "#555"; ctx.lineWidth = 1;
@@ -122,9 +125,9 @@ export function EQCurve(props: { channelIndex: number }) {
     return ((Math.log10(freq) - minLog) / (maxLog - minLog)) * w;
   }
 
-  createEffect(on(() => channels[props.channelIndex]?.eqBands.flatMap(b => [b.gainDb, b.freqHz, b.q]).join(","),
+  createEffect(on(() => eqState()?.eqBands.flatMap(b => [b.gainDb, b.freqHz, b.q]).join(","),
     () => requestAnimationFrame(draw)));
-  createEffect(on(() => channels[props.channelIndex]?.eqBypassed, () => requestAnimationFrame(draw)));
+  createEffect(on(() => eqState()?.eqBypassed, () => requestAnimationFrame(draw)));
   onMount(() => draw());
   onCleanup(() => {});
 

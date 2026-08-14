@@ -1,7 +1,4 @@
 import { For } from "solid-js";
-import { busChannels } from "../stores/mixer";
-
-const BUS_TYPE_LABELS = ["Group", "Aux", "Matrix"];
 
 export function BusManager(props: {
   running: boolean;
@@ -10,6 +7,8 @@ export function BusManager(props: {
   onStop: () => void;
   bank: number;
   onBank: (n: number) => void;
+  selectedBus: number | null;
+  onSelectBus: (b: number | null) => void;
 }) {
   return (
     <div class="bus-manager" title="Buses">
@@ -23,18 +22,17 @@ export function BusManager(props: {
         disabled={!props.running}
         onClick={props.onStop}
       >Stop</button>
-      <span class="bus-manager-label">BUSES</span>
-      <div class="bus-manager-list">
-        <For each={busChannels}>
-          {(bus, i) => (
-            <span class="bus-item" title={`${bus.name} (${BUS_TYPE_LABELS[1]})`}>
-              <span class="bus-item-id">#{i()}</span>
-              <span class="bus-item-name">{bus.name}</span>
-              <span class="bus-item-type">{BUS_TYPE_LABELS[1]}</span>
-            </span>
+      <div class="bus-selector">
+        <span class="bus-manager-label">BUS</span>
+        <For each={[0, 1, 2, 3, 4, 5, 6, 7]}>
+          {(b) => (
+            <button
+              class={`bank-btn ${props.selectedBus === b ? "active" : ""}`}
+              onClick={() => props.selectedBus === b ? props.onSelectBus(null) : props.onSelectBus(b)}
+              title={`Bus ${b + 1}`}
+            >{b + 1}</button>
           )}
         </For>
-        {busChannels.length === 0 && <span class="bus-manager-empty">No buses</span>}
       </div>
       <div class="bank-selector">
         <For each={[0, 1, 2, 3, 4, 5, 6, 7]}>
