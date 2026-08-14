@@ -59,7 +59,6 @@ pub struct MixerWasm {
     master_right: Vec<f32>,
     stereo_out: Vec<f32>,
     eq_scratch: Vec<f32>,
-    eq_scratch2: Vec<f32>,
     deinterleave_scratch: Vec<Vec<f32>>,
     raw_input: Vec<f32>,
     // ── Per-channel state ──
@@ -89,9 +88,6 @@ pub struct MixerWasm {
     // Bus accumulators: sum of the bus's slot outputs (pre bus-gain)
     bus_left: Vec<Vec<f32>>,
     bus_right: Vec<Vec<f32>>,
-    // Slot stereo input buffers (128 slots; written by pass 1, consumed by pass 2)
-    slot_in_l: Vec<Vec<f32>>,
-    slot_in_r: Vec<Vec<f32>>,
     bus_peak: HashMap<u32, f32>,
     bus_rms: HashMap<u32, f32>,
     // ── Counters ──
@@ -135,7 +131,6 @@ impl MixerWasm {
             master_right: vec![0.0; bs],
             stereo_out: vec![0.0; bs * 2],
             eq_scratch: vec![0.0; bs],
-            eq_scratch2: vec![0.0; bs],
             deinterleave_scratch: Vec::new(),
             raw_input: Vec::new(),
             soloed_channels: HashSet::new(),
@@ -157,8 +152,6 @@ impl MixerWasm {
             bus_muted: vec![false; 8],
             bus_left: (0..8).map(|_| vec![0.0; bs]).collect(),
             bus_right: (0..8).map(|_| vec![0.0; bs]).collect(),
-            slot_in_l: (0..128).map(|_| vec![0.0; bs]).collect(),
-            slot_in_r: (0..128).map(|_| vec![0.0; bs]).collect(),
             bus_peak: HashMap::new(),
             bus_rms: HashMap::new(),
             unmapped_pid_drops: 0,
@@ -618,27 +611,11 @@ impl MixerWasm {
         // Clear master bus
         for i in 0..self.buffer_size { self.master_left[i] = 0.0; self.master_right[i] = 0.0; }
 
-        // Clear bus accumulators and slot input buffers
+        // Clear bus accumulators
         for b in 0..8 {
             for s in 0..self.buffer_size {
                 self.bus_left[b][s] = 0.0;
                 self.bus_right[b][s] = 0.0;
-            }
-        }
-        for s in 0..128 {
-            for i in 0..self.buffer_size {
-                self.slot_in_l[s][i] = 0.0;
-                self.slot_in_r[s][i] = 0.0;
-            }
-        }
-
-        // Build reverse mapping: input channel → slot index (if assigned to a bus slot)
-        let mut ch_to_slot: HashMap<u32, u32> = HashMap::new();
-        for (bus_idx, slots) in self.bus_sources.iter().enumerate() {
-            for (slot_idx, ch) in slots.iter().enumerate() {
-                if let Some(&ch) = ch.as_ref() {
-                    ch_to_slot.insert(ch, 128 + (bus_idx as u32) * 16 + slot_idx as u32);
-                }
             }
         }
 
@@ -687,47 +664,41 @@ impl MixerWasm {
             let (ch_left, ch_right) = self.engine.engine_mut()
                 .process_mix(&[(id, params)], &self.eq_scratch[..bs]);
 
-            // Route: if this channel feeds a bus slot, write to the slot's
-            // stereo input; else go directly to master.
-            if let Some(&slot_idx) = ch_to_slot.get(&ch_idx) {
-                let si = (slot_idx - 128) as usize;
-                for i in 0..bs {
-                    self.slot_in_l[si][i] += ch_left[i];
-                    self.slot_in_r[si][i] += ch_right[i];
-                }
-            } else {
-                for i in 0..bs {
-                    self.master_left[i] += ch_left[i];
-                    self.master_right[i] += ch_right[i];
-                }
+            // Direct to master — always, unconditionally. Bus slots tap the
+            // RAW input buffer in parallel (pass 2), so bus assignment never
+            // diverts or silences the direct input path.
+            for i in 0..bs {
+                self.master_left[i] += ch_left[i];
+                self.master_right[i] += ch_right[i];
             }
         }
 
         // ── Pass 2: bus slots (indices 128-255) are full channel strips ──
-        // Each slot receives a stereo signal (its assigned inputs' processed
-        // output), runs dynamics → EQ, then fader/pan via the engine, and
-        // feeds its bus accumulator.
+        // Each slot taps the RAW mono input buffer of its assigned source
+        // channel in parallel with the input's own strip: the input channel's
+        // mute/fader/EQ/dynamics have zero effect on the bus path. The slot
+        // runs its own complete chain (dynamics → EQ → fader/pan via the
+        // engine) and feeds its bus accumulator.
         for bus_idx in 0..8u32 {
             for slot in 0..16u32 {
                 let slot_idx = 128 + bus_idx * 16 + slot;
-                let si = slot_idx as usize - 128;
 
+                // Which raw input does this slot tap?
+                let Some(src) = self.bus_sources[bus_idx as usize][slot as usize] else { continue; };
+                let Some(samples) = self.channel_inputs.get(&src) else { continue; };
+
+                // Skip muted/missing slot channels (defensive: set_bus_source
+                // lazily creates the engine channel with defaults).
                 let Some((id, params)) = self.params_for(slot_idx) else { continue; };
                 if params.muted { continue; }
 
-                // Process L through the slot's dynamics → EQ into eq_scratch2
-                self.eq_scratch2[..bs].copy_from_slice(&self.slot_in_l[si][..bs]);
-                if let Some(d) = self.dynamics_chains.get_mut(&slot_idx) {
-                    d.process(&mut self.eq_scratch2[..bs]);
-                }
-                if let Some(eq) = self.eq_chains.get_mut(&slot_idx) {
-                    if !eq.is_bypassed() {
-                        eq.process(&mut self.eq_scratch2[..bs]);
-                    }
-                }
+                // Copy the RAW source mono buffer into scratch (zero-pad if
+                // the source block is shorter than bs).
+                let n = samples.len().min(bs);
+                self.eq_scratch[..n].copy_from_slice(&samples[..n]);
+                for v in &mut self.eq_scratch[n..bs] { *v = 0.0; }
 
-                // Process R through the same dynamics → EQ into eq_scratch
-                self.eq_scratch[..bs].copy_from_slice(&self.slot_in_r[si][..bs]);
+                // Slot's own dynamics → EQ (in-place on scratch)
                 if let Some(d) = self.dynamics_chains.get_mut(&slot_idx) {
                     d.process(&mut self.eq_scratch[..bs]);
                 }
@@ -737,30 +708,21 @@ impl MixerWasm {
                     }
                 }
 
-                // Slot metering (post-dynamics, post-EQ, pre-fader, over L+R)
-                let peak = self.eq_scratch2[..bs].iter().chain(self.eq_scratch[..bs].iter())
-                    .map(|s| s.abs()).fold(0.0f32, f32::max);
-                let sq_sum: f32 = self.eq_scratch2[..bs].iter().chain(self.eq_scratch[..bs].iter())
-                    .map(|s| s * s).sum();
-                let rms = (sq_sum / (bs as f32 * 2.0)).sqrt();
+                // Slot metering (post-dynamics, post-EQ, pre-fader)
+                let peak = self.eq_scratch[..bs].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+                let sq_sum: f32 = self.eq_scratch[..bs].iter().map(|s| s * s).sum();
+                let rms = (sq_sum / bs as f32).sqrt();
                 self.channel_peak.insert(slot_idx, if peak > 1e-10 { 20.0 * peak.log10() } else { -200.0 });
                 self.channel_rms.insert(slot_idx, if rms > 1e-10 { 20.0 * rms.log10() } else { -200.0 });
 
-                // Engine: input gain, fader, pan on L and R separately, then
-                // sum. process_mix is linear, so the result is the pan-
-                // weighted sum of both halves of the stereo input.
-                let bi = bus_idx as usize;
-                let (l1, r1) = self.engine.engine_mut()
-                    .process_mix(&[(id, params.clone())], &self.eq_scratch2[..bs]);
-                for i in 0..bs {
-                    self.bus_left[bi][i] += l1[i];
-                    self.bus_right[bi][i] += r1[i];
-                }
-                let (l2, r2) = self.engine.engine_mut()
+                // Engine: slot input gain, fader, pan on the mono tap →
+                // stereo result into the bus accumulator.
+                let (ch_left, ch_right) = self.engine.engine_mut()
                     .process_mix(&[(id, params)], &self.eq_scratch[..bs]);
+                let bi = bus_idx as usize;
                 for i in 0..bs {
-                    self.bus_left[bi][i] += l2[i];
-                    self.bus_right[bi][i] += r2[i];
+                    self.bus_left[bi][i] += ch_left[i];
+                    self.bus_right[bi][i] += ch_right[i];
                 }
             }
         }
