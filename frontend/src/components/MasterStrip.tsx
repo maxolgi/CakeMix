@@ -74,6 +74,13 @@ export function MasterStrip() {
           </div>
           <MeterCanvas peakDb={meterData().peakR} rmsDb={meterData().rmsR} width={10} height={160} />
         </div>
+        <div class="detail-controls">
+          <button
+            class={`btn-sm btn-mute ${masterGain() === 0 ? "active" : ""}`}
+            onClick={() => setMasterGain(masterGain() === 0 ? 1.0 : 0)}
+            title="Master mute"
+          >M</button>
+        </div>
       </div>
     </div>
   );
