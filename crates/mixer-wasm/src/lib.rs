@@ -80,6 +80,16 @@ pub struct MixerWasm {
     // ── Bus routing ──
     bus_map: HashMap<u32, BusId>,
     bus_counter: u32,
+    // ── 8 independent summing buses (each sums up to 16 source channels) ──
+    bus_sources: Vec<Vec<Option<u32>>>,
+    bus_gains: Vec<f32>,
+    bus_muted: Vec<bool>,
+    bus_left: Vec<Vec<f32>>,
+    bus_right: Vec<Vec<f32>>,
+    bus_eq_chains: HashMap<u32, EqEffect>,
+    bus_dynamics_chains: HashMap<u32, ChannelDynamics>,
+    bus_peak: HashMap<u32, f32>,
+    bus_rms: HashMap<u32, f32>,
     // ── Counters ──
     unmapped_pid_drops: u64,
     sample_rate: u32,
@@ -134,6 +144,15 @@ impl MixerWasm {
             channel_rms: HashMap::new(),
             bus_map: HashMap::new(),
             bus_counter: 0,
+            bus_sources: (0..8).map(|_| vec![None; 16]).collect(),
+            bus_gains: vec![1.0; 8],
+            bus_muted: vec![false; 8],
+            bus_left: (0..8).map(|_| vec![0.0; bs]).collect(),
+            bus_right: (0..8).map(|_| vec![0.0; bs]).collect(),
+            bus_eq_chains: HashMap::new(),
+            bus_dynamics_chains: HashMap::new(),
+            bus_peak: HashMap::new(),
+            bus_rms: HashMap::new(),
             unmapped_pid_drops: 0,
             sample_rate,
         })
@@ -160,6 +179,15 @@ impl MixerWasm {
         Ok(self.channel_ids[i].unwrap())
     }
 
+    fn ensure_bus(&mut self, bus: u32) -> Result<(), JsValue> {
+        if bus >= 8 { return Err(JsValue::from_str("bus index out of range (max 8)")); }
+        if !self.bus_eq_chains.contains_key(&bus) {
+            self.bus_eq_chains.insert(bus, EqEffect::six_band(self.sample_rate));
+            self.bus_dynamics_chains.insert(bus, ChannelDynamics::new());
+        }
+        Ok(())
+    }
+
     // ── Input ──────────────────────────────────────────
 
     pub fn set_channel_input(&mut self, ch: u32, data: &js_sys::Float32Array) -> Result<(), JsValue> {
@@ -179,7 +207,7 @@ impl MixerWasm {
         let nc = num_channels as usize;
         if nc == 0 { return Err(JsValue::from_str("num_channels must be > 0")); }
         let total = data.length() as usize;
-        if total % nc != 0 {
+        if !total.is_multiple_of(nc) {
             return Err(JsValue::from_str(&format!("length {total} not divisible by {nc}")));
         }
         let frames = total / nc;
@@ -357,7 +385,7 @@ impl MixerWasm {
                     3 => cfg.release_ms = value,
                     4 => cfg.makeup_gain_db = value,
                     5 => cfg.knee_db = value,
-                    _ => return,
+                    _ => (),
                 });
             }
         }
@@ -373,7 +401,7 @@ impl MixerWasm {
                     2 => cfg.attack_ms = value,
                     3 => cfg.release_ms = value,
                     4 => cfg.hold_ms = value,
-                    _ => return,
+                    _ => (),
                 });
             }
         }
@@ -388,7 +416,7 @@ impl MixerWasm {
                     1 => cfg.ratio = value,
                     2 => cfg.attack_ms = value,
                     3 => cfg.release_ms = value,
-                    _ => return,
+                    _ => (),
                 });
             }
         }
@@ -516,6 +544,162 @@ impl MixerWasm {
         Ok(())
     }
 
+    // ── Bus mixing (8 independent summing buses) ───────
+
+    pub fn set_bus_source(&mut self, bus: u32, slot: u32, ch: u32) -> Result<(), JsValue> {
+        self.ensure_bus(bus)?;
+        if (slot as usize) >= 16 { return Err(JsValue::from_str("slot out of range (max 16)")); }
+        self.bus_sources[bus as usize][slot as usize] = Some(ch);
+        Ok(())
+    }
+
+    pub fn clear_bus_source(&mut self, bus: u32, slot: u32) {
+        if (bus as usize) < 8 && (slot as usize) < 16 {
+            self.bus_sources[bus as usize][slot as usize] = None;
+        }
+    }
+
+    pub fn set_bus_gain(&mut self, bus: u32, gain: f32) {
+        if (bus as usize) < 8 { self.bus_gains[bus as usize] = gain.clamp(0.0, 2.0); }
+    }
+    pub fn set_bus_mute(&mut self, bus: u32, muted: bool) {
+        if (bus as usize) < 8 { self.bus_muted[bus as usize] = muted; }
+    }
+
+    // ── Bus EQ controls ────────────────────────────────
+
+    pub fn set_bus_eq_band_gain(&mut self, bus: u32, band: usize, gain_db: f32) -> Result<(), JsValue> {
+        self.ensure_bus(bus)?;
+        if let Some(eq) = self.bus_eq_chains.get_mut(&bus) {
+            if band < eq.inner().bands.len() {
+                eq.inner_mut().bands[band].set_gain_db(gain_db as f64);
+                eq.inner_mut().bands[band].update_coefficients();
+            }
+        }
+        Ok(())
+    }
+    pub fn set_bus_eq_band_freq(&mut self, bus: u32, band: usize, freq_hz: f32) -> Result<(), JsValue> {
+        self.ensure_bus(bus)?;
+        if let Some(eq) = self.bus_eq_chains.get_mut(&bus) {
+            if band < eq.inner().bands.len() {
+                eq.inner_mut().bands[band].set_frequency(freq_hz as f64);
+                eq.inner_mut().bands[band].update_coefficients();
+            }
+        }
+        Ok(())
+    }
+    pub fn set_bus_eq_band_q(&mut self, bus: u32, band: usize, q: f32) -> Result<(), JsValue> {
+        self.ensure_bus(bus)?;
+        if let Some(eq) = self.bus_eq_chains.get_mut(&bus) {
+            if band < eq.inner().bands.len() {
+                eq.inner_mut().bands[band].set_q(q as f64);
+                eq.inner_mut().bands[band].update_coefficients();
+            }
+        }
+        Ok(())
+    }
+    pub fn set_bus_eq_bypass(&mut self, bus: u32, bypassed: bool) -> Result<(), JsValue> {
+        self.ensure_bus(bus)?;
+        if let Some(eq) = self.bus_eq_chains.get_mut(&bus) { eq.set_bypassed(bypassed); }
+        Ok(())
+    }
+
+    // ── Bus dynamics controls ──────────────────────────
+
+    pub fn enable_bus_compressor(&mut self, bus: u32) -> Result<(), JsValue> {
+        self.ensure_bus(bus)?;
+        self.bus_dynamics_chains.entry(bus).or_default().compressor = Some(CompressorEffect::broadcast(self.sample_rate));
+        Ok(())
+    }
+    pub fn disable_bus_compressor(&mut self, bus: u32) {
+        if let Some(d) = self.bus_dynamics_chains.get_mut(&bus) { d.compressor = None; }
+    }
+    pub fn enable_bus_gate(&mut self, bus: u32) -> Result<(), JsValue> {
+        self.ensure_bus(bus)?;
+        self.bus_dynamics_chains.entry(bus).or_default().gate = Some(GateEffect::denoise(self.sample_rate));
+        Ok(())
+    }
+    pub fn disable_bus_gate(&mut self, bus: u32) {
+        if let Some(d) = self.bus_dynamics_chains.get_mut(&bus) { d.gate = None; }
+    }
+    pub fn enable_bus_expander(&mut self, bus: u32) -> Result<(), JsValue> {
+        self.ensure_bus(bus)?;
+        self.bus_dynamics_chains.entry(bus).or_default().expander = Some(ExpanderEffect::gentle(self.sample_rate));
+        Ok(())
+    }
+    pub fn disable_bus_expander(&mut self, bus: u32) {
+        if let Some(d) = self.bus_dynamics_chains.get_mut(&bus) { d.expander = None; }
+    }
+
+    pub fn set_bus_comp_param(&mut self, bus: u32, param: u32, value: f32) -> Result<(), JsValue> {
+        self.ensure_bus(bus)?;
+        if let Some(d) = self.bus_dynamics_chains.get_mut(&bus) {
+            if let Some(c) = &mut d.compressor {
+                c.update_config(|cfg| match param {
+                    0 => cfg.threshold_db = value,
+                    1 => cfg.ratio = value,
+                    2 => cfg.attack_ms = value,
+                    3 => cfg.release_ms = value,
+                    4 => cfg.makeup_gain_db = value,
+                    5 => cfg.knee_db = value,
+                    _ => (),
+                });
+            }
+        }
+        Ok(())
+    }
+    pub fn set_bus_gate_param(&mut self, bus: u32, param: u32, value: f32) -> Result<(), JsValue> {
+        self.ensure_bus(bus)?;
+        if let Some(d) = self.bus_dynamics_chains.get_mut(&bus) {
+            if let Some(g) = &mut d.gate {
+                g.update_config(|cfg| match param {
+                    0 => cfg.threshold_db = value,
+                    1 => cfg.hysteresis_db = value,
+                    2 => cfg.attack_ms = value,
+                    3 => cfg.release_ms = value,
+                    4 => cfg.hold_ms = value,
+                    _ => (),
+                });
+            }
+        }
+        Ok(())
+    }
+    pub fn set_bus_expander_param(&mut self, bus: u32, param: u32, value: f32) -> Result<(), JsValue> {
+        self.ensure_bus(bus)?;
+        if let Some(d) = self.bus_dynamics_chains.get_mut(&bus) {
+            if let Some(e) = &mut d.expander {
+                e.update_config(|cfg| match param {
+                    0 => cfg.threshold_db = value,
+                    1 => cfg.ratio = value,
+                    2 => cfg.attack_ms = value,
+                    3 => cfg.release_ms = value,
+                    _ => (),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    // ── Bus metering ───────────────────────────────────
+
+    pub fn bus_peak_db(&self, bus: u32) -> f32 {
+        self.bus_peak.get(&bus).copied().unwrap_or(-f32::INFINITY)
+    }
+    pub fn bus_rms_db(&self, bus: u32) -> f32 {
+        self.bus_rms.get(&bus).copied().unwrap_or(-f32::INFINITY)
+    }
+    pub fn bus_meters_json(&self) -> String {
+        let mut s = String::from("[");
+        for i in 0..8u32 {
+            if i > 0 { s.push(','); }
+            let peak = self.bus_peak.get(&i).copied().unwrap_or(-200.0);
+            let rms = self.bus_rms.get(&i).copied().unwrap_or(-200.0);
+            s.push_str(&format!("{{\"bus\":{i},\"peak\":{peak:.1},\"rms\":{rms:.1}}}"));
+        }
+        s.push(']');
+        s
+    }
+
     // ── Master limiter ─────────────────────────────────
 
     pub fn set_limiter_enabled(&mut self, enabled: bool) { self.limiter_enabled = enabled; }
@@ -528,6 +712,22 @@ impl MixerWasm {
 
         // Clear master bus
         for i in 0..self.buffer_size { self.master_left[i] = 0.0; self.master_right[i] = 0.0; }
+
+        // Clear bus accumulators
+        for b in 0..8 {
+            for s in 0..self.buffer_size {
+                self.bus_left[b][s] = 0.0;
+                self.bus_right[b][s] = 0.0;
+            }
+        }
+
+        // Build reverse mapping: channel → bus index (if assigned to any bus)
+        let mut ch_to_bus: HashMap<u32, u32> = HashMap::new();
+        for (bus_idx, slots) in self.bus_sources.iter().enumerate() {
+            for ch in slots.iter().flatten() {
+                ch_to_bus.insert(*ch, bus_idx as u32);
+            }
+        }
 
         // Collect channel data upfront (avoid borrow conflicts)
         let ch_data: Vec<(u32, ChannelId, ChannelProcessParams)> = self.channel_inputs.keys()
@@ -585,9 +785,51 @@ impl MixerWasm {
             let (ch_left, ch_right) = self.engine.engine_mut()
                 .process_mix(&[(id, params)], &self.eq_scratch[..bs]);
 
+            if let Some(&bus_idx) = ch_to_bus.get(&ch_idx) {
+                let bi = bus_idx as usize;
+                for i in 0..bs {
+                    self.bus_left[bi][i] += ch_left[i];
+                    self.bus_right[bi][i] += ch_right[i];
+                }
+            } else {
+                for i in 0..bs {
+                    self.master_left[i] += ch_left[i];
+                    self.master_right[i] += ch_right[i];
+                }
+            }
+        }
+
+        // Process buses
+        for bus_idx in 0..8u32 {
+            if self.bus_muted[bus_idx as usize] { continue; }
+
+            // Apply bus dynamics (L then R independently)
+            if let Some(d) = self.bus_dynamics_chains.get_mut(&bus_idx) {
+                d.process(&mut self.bus_left[bus_idx as usize][..bs]);
+                d.process(&mut self.bus_right[bus_idx as usize][..bs]);
+            }
+
+            // Apply bus EQ (L then R)
+            if let Some(eq) = self.bus_eq_chains.get_mut(&bus_idx) {
+                if !eq.is_bypassed() {
+                    eq.process(&mut self.bus_left[bus_idx as usize][..bs]);
+                    eq.process(&mut self.bus_right[bus_idx as usize][..bs]);
+                }
+            }
+
+            // Bus metering (post-dynamics, post-EQ, pre-fader)
+            let bl = &self.bus_left[bus_idx as usize];
+            let peak = bl[..bs].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            let sq: f32 = bl[..bs].iter().map(|s| s * s).sum();
+            let rms = (sq / bs as f32).sqrt();
+            self.bus_peak.insert(bus_idx, if peak > 1e-10 { 20.0 * peak.log10() } else { -200.0 });
+            self.bus_rms.insert(bus_idx, if rms > 1e-10 { 20.0 * rms.log10() } else { -200.0 });
+
+            // Apply bus gain and sum to master
+            let bg = self.bus_gains[bus_idx as usize];
             for i in 0..bs {
-                self.master_left[i] += ch_left[i];
-                self.master_right[i] += ch_right[i];
+                self.master_left[i] += self.bus_left[bus_idx as usize][i] * bg;
+                self.master_right[i] += self.bus_right[bus_idx as usize][i] * bg;
             }
         }
 
