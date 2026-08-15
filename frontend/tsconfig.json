@@ -11,6 +11,7 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": [
-    "src"
+    "src",
+    "../vendor/WebSRT/web/src/wasm.d.ts"
   ]
 }

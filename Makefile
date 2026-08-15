@@ -4,7 +4,7 @@
 RUST_TARGET := wasm32-unknown-unknown
 CRATE_DIR := crates/mixer-wasm
 
-.PHONY: build-wasm build-web build-node test-native test-wasm test-all check clean serve
+.PHONY: build-wasm build-web build-node test-native test-wasm test-all check clean serve build-websrt-wasm bump-websrt
 
 # Build for wasm32-unknown-unknown (first gate)
 build-wasm:
@@ -63,7 +63,19 @@ fmt-check:
 build-ui:
 	cd frontend && npx vite build
 
+# Build WebSRT wasm crates from vendor/WebSRT + stage where the submodule's
+# worker expects them (vendor/WebSRT/web/wasm/). Required before build-ui
+# bundles the receive worker. Idempotent.
+build-websrt-wasm:
+	bash build/build-websrt-wasm.sh
+
+# Update the vendor/WebSRT submodule pin to the remote's current HEAD.
+# The new pin is NOT auto-committed — commit the gitlink yourself.
+bump-websrt:
+	git submodule update --remote vendor/WebSRT
+	@echo "Reminder: vendor/WebSRT pin changed — commit it: git add vendor/WebSRT && git commit"
+
 # Full rebuild: WASM + worklet + UI
-build-all: build-web
+build-all: build-web build-websrt-wasm
 	cd frontend && npx vite build
 	node build/build-worklet.js

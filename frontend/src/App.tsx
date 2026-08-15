@@ -1,4 +1,5 @@
 import { onMount, onCleanup, createSignal, For } from "solid-js";
+import * as websrt from "./websrt/client";
 import { ChannelDetailPanel } from "./components/ChannelDetailPanel";
 import { MasterStrip } from "./components/MasterStrip";
 import { BusMasterStrip } from "./components/BusMasterStrip";
@@ -19,6 +20,12 @@ export default function App() {
   const [bank, setBank] = createSignal(0);
 
   onMount(async () => {
+    // Build plumbing: expose the WebSRT client (receive worker + muxer init)
+    // on window so the bundler keeps the worker chunk and wasm binaries in
+    // the bundle. Also reachable from the console for manual testing; real
+    // wiring lands with PCM ingestion.
+    (window as any).__cakemix_websrt = websrt;
+
     try {
       audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
       if (!audioCtx.audioWorklet) {
