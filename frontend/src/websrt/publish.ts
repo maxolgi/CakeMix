@@ -2,15 +2,15 @@
 //
 // Publishes the mixer's output as SMPTE 302M PCM (no codecs) to the WebSRT
 // gateway via ./publish-worker.ts: 2ch = master stereo on one PID, 16–128ch
-// = ceil(N/2) stereo PIDs (multi-PID muxing in the worker; the >2ch data
-// source lands with the worklet input-tap follow-up). Mirrors ./store.ts
-// (the receive store): same cert-hash.js discovery + ?certHash/?host/?port
-// overrides, same status/detail signal shape, batched worker messages
+// = ceil(N/2) stereo PIDs (multi-PID muxing in the worker) fed by the
+// worklet's channel direct-out tap. Mirrors ./store.ts (the receive
+// store): same cert-hash.js discovery + ?certHash/?host/?port overrides,
+// same status/detail signal shape, batched worker messages
 // ({type:'batch', msgs}). The default publish target is the SAME gateway
 // the receive path resolves to; the stream name defaults to "cakemix"
 // (?pubstream= overrides).
 //
-// PCM flow: worklet master-output tap (pub-start/pub-stop, see
+// PCM flow: worklet output tap (pub-start/pub-stop, see
 // web/worklet-template.js) → App.tsx relay → relayPubPcm() →
 // {cmd:'pcm'} transferred into the worker.
 
@@ -21,8 +21,9 @@ import type { PubCmd, PubMsg, PubStats } from "./publish-worker";
 
 export type PublishStatus = "disconnected" | "connecting" | "connected" | "error";
 
-/** Allowed publish channel counts (2 = master stereo; the N>2 modes await
- *  the worklet input-tap follow-up for a real source). */
+/** Allowed publish channel counts: 2 = master stereo pair; 16–128 =
+ *  per-channel direct outs (mono per channel, post input-gain/gate/comp/
+ *  EQ/fader, pre-pan; muted channels publish silence). */
 export type PublishChannels = 2 | 16 | 32 | 64 | 128;
 
 const STREAM_NAME = new URLSearchParams(location.search).get("pubstream") ?? "cakemix";
@@ -90,9 +91,10 @@ export async function connectPublish(): Promise<void> {
       latencyMs: websrtLatencyMs(), channels: channels(),
     };
     w.postMessage(cmd);
-    // Master-output tap on: the worklet posts {type:'pub-pcm', samples, ptsUs}
+    // Output tap on: the worklet posts {type:'pub-pcm', samples, ptsUs,
+    // channels} — the master pair for 2ch, channel direct outs otherwise
     // (silence while the mixer is stopped, so the stream stays continuous).
-    sendToWorklet({ type: "pub-start" });
+    sendToWorklet({ type: "pub-start", channels: channels() });
   } catch (e) {
     sendToWorklet({ type: "pub-stop" });
     terminateWorker();
@@ -117,11 +119,13 @@ export function disconnectPublish(): void {
 
 /** Relay one PCM batch from the worklet into the publish worker (zero-copy:
  *  the worklet transferred the buffer to the main thread; hand it straight
- *  through). Called by App.tsx on pub-pcm. The master-output tap is stereo;
- *  the input-tap follow-up will pass its channel count here. */
-export function relayPubPcm(samples: Float32Array, ptsUs: number): void {
+ *  through). Called by App.tsx on pub-pcm. msgChannels is the batch's
+ *  channel count when the caller forwards it; the fallback is this store's
+ *  configured count — the same value pub-start armed the worklet tap with,
+ *  and it cannot change while connected. */
+export function relayPubPcm(samples: Float32Array, ptsUs: number, msgChannels?: number): void {
   if (!worker) return;
-  worker.postMessage({ cmd: "pcm", samples, ptsUs, channels: 2 }, [samples.buffer]);
+  worker.postMessage({ cmd: "pcm", samples, ptsUs, channels: msgChannels ?? channels() }, [samples.buffer]);
 }
 
 function startWorker(): Worker {

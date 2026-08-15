@@ -148,7 +148,7 @@ export function WebSRTPanel() {
                   value={String(publishChannels())}
                   onInput={(e) => setPublishChannels(parseInt(e.currentTarget.value, 10) as PublishChannels)}
                   disabled={pubActive()}
-                  title="Output channel count — packed as ceil(N/2) stereo s302m PIDs (PID i = channels 2i/2i+1), discovered by receivers via the PMT. 2 = the master stereo mix; 16-128 need the worklet input-tap follow-up before they carry real source audio, so they output silence until then. Muxing ≥16 PIDs is fixed upstream (WebSRT b8c4364 packetizes long PMT sections); sessions configure fine at any width, real Nch audio waits on the input tap. Changeable only while disconnected: the PID set is fixed at connect."
+                  title="Output channel count — packed as ceil(N/2) stereo s302m PIDs (PID i = channels 2i/2i+1), discovered by receivers via the PMT. 2 = the master stereo mix. 16–128 = channel direct outs: mono per channel, tapped after input gain, gate, compressor, EQ and fader (pre-pan); muted channels publish silence. Changeable only while disconnected: the PID set is fixed at connect."
                 >
                   <For each={CHANNEL_OPTIONS}>
                     {(o) => <option value={String(o.value)}>{o.label}</option>}

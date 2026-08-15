@@ -579,6 +579,7 @@ class MixerWasm {
     }
 }
 if (Symbol.dispose) MixerWasm.prototype[Symbol.dispose] = MixerWasm.prototype.free;
+
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
@@ -747,15 +748,7 @@ function takeFromExternrefTable0(idx) {
 
 let cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });
 cachedTextDecoder.decode();
-const MAX_SAFARI_DECODE_BYTES = 2146435072;
-let numBytesDecoded = 0;
 function decodeText(ptr, len) {
-    numBytesDecoded += len;
-    if (numBytesDecoded >= MAX_SAFARI_DECODE_BYTES) {
-        cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });
-        cachedTextDecoder.decode();
-        numBytesDecoded = len;
-    }
     return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
 }
 
@@ -774,103 +767,12 @@ if (!('encodeInto' in cachedTextEncoder)) {
 
 let WASM_VECTOR_LEN = 0;
 
-let wasmModule, wasmInstance, wasm;
-function __wbg_finalize_init(instance, module) {
-    wasmInstance = instance;
-    wasm = instance.exports;
-    wasmModule = module;
-    cachedDataViewMemory0 = null;
-    cachedFloat32ArrayMemory0 = null;
-    cachedUint8ArrayMemory0 = null;
-    wasm.__wbindgen_start();
-    return wasm;
-}
-
-async function __wbg_load(module, imports) {
-    if (typeof Response === 'function' && module instanceof Response) {
-        if (!module.ok) {
-            throw new Error(`failed to fetch Wasm: ${module.status} ${module.statusText} fetching '${module.url}'`);
-        }
-
-        if (typeof WebAssembly.instantiateStreaming === 'function') {
-            try {
-                return await WebAssembly.instantiateStreaming(module, imports);
-            } catch (e) {
-                const validResponse = expectedResponseType(module.type);
-
-                if (validResponse && module.headers.get('Content-Type') !== 'application/wasm') {
-                    console.warn("`WebAssembly.instantiateStreaming` failed because your server does not serve Wasm with `application/wasm` MIME type. Falling back to `WebAssembly.instantiate` which is slower. Original error:\n", e);
-
-                } else { throw e; }
-            }
-        }
-
-        const bytes = await module.arrayBuffer();
-        return await WebAssembly.instantiate(bytes, imports);
-    } else {
-        const instance = await WebAssembly.instantiate(module, imports);
-
-        if (instance instanceof WebAssembly.Instance) {
-            return { instance, module };
-        } else {
-            return instance;
-        }
-    }
-
-    function expectedResponseType(type) {
-        switch (type) {
-            case 'basic': case 'cors': case 'default': return true;
-        }
-        return false;
-    }
-}
-
-function initSync(module) {
-    if (wasm !== undefined) return wasm;
-
-
-    if (module !== undefined) {
-        if (Object.getPrototypeOf(module) === Object.prototype) {
-            ({module} = module)
-        } else {
-            console.warn('using deprecated parameters for `initSync()`; pass a single object instead')
-        }
-    }
-
-    const imports = __wbg_get_imports();
-    if (!(module instanceof WebAssembly.Module)) {
-        module = new WebAssembly.Module(module);
-    }
-    const instance = new WebAssembly.Instance(module, imports);
-    return __wbg_finalize_init(instance, module);
-}
-
-async function __wbg_init(module_or_path) {
-    if (wasm !== undefined) return wasm;
-
-
-    if (module_or_path !== undefined) {
-        if (Object.getPrototypeOf(module_or_path) === Object.prototype) {
-            ({module_or_path} = module_or_path)
-        } else {
-            console.warn('using deprecated parameters for the initialization function; pass a single object instead')
-        }
-    }
-
-    if (module_or_path === undefined) {
-        module_or_path = undefined; // stripped for worklet
-    }
-    const imports = __wbg_get_imports();
-
-    if (typeof module_or_path === 'string' || (typeof Request === 'function' && module_or_path instanceof Request) || (typeof URL === 'function' && module_or_path instanceof URL)) {
-        module_or_path = fetch(module_or_path);
-    }
-
-    const { instance, module } = await __wbg_load(await module_or_path, imports);
-
-    return __wbg_finalize_init(instance, module);
-}
-
+const wasmPath = `${__dirname}/mixer_wasm_bg.wasm`;
+const wasmBytes = require('fs').readFileSync(wasmPath);
+const wasmModule = new WebAssembly.Module(wasmBytes);
+let wasmInstance = new WebAssembly.Instance(wasmModule, __wbg_get_imports());
+let wasm = wasmInstance.exports;
+wasm.__wbindgen_start();
 
 // Processor
 // Crypto polyfill for AudioWorkletGlobalScope (no crypto API)
@@ -903,6 +805,23 @@ function pubInterleaveBlock(acc, fillFloats, blockL, blockR, n) {
     return fillFloats + n * 2;
 }
 
+// Interleave one block (n frames) of N-channel tap data into acc starting
+// at acc[fillFloats]. tap is one mixer take_channel_tap() block — already
+// frame-major interleaved [ch0[i], ch1[i], …, chN-1[i]] — so this is a
+// defensive copy: null (tap unavailable/failed) or short taps contribute
+// silence for the missing samples. Returns the new fill (in floats); acc
+// must have room for n*channels floats.
+function pubInterleaveNch(acc, fillFloats, tap, n, channels) {
+    for (var i = 0; i < n; i++) {
+        var dst = fillFloats + i * channels;
+        var src = i * channels;
+        for (var c = 0; c < channels; c++) {
+            acc[dst + c] = tap && src + c < tap.length ? tap[src + c] : 0;
+        }
+    }
+    return fillFloats + n * channels;
+}
+
 // pts (µs) of the first frame of a batch, given the count of frames from
 // pub-start up to that first frame (48 kHz). Batch k pts = k * 1024/48000*1e6
 // ≈ k*21333.33 µs (rounded to whole µs; 1 µs ≪ 1 sample = 20.83 µs).
@@ -920,11 +839,14 @@ class MixerProcessor extends AudioWorkletProcessor {
         this._mode = "demo"; // "demo" or "live"
         this._pendingPcm = []; // queued PCM packets for live mode
         this._meterInterval = 0;
-        // Publish tap state (master-output PCM relay; see _pubTap).
+        // Publish tap state (output PCM relay; see _pubTap).
         this._pubActive = false;
-        this._pubBuf = null;   // interleaved batch accumulator, alloc'd on first pub-start
+        this._pubBuf = null;   // interleaved batch accumulator, alloc'd on pub-start
         this._pubFill = 0;     // floats currently in the accumulator
         this._pubFrames = 0;   // frames appended since pub-start (drives pts)
+        this._pubChannels = 2; // tap width: 2 = master pair, >2 = channel direct outs
+        this._tapMissingWarned = false; // log-once guards for the channel tap
+        this._tapErrorWarned = false;
 
         this.port.onmessage = (e) => {
             var msg = e.data;
@@ -933,6 +855,9 @@ class MixerProcessor extends AudioWorkletProcessor {
                     var module = msg.wasmBytes ? new WebAssembly.Module(msg.wasmBytes) : msg.module;
                     initSync({ module: module });
                     this._mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 256);
+                    // Defensive: a >2ch pub may have started before wasm was
+                    // ready — (re)arm the channel tap on the fresh mixer.
+                    if (this._pubActive && this._pubChannels > 2) this._setChannelTap(this._pubChannels);
                     this.port.postMessage({ type: "wasm-ready" });
                 } catch(err) {
                     this.port.postMessage({ type: "error", msg: String(err) });
@@ -1018,18 +943,30 @@ class MixerProcessor extends AudioWorkletProcessor {
                     try { this._mixer.feed_pcm(msg.pid, msg.samples); } catch(e) {}
                 }
             } else if (msg.type === "pub-start") {
-                // Enable master-output publish tap. Idempotent; does not affect
-                // running state. A start while already started cleanly restarts
-                // the accumulator + sample counter (partial batch dropped).
-                if (!this._pubBuf) this._pubBuf = new Float32Array(PUB_BATCH_FRAMES * 2);
+                // Enable the publish tap for msg.channels outputs (default 2).
+                // 2 taps the master stereo pair exactly as before; 16/32/64/128
+                // switch to the mixer's per-channel direct-out tap (set via
+                // set_channel_tap, feature-detected). Idempotent; does not
+                // affect running state. A start while already started cleanly
+                // restarts the accumulator + sample counter (partial batch
+                // dropped).
+                var ch = msg.channels;
+                if (ch !== 2 && ch !== 16 && ch !== 32 && ch !== 64 && ch !== 128) {
+                    if (ch !== undefined) console.warn("[pub] invalid channels " + ch + " — using 2");
+                    ch = 2;
+                }
+                this._pubChannels = ch;
+                this._pubBuf = new Float32Array(PUB_BATCH_FRAMES * ch);
                 this._pubFill = 0;
                 this._pubFrames = 0;
                 this._pubActive = true;
+                this._setChannelTap(ch > 2 ? ch : 0);
             } else if (msg.type === "pub-stop") {
                 // Disable publish tap, drop any partial batch. Idempotent.
                 this._pubActive = false;
                 this._pubFill = 0;
                 this._pubFrames = 0;
+                this._setChannelTap(0);
             }
         };
         this.port.postMessage({ type: "ready" });
@@ -1042,8 +979,9 @@ class MixerProcessor extends AudioWorkletProcessor {
         outL.fill(0); outR.fill(0);
         if (!this._running || !this._mixer) {
             // Publish tap keeps posting silent batches while stopped/missing
-            // so the downstream publisher's stream stays continuous.
-            if (this._pubActive) this._pubTap(outL, outR, n); // outL/outR are zeros
+            // so the downstream publisher's stream stays continuous (all
+            // _pubChannels of them zero).
+            if (this._pubActive) this._pubTap(outL, outR, n, true); // outL/outR are zeros
             // Send zeroed meters when stopped so UI clears.
             this._meterInterval++;
             if (this._meterInterval >= 10) {
@@ -1077,14 +1015,15 @@ class MixerProcessor extends AudioWorkletProcessor {
 
         var output;
         try { output = this._mixer.process(BLOCK_SIZE); }
-        catch(e) { if (this._pubActive) this._pubTap(outL, outR, n); return true; }
+        catch(e) { if (this._pubActive) this._pubTap(outL, outR, n, true); return true; }
         for (var i = 0; i < n; i++) {
             outL[i] = output[i*2];
             outR[i] = output[i*2+1];
         }
 
-        // Publish tap: post batched master-output PCM (same data as above).
-        if (this._pubActive) this._pubTap(outL, outR, n);
+        // Publish tap: post batched output PCM. 2ch publishes the master
+        // pair above; >2ch publishes the channel direct-out tap instead.
+        if (this._pubActive) this._pubTap(outL, outR, n, false);
 
         // Report meters every ~10 blocks (every ~2ms at 128/48k)
         this._meterInterval++;
@@ -1108,11 +1047,18 @@ class MixerProcessor extends AudioWorkletProcessor {
         return true;
     }
 
-    // Publish tap: append this block's master output (exactly what was written
-    // to the audio output) to the accumulator; when a full PUB_BATCH_FRAMES
-    // batch is ready, post it transferred with the pts of its first frame.
-    _pubTap(outL, outR, n) {
-        this._pubFill = pubInterleaveBlock(this._pubBuf, this._pubFill, outL, outR, n);
+    // Publish tap: append this block's audio to the accumulator — in 2ch
+    // mode exactly what was written to the audio output (master pair), in
+    // >2ch mode the channel direct-out tap (silence when silent or the tap
+    // failed). When a full PUB_BATCH_FRAMES batch is ready, post it
+    // transferred with the pts of its first frame.
+    _pubTap(outL, outR, n, silent) {
+        if (this._pubChannels === 2) {
+            this._pubFill = pubInterleaveBlock(this._pubBuf, this._pubFill, outL, outR, n);
+        } else {
+            var tap = silent ? null : this._takeChannelTap();
+            this._pubFill = pubInterleaveNch(this._pubBuf, this._pubFill, tap, n, this._pubChannels);
+        }
         this._pubFrames += n;
         if (this._pubFill < this._pubBuf.length) return;
         // Transfer detaches the buffer, so the posted samples array is fresh.
@@ -1121,8 +1067,52 @@ class MixerProcessor extends AudioWorkletProcessor {
             type: "pub-pcm",
             samples: batch,
             ptsUs: pubBatchPtsUs(this._pubFrames - PUB_BATCH_FRAMES),
+            channels: this._pubChannels,
         }, [batch.buffer]);
         this._pubFill = 0;
+    }
+
+    // Configure the mixer's per-channel direct-out tap (n = channel count,
+    // 0 = off). Feature-detected (typeof) so wasm builds without
+    // set_channel_tap keep the 2ch master mode working; >2ch without the
+    // tap logs once and publishes silence instead. Errors log once only.
+    _setChannelTap(n) {
+        if (!this._mixer || typeof this._mixer.set_channel_tap !== "function") {
+            if (n > 0 && !this._tapMissingWarned) {
+                this._tapMissingWarned = true;
+                console.warn("[pub] wasm mixer has no set_channel_tap — publishing silence");
+            }
+            return;
+        }
+        try { this._mixer.set_channel_tap(n); }
+        catch (e) {
+            if (!this._tapErrorWarned) {
+                this._tapErrorWarned = true;
+                console.warn("[pub] set_channel_tap(" + n + ") failed: " + e);
+            }
+        }
+    }
+
+    // Drain one block from the mixer's channel direct-out tap, or null when
+    // unavailable (the caller accumulates silence). Empty when the tap is
+    // disabled per the wasm contract. Failures log once only.
+    _takeChannelTap() {
+        if (!this._mixer || typeof this._mixer.take_channel_tap !== "function") {
+            if (!this._tapMissingWarned) {
+                this._tapMissingWarned = true;
+                console.warn("[pub] wasm mixer has no take_channel_tap — publishing silence");
+            }
+            return null;
+        }
+        try {
+            return this._mixer.take_channel_tap();
+        } catch (e) {
+            if (!this._tapErrorWarned) {
+                this._tapErrorWarned = true;
+                console.warn("[pub] take_channel_tap failed: " + e);
+            }
+            return null;
+        }
     }
 }
 
