@@ -1,0 +1,4 @@
+[submodule "vendor/WebSRT"]
+	path = vendor/WebSRT
+	url = https://github.com/maxolgi/WebSRT
+	branch = master
