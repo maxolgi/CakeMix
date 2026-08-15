@@ -1,8 +1,10 @@
 // WebSRT publish store — the UI-facing contract for the PCM publish path.
 //
-// Publishes the mixer's master output (stereo SMPTE 302M PCM, no codecs) to
-// the WebSRT gateway via ./publish-worker.ts. Mirrors ./store.ts (the
-// receive store): same cert-hash.js discovery + ?certHash/?host/?port
+// Publishes the mixer's output as SMPTE 302M PCM (no codecs) to the WebSRT
+// gateway via ./publish-worker.ts: 2ch = master stereo on one PID, 16–128ch
+// = ceil(N/2) stereo PIDs (multi-PID muxing in the worker; the >2ch data
+// source lands with the worklet input-tap follow-up). Mirrors ./store.ts
+// (the receive store): same cert-hash.js discovery + ?certHash/?host/?port
 // overrides, same status/detail signal shape, batched worker messages
 // ({type:'batch', msgs}). The default publish target is the SAME gateway
 // the receive path resolves to; the stream name defaults to "cakemix"
@@ -19,10 +21,9 @@ import type { PubCmd, PubMsg, PubStats } from "./publish-worker";
 
 export type PublishStatus = "disconnected" | "connecting" | "connected" | "error";
 
-/** Master-bus PID — reserved for the multi-PID extension (see publish-worker:
- *  the muxer's first s302m stream, PID 0x101, carries the v1 data). */
-const MASTER_PID = 0x100;
-const MASTER_CHANNELS = 2;
+/** Allowed publish channel counts (2 = master stereo; the N>2 modes await
+ *  the worklet input-tap follow-up for a real source). */
+export type PublishChannels = 2 | 16 | 32 | 64 | 128;
 
 const STREAM_NAME = new URLSearchParams(location.search).get("pubstream") ?? "cakemix";
 
@@ -30,6 +31,7 @@ const [status, setStatus] = createSignal<PublishStatus>("disconnected");
 const [statusDetail, setStatusDetail] = createSignal("");
 const [stats, setStats] = createSignal<PubStats | null>(null);
 const [target, setTarget] = createSignal("");
+const [channels, setChannels] = createSignal<PublishChannels>(2);
 
 export const publishStatus = status;
 /** Last log/error/stats line from the publish path. */
@@ -38,10 +40,19 @@ export const publishStatusDetail = statusDetail;
 export const publishStats = stats;
 /** "host:port" of the gateway being published to (filled on connect). */
 export const publishTarget = target;
+/** Output channel count: 2|16|32|64|128, packed as ceil(N/2) stereo s302m PIDs. */
+export const publishChannels = channels;
 
 /** Stream name the master mix is published as (?pubstream= overrides). */
 export function publishStreamName(): string {
   return STREAM_NAME;
+}
+
+/** Change the publish channel count. Only takes effect while disconnected
+ *  (applied at next connect — the live muxer's PID set is fixed at init);
+ *  silently ignored otherwise. */
+export function setPublishChannels(n: PublishChannels): void {
+  if (status() === "disconnected") setChannels(n);
 }
 
 let worker: Worker | null = null;
@@ -76,7 +87,7 @@ export async function connectPublish(): Promise<void> {
       : `connecting to ${url} (mkcert/PKI)`);
     const cmd: PubCmd = {
       cmd: "init", url, certHash,
-      latencyMs: websrtLatencyMs(), pid: MASTER_PID, channels: MASTER_CHANNELS,
+      latencyMs: websrtLatencyMs(), channels: channels(),
     };
     w.postMessage(cmd);
     // Master-output tap on: the worklet posts {type:'pub-pcm', samples, ptsUs}
@@ -104,12 +115,13 @@ export function disconnectPublish(): void {
   setStatus("disconnected");
 }
 
-/** Relay one master-output PCM batch from the worklet into the publish
- *  worker (zero-copy: the worklet transferred the buffer to the main
- *  thread; hand it straight through). Called by App.tsx on pub-pcm. */
+/** Relay one PCM batch from the worklet into the publish worker (zero-copy:
+ *  the worklet transferred the buffer to the main thread; hand it straight
+ *  through). Called by App.tsx on pub-pcm. The master-output tap is stereo;
+ *  the input-tap follow-up will pass its channel count here. */
 export function relayPubPcm(samples: Float32Array, ptsUs: number): void {
   if (!worker) return;
-  worker.postMessage({ cmd: "pcm", samples, ptsUs }, [samples.buffer]);
+  worker.postMessage({ cmd: "pcm", samples, ptsUs, channels: 2 }, [samples.buffer]);
 }
 
 function startWorker(): Worker {

@@ -14,11 +14,21 @@ import {
   publishStats,
   publishStreamName,
   publishTarget,
+  publishChannels,
+  setPublishChannels,
+  type PublishChannels,
   connectPublish,
   disconnectPublish,
 } from "../websrt/publish";
 
 const LATENCY_OPTIONS = [120, 250, 500, 1000, 2000];
+const CHANNEL_OPTIONS: { value: PublishChannels; label: string }[] = [
+  { value: 2, label: "2 (master)" },
+  { value: 16, label: "16" },
+  { value: 32, label: "32" },
+  { value: 64, label: "64" },
+  { value: 128, label: "128" },
+];
 
 const mixerChRange = (chStart: number, channelCount: number) =>
   channelCount > 1 ? `${chStart + 1}–${chStart + channelCount}` : `${chStart + 1}`;
@@ -130,8 +140,21 @@ export function WebSRTPanel() {
                 onClick={() => (pubActive() ? disconnectPublish() : connectPublish())}
                 title={pubActive()
                   ? "Stop publishing: closes the master-output tap and the publish worker's SRT/WebTransport session"
-                  : `Publish the master mix as stereo SMPTE 302M PCM (48 kHz, no codecs) to the gateway, stream "${publishStreamName()}"`}
+                  : `Publish the mixer output as SMPTE 302M PCM (48 kHz, no codecs) to the gateway, stream "${publishStreamName()}"`}
               >{pubActive() ? "DISCONNECT" : "CONNECT"}</button>
+              <label class="detail-select-label">CHANNELS
+                <select
+                  class="detail-select"
+                  value={String(publishChannels())}
+                  onInput={(e) => setPublishChannels(parseInt(e.currentTarget.value, 10) as PublishChannels)}
+                  disabled={pubActive()}
+                  title="Output channel count — packed as ceil(N/2) stereo s302m PIDs (PID i = channels 2i/2i+1), discovered by receivers via the PMT. 2 = the master stereo mix; 16-128 need the worklet input-tap follow-up before they carry real source audio, so they output silence until then. 32-128 additionally trip an upstream muxer bug (oversized PMT panics the muxer — fix pending in WebSRT) and will stop the session with an error. Changeable only while disconnected: the PID set is fixed at connect."
+                >
+                  <For each={CHANNEL_OPTIONS}>
+                    {(o) => <option value={String(o.value)}>{o.label}</option>}
+                  </For>
+                </select>
+              </label>
             </div>
 
             <div
