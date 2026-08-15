@@ -65,14 +65,30 @@ export function setWebsrtLatencyMs(ms: number): void {
 let worker: Worker | null = null;
 let nextChStart = 0;
 
-/** Connect: resolve /cert-hash.js (same origin), build the WebTransport URL,
- *  start the receive worker and post 'init'. User-triggered (WebSRTPanel). */
+/** Connect: resolve the gateway cert hash — ?certHash=<64-hex> URL param if
+ *  present, else same-origin /cert-hash.js — build the WebTransport URL,
+ *  start the receive worker and post 'init'. User-triggered (WebSRTPanel).
+ *
+ *  The ?certHash= override exists because ?host/?port can point at a
+ *  DIFFERENT gateway than the one serving this page; the same-origin
+ *  cert-hash.js would then carry the WRONG hash and the WT handshake would
+ *  fail. The special value ?certHash=null disables pinning (mkcert/PKI). */
 export async function connectWebsrt(): Promise<void> {
   if (worker) return;
   setStatus("connecting");
+  const certHashParam = new URLSearchParams(location.search).get("certHash");
   setStatusDetail("resolving cert-hash.js…");
   try {
-    const { certHashHex, wtPort } = await resolveCertHash();
+    let certHashHex: string | null;
+    let wtPort: number;
+    if (certHashParam !== null) {
+      // URL override — skip the same-origin fetch entirely; buildWtUrl then
+      // derives the port from ?port or its 4433 default.
+      certHashHex = certHashParam === "null" ? null : certHashParam;
+      wtPort = 0;
+    } else {
+      ({ certHashHex, wtPort } = await resolveCertHash());
+    }
     const url = buildWtUrl(wtPort);
     const certHash = certHashHex ? hexToBytes(certHashHex) : null;
     const w = startWorker();
