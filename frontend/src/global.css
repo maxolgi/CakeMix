@@ -369,3 +369,48 @@ body {
 /* Bus master strip */
 .bus-master { position: sticky !important; top: 0; z-index: 10; overflow-y: hidden !important; }
 .bus-master .detail-meter-fader canvas { position: static; }
+
+/* ── WebSRT panel ────────────────────── */
+.websrt-panel {
+    background: #0e0e14;
+    border-bottom: 1px solid #1e1e28;
+}
+.websrt-header { display: flex; align-items: center; gap: 8px; padding: 5px 12px; }
+.websrt-label { font-size: 0.65em; font-weight: 700; letter-spacing: 1px; color: #888; }
+.websrt-pill {
+    font-size: 0.55em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+    padding: 2px 7px; border-radius: 3px;
+    border: 1px solid #2a2a30; background: #16161e; color: #666;
+}
+.websrt-pill.connecting { background: #3a2a10; color: #e0b050; border-color: #6a4a10; }
+.websrt-pill.connected { background: #1a3a1a; color: #4ade80; border-color: #2a5a2a; }
+.websrt-pill.error { background: #2a1414; color: #f87171; border-color: #5a2a2a; }
+.websrt-chevron {
+    margin-left: auto;
+    width: 24px; height: 20px; font-size: 0.7em;
+    border: 1px solid #2a2a30; border-radius: 2px; background: #16161e; color: #666;
+    cursor: pointer; transition: all 0.1s;
+}
+.websrt-chevron:hover { border-color: #444; color: #aaa; }
+.websrt-body { display: flex; flex-direction: column; gap: 6px; padding: 2px 12px 8px; }
+.websrt-controls { display: flex; align-items: center; gap: 10px; }
+.websrt-controls .btn { padding: 4px 14px; font-size: 0.7em; }
+.websrt-status-detail {
+    font-family: 'SF Mono', monospace; font-size: 0.6em; color: #666;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.websrt-pid-empty { font-size: 0.65em; color: #444; padding: 2px 0; }
+.websrt-pid-scroll { max-height: 140px; overflow-y: auto; border: 1px solid #1a1a25; border-radius: 3px; }
+.websrt-pid-table { width: 100%; border-collapse: collapse; font-size: 0.65em; }
+.websrt-pid-table th {
+    position: sticky; top: 0; z-index: 1;
+    font-size: 0.9em; font-weight: 700; letter-spacing: 0.5px; color: #555; text-align: left;
+    padding: 3px 8px; background: #11111a; border-bottom: 1px solid #1a1a25;
+}
+.websrt-pid-table td {
+    padding: 2px 8px; color: #aaa; font-family: 'SF Mono', monospace;
+    border-bottom: 1px solid #14141c; white-space: nowrap;
+}
+.websrt-pid-table tbody tr:last-child td { border-bottom: none; }
+.websrt-pcm { color: #333; }
+.websrt-pcm.on { color: #4ade80; }
