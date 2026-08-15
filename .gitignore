@@ -9,3 +9,4 @@ dist/
 cert.pem
 key.pem
 tmp/
+/logs/
