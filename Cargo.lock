@@ -1259,6 +1259,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpeg2ts"
+version = "0.6.0"
+source = "git+https://github.com/maxolgi/mpeg2ts.git?branch=master#9a1efaff7fd1eca2077edcb779c1ec681c340554"
+
+[[package]]
 name = "nom"
 version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2661,6 +2666,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures 0.3.33",
+ "mpeg2ts",
  "parking_lot",
  "percent-encoding",
  "rustls-pki-types",
@@ -2947,8 +2953,3 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
-
-[[patch.unused]]
-name = "mpeg2ts"
-version = "0.6.0"
-source = "git+https://github.com/maxolgi/mpeg2ts.git?branch=master#0e003ca4007a49a6abfe296d59395530c82acc1a"

@@ -134,8 +134,8 @@ async function doInit(url: string, certHash: Uint8Array | null, latencyMs: numbe
     // consecutive PIDs via addAudioPid (muxer test convention, ef18993).
     const pidCount = Math.ceil(channels / 2);
     muxer = new TsMuxer();
-    // Sparse suppression is untested upstream and drops silent PIDs from
-    // the PMT — keep all PIDs flowing; revisit as an opt-in later.
+    // Redundant since WebSRT bde9ca7 (sparse default off) but kept as an
+    // explicit contract: silent PIDs must never drop from our PMT.
     muxer.setSparseEnabled(false);
     muxer.setVideoEnabled(false);
     muxer.setAudioCodec("s302m", 2);
@@ -285,10 +285,10 @@ function handlePcm(samples: Float32Array, ptsUs: number, channels: number) {
       muxer.push_pcm_pid(FIRST_PID + i, pids[i], ptsUs);
     }
   } catch (e) {
-    // Muxer-side Rust panic (currently: write_pmt overflows its single TS
-    // packet at ≥16 audio PIDs — upstream bug, needs PMT section splitting
-    // in WebSRT). State may be corrupt; stop the session cleanly instead of
-    // feeding every following batch into the same panic.
+    // Muxer-side Rust panic (state may be corrupt; the long-PMT write_pmt
+    // panic at ≥16 audio PIDs was fixed upstream in WebSRT b8c4364).
+    // Stop the session cleanly instead of feeding every following batch
+    // into the same panic.
     queue({ type: "log", msg: `muxer error on pcm push: ${e} — stopping publish session`, cls: "err" });
     queue({ type: "wtClosed", error: `muxer: ${e}` });
     flushOutgoing();
