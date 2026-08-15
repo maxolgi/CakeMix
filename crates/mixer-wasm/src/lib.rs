@@ -1,15 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use wasm_bindgen::prelude::*;
 
+use oximedia_audio::ChannelLayout;
+use oximedia_mixer::effects_chain::AudioEffect;
+use oximedia_mixer::metering::{Meter, MeterBallistics};
+use oximedia_mixer::oversampled_limiter::OversampledLimiter;
 use oximedia_mixer::{
     bus::{BusId, BusType},
     channel::{ChannelType, PanLaw},
     ChannelId, ChannelProcessParams, MixerConfig, PanLawType,
 };
-use oximedia_audio::ChannelLayout;
-use oximedia_mixer::metering::{Meter, MeterBallistics};
-use oximedia_mixer::oversampled_limiter::OversampledLimiter;
-use oximedia_mixer::effects_chain::AudioEffect;
 
 pub mod effects;
 use effects::{CompressorEffect, EqEffect, ExpanderEffect, GateEffect};
@@ -21,18 +21,30 @@ struct ChannelDynamics {
 }
 
 impl Default for ChannelDynamics {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ChannelDynamics {
     fn new() -> Self {
-        Self { compressor: None, gate: None, expander: None }
+        Self {
+            compressor: None,
+            gate: None,
+            expander: None,
+        }
     }
 
     fn process(&mut self, samples: &mut [f32]) {
-        if let Some(g) = &mut self.gate { g.process(samples); }
-        if let Some(e) = &mut self.expander { e.process(samples); }
-        if let Some(c) = &mut self.compressor { c.process(samples); }
+        if let Some(g) = &mut self.gate {
+            g.process(samples);
+        }
+        if let Some(e) = &mut self.expander {
+            e.process(samples);
+        }
+        if let Some(c) = &mut self.compressor {
+            c.process(samples);
+        }
     }
 }
 
@@ -105,7 +117,11 @@ struct PidMapping {
 #[wasm_bindgen]
 impl MixerWasm {
     #[wasm_bindgen(constructor)]
-    pub fn new(sample_rate: u32, buffer_size: u32, max_channels: u32) -> Result<MixerWasm, JsValue> {
+    pub fn new(
+        sample_rate: u32,
+        buffer_size: u32,
+        max_channels: u32,
+    ) -> Result<MixerWasm, JsValue> {
         console_error_panic_hook::set_once();
 
         let bs = buffer_size as usize;
@@ -163,18 +179,21 @@ impl MixerWasm {
         let i = idx as usize;
         if i >= self.channel_ids.len() {
             return Err(JsValue::from_str(&format!(
-                "channel index {idx} out of range (max {})", self.channel_ids.len()
+                "channel index {idx} out of range (max {})",
+                self.channel_ids.len()
             )));
         }
         if self.channel_ids[i].is_none() {
-            let id = self.engine.add_channel(
-                format!("ch{idx}"), ChannelType::Mono, ChannelLayout::Mono,
-            ).map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+            let id = self
+                .engine
+                .add_channel(format!("ch{idx}"), ChannelType::Mono, ChannelLayout::Mono)
+                .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
             if let Ok(ch) = self.engine.get_channel_mut(id) {
                 ch.set_pan_law(PanLaw::Linear);
             }
             self.channel_ids[i] = Some(id);
-            self.eq_chains.insert(idx, EqEffect::six_band(self.sample_rate));
+            self.eq_chains
+                .insert(idx, EqEffect::six_band(self.sample_rate));
             self.dynamics_chains.insert(idx, ChannelDynamics::new());
         }
         Ok(self.channel_ids[i].unwrap())
@@ -191,8 +210,11 @@ impl MixerWasm {
             PanLaw::Minus6dB => PanLawType::Minus6dB,
         };
         let params = ChannelProcessParams {
-            fader_gain: ch.gain(), pan: ch.pan(), muted: ch.is_muted(),
-            input_gain_db: ch.input().gain_db, phase_inverted: ch.is_phase_inverted(),
+            fader_gain: ch.gain(),
+            pan: ch.pan(),
+            muted: ch.is_muted(),
+            input_gain_db: ch.input().gain_db,
+            phase_inverted: ch.is_phase_inverted(),
             pan_law,
         };
         Some((id, params))
@@ -200,40 +222,62 @@ impl MixerWasm {
 
     // ── Input ──────────────────────────────────────────
 
-    pub fn set_channel_input(&mut self, ch: u32, data: &js_sys::Float32Array) -> Result<(), JsValue> {
+    pub fn set_channel_input(
+        &mut self,
+        ch: u32,
+        data: &js_sys::Float32Array,
+    ) -> Result<(), JsValue> {
         self.ensure_channel(ch)?;
         let len = data.length() as usize;
         self.raw_input.resize(len, 0.0);
         data.copy_to(&mut self.raw_input);
-        let slot = self.channel_inputs.entry(ch).or_insert_with(|| Vec::with_capacity(self.buffer_size));
+        let slot = self
+            .channel_inputs
+            .entry(ch)
+            .or_insert_with(|| Vec::with_capacity(self.buffer_size));
         slot.clear();
         slot.extend_from_slice(&self.raw_input);
         Ok(())
     }
 
     pub fn set_channel_input_interleaved(
-        &mut self, ch_start: u32, data: &js_sys::Float32Array, num_channels: u32,
+        &mut self,
+        ch_start: u32,
+        data: &js_sys::Float32Array,
+        num_channels: u32,
     ) -> Result<(), JsValue> {
         let nc = num_channels as usize;
-        if nc == 0 { return Err(JsValue::from_str("num_channels must be > 0")); }
+        if nc == 0 {
+            return Err(JsValue::from_str("num_channels must be > 0"));
+        }
         let total = data.length() as usize;
         if !total.is_multiple_of(nc) {
-            return Err(JsValue::from_str(&format!("length {total} not divisible by {nc}")));
+            return Err(JsValue::from_str(&format!(
+                "length {total} not divisible by {nc}"
+            )));
         }
         let frames = total / nc;
         if self.deinterleave_scratch.len() < nc {
             self.deinterleave_scratch.resize(nc, Vec::new());
         }
-        for c in 0..nc { self.deinterleave_scratch[c].clear(); self.deinterleave_scratch[c].reserve(frames); }
+        for c in 0..nc {
+            self.deinterleave_scratch[c].clear();
+            self.deinterleave_scratch[c].reserve(frames);
+        }
         self.raw_input.resize(total, 0.0);
         data.copy_to(&mut self.raw_input);
         for f in 0..frames {
-            for c in 0..nc { self.deinterleave_scratch[c].push(self.raw_input[f * nc + c]); }
+            for c in 0..nc {
+                self.deinterleave_scratch[c].push(self.raw_input[f * nc + c]);
+            }
         }
         for c in 0..nc {
             let ch = ch_start + c as u32;
             self.ensure_channel(ch)?;
-            let slot = self.channel_inputs.entry(ch).or_insert_with(|| Vec::with_capacity(self.buffer_size));
+            let slot = self
+                .channel_inputs
+                .entry(ch)
+                .or_insert_with(|| Vec::with_capacity(self.buffer_size));
             std::mem::swap(slot, &mut self.deinterleave_scratch[c]);
         }
         Ok(())
@@ -242,19 +286,39 @@ impl MixerWasm {
     // ── PID mapping ────────────────────────────────────
 
     pub fn map_pid(&mut self, pid: u16, ch_start: u32, channel_count: u32) -> Result<(), JsValue> {
-        for i in 0..channel_count { self.ensure_channel(ch_start + i)?; }
-        self.pid_map.insert(pid, PidMapping { ch_start, channel_count, subscribed: true });
+        for i in 0..channel_count {
+            self.ensure_channel(ch_start + i)?;
+        }
+        self.pid_map.insert(
+            pid,
+            PidMapping {
+                ch_start,
+                channel_count,
+                subscribed: true,
+            },
+        );
         Ok(())
     }
-    pub fn unmap_pid(&mut self, pid: u16) { self.pid_map.remove(&pid); }
-    pub fn pid_channel(&self, pid: u16) -> i32 { self.pid_map.get(&pid).map(|m| m.ch_start as i32).unwrap_or(-1) }
-    pub fn pid_channel_count(&self, pid: u16) -> u32 { self.pid_map.get(&pid).map(|m| m.channel_count).unwrap_or(0) }
+    pub fn unmap_pid(&mut self, pid: u16) {
+        self.pid_map.remove(&pid);
+    }
+    pub fn pid_channel(&self, pid: u16) -> i32 {
+        self.pid_map
+            .get(&pid)
+            .map(|m| m.ch_start as i32)
+            .unwrap_or(-1)
+    }
+    pub fn pid_channel_count(&self, pid: u16) -> u32 {
+        self.pid_map.get(&pid).map(|m| m.channel_count).unwrap_or(0)
+    }
     pub fn subscribe_pid(&mut self, pid: u16) {
         if let Some(m) = self.pid_map.get_mut(&pid) {
             m.subscribed = true;
             for i in 0..m.channel_count {
                 if let Some(&Some(id)) = self.channel_ids.get((m.ch_start + i) as usize) {
-                    if let Ok(ch) = self.engine.get_channel_mut(id) { ch.set_muted(false); }
+                    if let Ok(ch) = self.engine.get_channel_mut(id) {
+                        ch.set_muted(false);
+                    }
                 }
             }
         }
@@ -264,7 +328,9 @@ impl MixerWasm {
             m.subscribed = false;
             for i in 0..m.channel_count {
                 if let Some(&Some(id)) = self.channel_ids.get((m.ch_start + i) as usize) {
-                    if let Ok(ch) = self.engine.get_channel_mut(id) { ch.set_muted(true); }
+                    if let Ok(ch) = self.engine.get_channel_mut(id) {
+                        ch.set_muted(true);
+                    }
                 }
             }
         }
@@ -275,26 +341,38 @@ impl MixerWasm {
             self.unmapped_pid_drops += 1;
             return Ok(());
         };
-        if !mapping.subscribed { return Ok(()); }
+        if !mapping.subscribed {
+            return Ok(());
+        }
         self.set_channel_input_interleaved(mapping.ch_start, data, mapping.channel_count)
     }
 
     /// Count of PCM packets dropped due to unmapped PID (for diagnostics).
-    pub fn unmapped_pid_count(&self) -> u64 { self.unmapped_pid_drops }
+    pub fn unmapped_pid_count(&self) -> u64 {
+        self.unmapped_pid_drops
+    }
 
     // ── Channel controls ───────────────────────────────
 
     pub fn set_channel_gain(&mut self, ch: u32, gain: f32) -> Result<(), JsValue> {
         let id = self.ensure_channel(ch)?;
-        self.engine.set_channel_gain(id, gain).map_err(|e| JsValue::from_str(&format!("{e:?}")))
+        self.engine
+            .set_channel_gain(id, gain)
+            .map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
     pub fn set_channel_pan(&mut self, ch: u32, pan: f32) -> Result<(), JsValue> {
         let id = self.ensure_channel(ch)?;
-        self.engine.set_channel_pan(id, pan).map_err(|e| JsValue::from_str(&format!("{e:?}")))
+        self.engine
+            .set_channel_pan(id, pan)
+            .map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
     pub fn set_channel_mute(&mut self, ch: u32, muted: bool) -> Result<(), JsValue> {
         let _ = self.ensure_channel(ch)?;
-        if muted { self.user_muted.insert(ch); } else { self.user_muted.remove(&ch); }
+        if muted {
+            self.user_muted.insert(ch);
+        } else {
+            self.user_muted.remove(&ch);
+        }
         // Apply: muted if user-muted OR (something is soloed and this isn't)
         let effective = muted || (self.solo_active() && !self.soloed_channels.contains(&ch));
         self.set_engine_mute(ch, effective);
@@ -302,22 +380,37 @@ impl MixerWasm {
     }
     pub fn set_channel_solo(&mut self, ch: u32, soloed: bool) -> Result<(), JsValue> {
         let _ = self.ensure_channel(ch)?;
-        if soloed { self.soloed_channels.insert(ch); } else { self.soloed_channels.remove(&ch); }
+        if soloed {
+            self.soloed_channels.insert(ch);
+        } else {
+            self.soloed_channels.remove(&ch);
+        }
         // Re-evaluate all channels' effective mute state
-        let ids: Vec<(u32, ChannelId)> = self.channel_ids.iter().enumerate()
-            .filter_map(|(i, id)| id.map(|id| (i as u32, id))).collect();
+        let ids: Vec<(u32, ChannelId)> = self
+            .channel_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| id.map(|id| (i as u32, id)))
+            .collect();
         for (i, id) in ids {
-            let effective = self.user_muted.contains(&i) || (self.solo_active() && !self.soloed_channels.contains(&i));
-            if let Ok(ch) = self.engine.get_channel_mut(id) { ch.set_muted(effective); }
+            let effective = self.user_muted.contains(&i)
+                || (self.solo_active() && !self.soloed_channels.contains(&i));
+            if let Ok(ch) = self.engine.get_channel_mut(id) {
+                ch.set_muted(effective);
+            }
         }
         Ok(())
     }
 
-    fn solo_active(&self) -> bool { !self.soloed_channels.is_empty() }
+    fn solo_active(&self) -> bool {
+        !self.soloed_channels.is_empty()
+    }
 
     fn set_engine_mute(&mut self, ch: u32, muted: bool) {
         if let Some(&Some(id)) = self.channel_ids.get(ch as usize) {
-            if let Ok(channel) = self.engine.get_channel_mut(id) { channel.set_muted(muted); }
+            if let Ok(channel) = self.engine.get_channel_mut(id) {
+                channel.set_muted(muted);
+            }
         }
     }
 
@@ -352,7 +445,9 @@ impl MixerWasm {
     }
     pub fn set_eq_bypass(&mut self, ch: u32, bypassed: bool) -> Result<(), JsValue> {
         self.ensure_channel(ch)?;
-        if let Some(eq) = self.eq_chains.get_mut(&ch) { eq.set_bypassed(bypassed); }
+        if let Some(eq) = self.eq_chains.get_mut(&ch) {
+            eq.set_bypassed(bypassed);
+        }
         Ok(())
     }
 
@@ -361,28 +456,37 @@ impl MixerWasm {
     /// Enable compressor on a channel with broadcast defaults (-12 dB threshold, 3:1 ratio).
     pub fn enable_compressor(&mut self, ch: u32) -> Result<(), JsValue> {
         let _ = self.ensure_channel(ch)?;
-        self.dynamics_chains.entry(ch).or_default().compressor = Some(CompressorEffect::broadcast(self.sample_rate));
+        self.dynamics_chains.entry(ch).or_default().compressor =
+            Some(CompressorEffect::broadcast(self.sample_rate));
         Ok(())
     }
     pub fn disable_compressor(&mut self, ch: u32) {
-        if let Some(d) = self.dynamics_chains.get_mut(&ch) { d.compressor = None; }
+        if let Some(d) = self.dynamics_chains.get_mut(&ch) {
+            d.compressor = None;
+        }
     }
     pub fn enable_gate(&mut self, ch: u32) -> Result<(), JsValue> {
         let _ = self.ensure_channel(ch)?;
-        self.dynamics_chains.entry(ch).or_default().gate = Some(GateEffect::denoise(self.sample_rate));
+        self.dynamics_chains.entry(ch).or_default().gate =
+            Some(GateEffect::denoise(self.sample_rate));
         Ok(())
     }
     pub fn disable_gate(&mut self, ch: u32) {
-        if let Some(d) = self.dynamics_chains.get_mut(&ch) { d.gate = None; }
+        if let Some(d) = self.dynamics_chains.get_mut(&ch) {
+            d.gate = None;
+        }
     }
 
     pub fn enable_expander(&mut self, ch: u32) -> Result<(), JsValue> {
         let _ = self.ensure_channel(ch)?;
-        self.dynamics_chains.entry(ch).or_default().expander = Some(ExpanderEffect::gentle(self.sample_rate));
+        self.dynamics_chains.entry(ch).or_default().expander =
+            Some(ExpanderEffect::gentle(self.sample_rate));
         Ok(())
     }
     pub fn disable_expander(&mut self, ch: u32) {
-        if let Some(d) = self.dynamics_chains.get_mut(&ch) { d.expander = None; }
+        if let Some(d) = self.dynamics_chains.get_mut(&ch) {
+            d.expander = None;
+        }
     }
 
     pub fn set_comp_param(&mut self, ch: u32, param: u32, value: f32) -> Result<(), JsValue> {
@@ -437,13 +541,17 @@ impl MixerWasm {
 
     pub fn set_channel_input_gain(&mut self, ch: u32, gain_db: f32) -> Result<(), JsValue> {
         let id = self.ensure_channel(ch)?;
-        if let Ok(c) = self.engine.get_channel_mut(id) { c.input_mut().gain_db = gain_db; }
+        if let Ok(c) = self.engine.get_channel_mut(id) {
+            c.input_mut().gain_db = gain_db;
+        }
         Ok(())
     }
 
     pub fn set_channel_phase(&mut self, ch: u32, inverted: bool) -> Result<(), JsValue> {
         let id = self.ensure_channel(ch)?;
-        if let Ok(c) = self.engine.get_channel_mut(id) { c.set_phase_inverted(inverted); }
+        if let Ok(c) = self.engine.get_channel_mut(id) {
+            c.set_phase_inverted(inverted);
+        }
         Ok(())
     }
 
@@ -456,20 +564,27 @@ impl MixerWasm {
             3 => PanLaw::Minus6dB,
             _ => return Err(JsValue::from_str("invalid pan law")),
         };
-        if let Ok(c) = self.engine.get_channel_mut(id) { c.set_pan_law(pan_law); }
+        if let Ok(c) = self.engine.get_channel_mut(id) {
+            c.set_pan_law(pan_law);
+        }
         Ok(())
     }
 
     pub fn set_channel_name(&mut self, ch: u32, name: String) -> Result<(), JsValue> {
         let id = self.ensure_channel(ch)?;
-        if let Ok(c) = self.engine.get_channel_mut(id) { c.set_name(name); }
+        if let Ok(c) = self.engine.get_channel_mut(id) {
+            c.set_name(name);
+        }
         Ok(())
     }
 
     // ── Per-channel metering ───────────────────────────
 
     pub fn channel_peak_db(&self, ch: u32) -> f32 {
-        self.channel_peak.get(&ch).copied().unwrap_or(-f32::INFINITY)
+        self.channel_peak
+            .get(&ch)
+            .copied()
+            .unwrap_or(-f32::INFINITY)
     }
     pub fn channel_rms_db(&self, ch: u32) -> f32 {
         self.channel_rms.get(&ch).copied().unwrap_or(-f32::INFINITY)
@@ -478,10 +593,14 @@ impl MixerWasm {
         let mut s = String::from("[");
         let mut first = true;
         for (&ch, &peak) in &self.channel_peak {
-            if !first { s.push(','); }
+            if !first {
+                s.push(',');
+            }
             first = false;
             let rms = self.channel_rms.get(&ch).copied().unwrap_or(-200.0);
-            s.push_str(&format!("{{\"ch\":{ch},\"peak\":{peak:.1},\"rms\":{rms:.1}}}"));
+            s.push_str(&format!(
+                "{{\"ch\":{ch},\"peak\":{peak:.1},\"rms\":{rms:.1}}}"
+            ));
         }
         s.push(']');
         s
@@ -489,7 +608,9 @@ impl MixerWasm {
 
     // ── Master controls ────────────────────────────────
 
-    pub fn set_master_gain(&mut self, gain: f32) { self.master_gain = gain.clamp(0.0, 2.0); }
+    pub fn set_master_gain(&mut self, gain: f32) {
+        self.master_gain = gain.clamp(0.0, 2.0);
+    }
 
     pub fn set_limiter_ceiling(&mut self, ceiling_db: f32) {
         self.limiter_ceiling = ceiling_db;
@@ -513,7 +634,9 @@ impl MixerWasm {
             2 => BusType::Matrix,
             _ => return Err(JsValue::from_str("invalid bus type")),
         };
-        let bus_id = self.engine.add_bus(name, bt, ChannelLayout::Stereo)
+        let bus_id = self
+            .engine
+            .add_bus(name, bt, ChannelLayout::Stereo)
             .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
         let js_id = self.bus_counter;
         self.bus_counter += 1;
@@ -521,12 +644,21 @@ impl MixerWasm {
         Ok(js_id)
     }
 
-    pub fn set_aux_send(&mut self, ch: u32, _send_idx: u32, bus_id: u32, level: f32, pre_fader: bool) -> Result<(), JsValue> {
+    pub fn set_aux_send(
+        &mut self,
+        ch: u32,
+        _send_idx: u32,
+        bus_id: u32,
+        level: f32,
+        pre_fader: bool,
+    ) -> Result<(), JsValue> {
         let id = self.ensure_channel(ch)?;
         let Some(&bid) = self.bus_map.get(&bus_id) else {
             return Err(JsValue::from_str("unknown bus"));
         };
-        self.engine.add_aux_send(id, bid, level, pre_fader).map_err(|e| JsValue::from_str(&format!("{e:?}")))
+        self.engine
+            .add_aux_send(id, bid, level, pre_fader)
+            .map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
 
     pub fn remove_aux_send(&mut self, ch: u32, send_idx: u32) -> Result<(), JsValue> {
@@ -544,8 +676,12 @@ impl MixerWasm {
     // ── Bus mixing (8 buses × 16 full-channel-strip slots) ──
 
     pub fn set_bus_source(&mut self, bus: u32, slot: u32, ch: u32) -> Result<(), JsValue> {
-        if bus >= 8 { return Err(JsValue::from_str("bus index out of range (max 8)")); }
-        if slot >= 16 { return Err(JsValue::from_str("slot out of range (max 16)")); }
+        if bus >= 8 {
+            return Err(JsValue::from_str("bus index out of range (max 8)"));
+        }
+        if slot >= 16 {
+            return Err(JsValue::from_str("slot out of range (max 16)"));
+        }
         self.bus_sources[bus as usize][slot as usize] = Some(ch);
         // Lazily create the slot's engine channel / EQ / dynamics (idx 128-255)
         self.ensure_channel(128 + bus * 16 + slot)?;
@@ -559,10 +695,14 @@ impl MixerWasm {
     }
 
     pub fn set_bus_gain(&mut self, bus: u32, gain: f32) {
-        if (bus as usize) < 8 { self.bus_gains[bus as usize] = gain.clamp(0.0, 2.0); }
+        if (bus as usize) < 8 {
+            self.bus_gains[bus as usize] = gain.clamp(0.0, 2.0);
+        }
     }
     pub fn set_bus_mute(&mut self, bus: u32, muted: bool) {
-        if (bus as usize) < 8 { self.bus_muted[bus as usize] = muted; }
+        if (bus as usize) < 8 {
+            self.bus_muted[bus as usize] = muted;
+        }
     }
 
     // ── Bus metering ───────────────────────────────────
@@ -576,10 +716,14 @@ impl MixerWasm {
     pub fn bus_meters_json(&self) -> String {
         let mut s = String::from("[");
         for i in 0..8u32 {
-            if i > 0 { s.push(','); }
+            if i > 0 {
+                s.push(',');
+            }
             let peak = self.bus_peak.get(&i).copied().unwrap_or(-200.0);
             let rms = self.bus_rms.get(&i).copied().unwrap_or(-200.0);
-            s.push_str(&format!("{{\"bus\":{i},\"peak\":{peak:.1},\"rms\":{rms:.1}}}"));
+            s.push_str(&format!(
+                "{{\"bus\":{i},\"peak\":{peak:.1},\"rms\":{rms:.1}}}"
+            ));
         }
         s.push(']');
         s
@@ -587,8 +731,12 @@ impl MixerWasm {
 
     // ── Master limiter ─────────────────────────────────
 
-    pub fn set_limiter_enabled(&mut self, enabled: bool) { self.limiter_enabled = enabled; }
-    pub fn limiter_gain_reduction_db(&self) -> f32 { self.limiter_l.gain_reduction_db() }
+    pub fn set_limiter_enabled(&mut self, enabled: bool) {
+        self.limiter_enabled = enabled;
+    }
+    pub fn limiter_gain_reduction_db(&self) -> f32 {
+        self.limiter_l.gain_reduction_db()
+    }
 
     // ── Processing ─────────────────────────────────────
 
@@ -596,7 +744,10 @@ impl MixerWasm {
         let bs = self.buffer_size.min(block_size as usize).max(1);
 
         // Clear master bus
-        for i in 0..self.buffer_size { self.master_left[i] = 0.0; self.master_right[i] = 0.0; }
+        for i in 0..self.buffer_size {
+            self.master_left[i] = 0.0;
+            self.master_right[i] = 0.0;
+        }
 
         // Clear bus accumulators
         for b in 0..8 {
@@ -609,14 +760,18 @@ impl MixerWasm {
         // Collect channel data upfront (avoid borrow conflicts).
         // Pass 1 covers input channels only (indices 0-127); slot channels
         // (128-255) are handled in pass 2 below.
-        let ch_data: Vec<(u32, ChannelId, ChannelProcessParams)> = self.channel_inputs.keys()
+        let ch_data: Vec<(u32, ChannelId, ChannelProcessParams)> = self
+            .channel_inputs
+            .keys()
             .filter(|&&ch_idx| ch_idx < 128)
             .filter_map(|&ch_idx| self.params_for(ch_idx).map(|(id, p)| (ch_idx, id, p)))
             .collect();
 
         // ── Pass 1: input channels ──
         for (ch_idx, id, params) in ch_data {
-            if params.muted { continue; }
+            if params.muted {
+                continue;
+            }
 
             // Get this channel's input samples
             let samples = match self.channel_inputs.get(&ch_idx) {
@@ -641,14 +796,33 @@ impl MixerWasm {
             }
 
             // Per-channel metering (post-dynamics, post-EQ, pre-fader)
-            let peak = self.eq_scratch[..bs].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            let peak = self.eq_scratch[..bs]
+                .iter()
+                .map(|s| s.abs())
+                .fold(0.0f32, f32::max);
             let sq_sum: f32 = self.eq_scratch[..bs].iter().map(|s| s * s).sum();
             let rms = (sq_sum / bs as f32).sqrt();
-            self.channel_peak.insert(ch_idx, if peak > 1e-10 { 20.0 * peak.log10() } else { -200.0 });
-            self.channel_rms.insert(ch_idx, if rms > 1e-10 { 20.0 * rms.log10() } else { -200.0 });
+            self.channel_peak.insert(
+                ch_idx,
+                if peak > 1e-10 {
+                    20.0 * peak.log10()
+                } else {
+                    -200.0
+                },
+            );
+            self.channel_rms.insert(
+                ch_idx,
+                if rms > 1e-10 {
+                    20.0 * rms.log10()
+                } else {
+                    -200.0
+                },
+            );
 
             // Engine: input gain, fader, pan → stereo pair
-            let (ch_left, ch_right) = self.engine.engine_mut()
+            let (ch_left, ch_right) = self
+                .engine
+                .engine_mut()
                 .process_mix(&[(id, params)], &self.eq_scratch[..bs]);
 
             // Direct to master — always, unconditionally. Bus slots tap the
@@ -671,19 +845,29 @@ impl MixerWasm {
                 let slot_idx = 128 + bus_idx * 16 + slot;
 
                 // Which raw input does this slot tap?
-                let Some(src) = self.bus_sources[bus_idx as usize][slot as usize] else { continue; };
-                let Some(samples) = self.channel_inputs.get(&src) else { continue; };
+                let Some(src) = self.bus_sources[bus_idx as usize][slot as usize] else {
+                    continue;
+                };
+                let Some(samples) = self.channel_inputs.get(&src) else {
+                    continue;
+                };
 
                 // Skip muted/missing slot channels (defensive: set_bus_source
                 // lazily creates the engine channel with defaults).
-                let Some((id, params)) = self.params_for(slot_idx) else { continue; };
-                if params.muted { continue; }
+                let Some((id, params)) = self.params_for(slot_idx) else {
+                    continue;
+                };
+                if params.muted {
+                    continue;
+                }
 
                 // Copy the RAW source mono buffer into scratch (zero-pad if
                 // the source block is shorter than bs).
                 let n = samples.len().min(bs);
                 self.eq_scratch[..n].copy_from_slice(&samples[..n]);
-                for v in &mut self.eq_scratch[n..bs] { *v = 0.0; }
+                for v in &mut self.eq_scratch[n..bs] {
+                    *v = 0.0;
+                }
 
                 // Slot's own dynamics → EQ (in-place on scratch)
                 if let Some(d) = self.dynamics_chains.get_mut(&slot_idx) {
@@ -696,15 +880,34 @@ impl MixerWasm {
                 }
 
                 // Slot metering (post-dynamics, post-EQ, pre-fader)
-                let peak = self.eq_scratch[..bs].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+                let peak = self.eq_scratch[..bs]
+                    .iter()
+                    .map(|s| s.abs())
+                    .fold(0.0f32, f32::max);
                 let sq_sum: f32 = self.eq_scratch[..bs].iter().map(|s| s * s).sum();
                 let rms = (sq_sum / bs as f32).sqrt();
-                self.channel_peak.insert(slot_idx, if peak > 1e-10 { 20.0 * peak.log10() } else { -200.0 });
-                self.channel_rms.insert(slot_idx, if rms > 1e-10 { 20.0 * rms.log10() } else { -200.0 });
+                self.channel_peak.insert(
+                    slot_idx,
+                    if peak > 1e-10 {
+                        20.0 * peak.log10()
+                    } else {
+                        -200.0
+                    },
+                );
+                self.channel_rms.insert(
+                    slot_idx,
+                    if rms > 1e-10 {
+                        20.0 * rms.log10()
+                    } else {
+                        -200.0
+                    },
+                );
 
                 // Engine: slot input gain, fader, pan on the mono tap →
                 // stereo result into the bus accumulator.
-                let (ch_left, ch_right) = self.engine.engine_mut()
+                let (ch_left, ch_right) = self
+                    .engine
+                    .engine_mut()
                     .process_mix(&[(id, params)], &self.eq_scratch[..bs]);
                 let bi = bus_idx as usize;
                 for i in 0..bs {
@@ -716,17 +919,36 @@ impl MixerWasm {
 
         // ── Pass 3: buses to master ──
         for bus_idx in 0..8u32 {
-            if self.bus_muted[bus_idx as usize] { continue; }
+            if self.bus_muted[bus_idx as usize] {
+                continue;
+            }
 
             // Bus metering on the accumulator (sum of slot outputs, pre-gain)
             let bl = &self.bus_left[bus_idx as usize];
             let br = &self.bus_right[bus_idx as usize];
-            let peak = bl[..bs].iter().chain(br[..bs].iter())
-                .map(|s| s.abs()).fold(0.0f32, f32::max);
+            let peak = bl[..bs]
+                .iter()
+                .chain(br[..bs].iter())
+                .map(|s| s.abs())
+                .fold(0.0f32, f32::max);
             let sq: f32 = bl[..bs].iter().chain(br[..bs].iter()).map(|s| s * s).sum();
             let rms = (sq / (bs as f32 * 2.0)).sqrt();
-            self.bus_peak.insert(bus_idx, if peak > 1e-10 { 20.0 * peak.log10() } else { -200.0 });
-            self.bus_rms.insert(bus_idx, if rms > 1e-10 { 20.0 * rms.log10() } else { -200.0 });
+            self.bus_peak.insert(
+                bus_idx,
+                if peak > 1e-10 {
+                    20.0 * peak.log10()
+                } else {
+                    -200.0
+                },
+            );
+            self.bus_rms.insert(
+                bus_idx,
+                if rms > 1e-10 {
+                    20.0 * rms.log10()
+                } else {
+                    -200.0
+                },
+            );
 
             // Apply bus gain and sum to master
             let bg = self.bus_gains[bus_idx as usize];
@@ -768,16 +990,36 @@ impl MixerWasm {
     // ── Metering ───────────────────────────────────────
 
     pub fn master_peak_db_l(&self) -> f32 {
-        self.master_meter.data().peak.first().map(|p| p.current_db).unwrap_or(-f32::INFINITY)
+        self.master_meter
+            .data()
+            .peak
+            .first()
+            .map(|p| p.current_db)
+            .unwrap_or(-f32::INFINITY)
     }
     pub fn master_peak_db_r(&self) -> f32 {
-        self.master_meter.data().peak.get(1).map(|p| p.current_db).unwrap_or(-f32::INFINITY)
+        self.master_meter
+            .data()
+            .peak
+            .get(1)
+            .map(|p| p.current_db)
+            .unwrap_or(-f32::INFINITY)
     }
     pub fn master_rms_db_l(&self) -> f32 {
-        self.master_meter.data().rms.first().map(|r| r.current_db).unwrap_or(-f32::INFINITY)
+        self.master_meter
+            .data()
+            .rms
+            .first()
+            .map(|r| r.current_db)
+            .unwrap_or(-f32::INFINITY)
     }
     pub fn master_rms_db_r(&self) -> f32 {
-        self.master_meter.data().rms.get(1).map(|r| r.current_db).unwrap_or(-f32::INFINITY)
+        self.master_meter
+            .data()
+            .rms
+            .get(1)
+            .map(|r| r.current_db)
+            .unwrap_or(-f32::INFINITY)
     }
     pub fn master_clipping(&self) -> bool {
         self.master_meter.data().peak.iter().any(|p| p.clipped)

@@ -1,6 +1,7 @@
 //! EQ integration test — verifies EQ works through the effects chain
 //! in the real process_mix path.
 
+use oximedia_audio::ChannelLayout;
 use oximedia_mixer::{
     channel::ChannelType,
     effects_chain::AudioEffect,
@@ -8,7 +9,6 @@ use oximedia_mixer::{
     processing::{PanLawType, RuntimeEffectSlot},
     AudioMixer, ChannelProcessParams, MixerConfig,
 };
-use oximedia_audio::ChannelLayout;
 
 use mixer_wasm::effects::EqEffect;
 
@@ -26,12 +26,20 @@ fn sine(freq: f64, gain: f64, n: usize) -> Vec<f32> {
 
 fn rms(samples: &[f32]) -> f64 {
     if samples.len() <= 128 {
-        return (samples.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>()
+        return (samples
+            .iter()
+            .map(|s| (*s as f64) * (*s as f64))
+            .sum::<f64>()
             / samples.len() as f64)
             .sqrt();
     }
     let usable = &samples[128..];
-    (usable.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>() / usable.len() as f64).sqrt()
+    (usable
+        .iter()
+        .map(|s| (*s as f64) * (*s as f64))
+        .sum::<f64>()
+        / usable.len() as f64)
+        .sqrt()
 }
 
 /// Test: EQ effect in the channel effects chain boosts the target frequency.

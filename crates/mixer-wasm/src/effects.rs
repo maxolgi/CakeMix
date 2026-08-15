@@ -115,8 +115,9 @@ impl AudioEffect for EqEffect {
     }
 }
 
-
-use oximedia_mixer::dynamics::{Compressor, CompressorConfig, Expander, ExpanderConfig, Gate, GateConfig};
+use oximedia_mixer::dynamics::{
+    Compressor, CompressorConfig, Expander, ExpanderConfig, Gate, GateConfig,
+};
 
 /// Adapter wrapping `Compressor` as an `AudioEffect`.
 pub struct CompressorEffect {
@@ -150,7 +151,9 @@ impl CompressorEffect {
         )
     }
 
-    pub fn config(&self) -> &CompressorConfig { &self.config }
+    pub fn config(&self) -> &CompressorConfig {
+        &self.config
+    }
 
     pub fn update_config(&mut self, f: impl FnOnce(&mut CompressorConfig)) {
         f(&mut self.config);
@@ -158,7 +161,9 @@ impl CompressorEffect {
     }
 
     #[must_use]
-    pub fn inner_mut(&mut self) -> &mut Compressor { &mut self.compressor }
+    pub fn inner_mut(&mut self) -> &mut Compressor {
+        &mut self.compressor
+    }
 }
 
 impl AudioEffect for CompressorEffect {
@@ -203,7 +208,9 @@ impl GateEffect {
         )
     }
 
-    pub fn config(&self) -> &GateConfig { &self.config }
+    pub fn config(&self) -> &GateConfig {
+        &self.config
+    }
 
     pub fn update_config(&mut self, f: impl FnOnce(&mut GateConfig)) {
         f(&mut self.config);
@@ -211,7 +218,9 @@ impl GateEffect {
     }
 
     #[must_use]
-    pub fn inner_mut(&mut self) -> &mut Gate { &mut self.gate }
+    pub fn inner_mut(&mut self) -> &mut Gate {
+        &mut self.gate
+    }
 }
 
 impl AudioEffect for GateEffect {
@@ -248,7 +257,9 @@ impl ExpanderEffect {
         Self::new(ExpanderConfig::default(), sample_rate)
     }
 
-    pub fn config(&self) -> &ExpanderConfig { &self.config }
+    pub fn config(&self) -> &ExpanderConfig {
+        &self.config
+    }
 
     pub fn update_config(&mut self, f: impl FnOnce(&mut ExpanderConfig)) {
         f(&mut self.config);
@@ -256,7 +267,9 @@ impl ExpanderEffect {
     }
 
     #[must_use]
-    pub fn inner_mut(&mut self) -> &mut Expander { &mut self.expander }
+    pub fn inner_mut(&mut self) -> &mut Expander {
+        &mut self.expander
+    }
 }
 
 impl AudioEffect for ExpanderEffect {

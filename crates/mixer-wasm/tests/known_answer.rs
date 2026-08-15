@@ -5,8 +5,8 @@
 //!
 //! Run with: wasm-pack test --node --release
 
-use wasm_bindgen_test::*;
 use js_sys::Float32Array;
+use wasm_bindgen_test::*;
 
 /// Sample rate for all tests.
 const SAMPLE_RATE: u32 = 48_000;
@@ -38,15 +38,15 @@ fn test_basic_sum_two_sines() {
         .collect();
 
     // Build and configure the mixer.
-    let mut mixer = mixer_wasm::MixerWasm::new(SAMPLE_RATE, BLOCK_SIZE, 4)
-        .expect("constructor should succeed");
+    let mut mixer =
+        mixer_wasm::MixerWasm::new(SAMPLE_RATE, BLOCK_SIZE, 4).expect("constructor should succeed");
 
     // Set per-channel inputs via Float32Array interop.
-    let fa = Float32Array::new_with_length(BLOCK_SIZE as u32);
+    let fa = Float32Array::new_with_length(BLOCK_SIZE);
     fa.copy_from(&sine_a);
     mixer.set_channel_input(0, &fa).expect("set ch0 input");
 
-    let fb = Float32Array::new_with_length(BLOCK_SIZE as u32);
+    let fb = Float32Array::new_with_length(BLOCK_SIZE);
     fb.copy_from(&sine_b);
     mixer.set_channel_input(1, &fb).expect("set ch1 input");
 
@@ -88,10 +88,10 @@ fn test_basic_sum_two_sines() {
 fn test_not_silence() {
     // Honesty gate: output must not be silence or all-zeros.
     let sine_a = sine_wave(440.0, 1.0, BLOCK_SIZE as usize);
-    let mut mixer = mixer_wasm::MixerWasm::new(SAMPLE_RATE, BLOCK_SIZE, 2)
-        .expect("constructor should succeed");
+    let mut mixer =
+        mixer_wasm::MixerWasm::new(SAMPLE_RATE, BLOCK_SIZE, 2).expect("constructor should succeed");
 
-    let fa = Float32Array::new_with_length(BLOCK_SIZE as u32);
+    let fa = Float32Array::new_with_length(BLOCK_SIZE);
     fa.copy_from(&sine_a);
     mixer.set_channel_input(0, &fa).expect("set input");
 
@@ -115,14 +115,14 @@ fn test_both_channels_present() {
     let sine_a = sine_wave(220.0, 0.5, BLOCK_SIZE as usize);
     let zeros = vec![0.0f32; BLOCK_SIZE as usize];
 
-    let mut mixer = mixer_wasm::MixerWasm::new(SAMPLE_RATE, BLOCK_SIZE, 4)
-        .expect("constructor should succeed");
+    let mut mixer =
+        mixer_wasm::MixerWasm::new(SAMPLE_RATE, BLOCK_SIZE, 4).expect("constructor should succeed");
 
-    let fa = Float32Array::new_with_length(BLOCK_SIZE as u32);
+    let fa = Float32Array::new_with_length(BLOCK_SIZE);
     fa.copy_from(&sine_a);
     mixer.set_channel_input(0, &fa).expect("set ch0");
 
-    let fz = Float32Array::new_with_length(BLOCK_SIZE as u32);
+    let fz = Float32Array::new_with_length(BLOCK_SIZE);
     fz.copy_from(&zeros);
     mixer.set_channel_input(1, &fz).expect("set ch1");
 
@@ -131,7 +131,9 @@ fn test_both_channels_present() {
     out_one.copy_to(&mut buf_one);
 
     // Now feed ch1 with the same signal.
-    mixer.set_channel_input(1, &fa).expect("set ch1 with signal");
+    mixer
+        .set_channel_input(1, &fa)
+        .expect("set ch1 with signal");
     let out_two = mixer.process(BLOCK_SIZE).expect("process");
     let mut buf_two = vec![0.0f32; out_two.length() as usize];
     out_two.copy_to(&mut buf_two);
@@ -151,10 +153,10 @@ fn test_mute_channel() {
     // Muting a channel should zero its contribution.
     let sine_a = sine_wave(440.0, 0.5, BLOCK_SIZE as usize);
 
-    let mut mixer = mixer_wasm::MixerWasm::new(SAMPLE_RATE, BLOCK_SIZE, 2)
-        .expect("constructor should succeed");
+    let mut mixer =
+        mixer_wasm::MixerWasm::new(SAMPLE_RATE, BLOCK_SIZE, 2).expect("constructor should succeed");
 
-    let fa = Float32Array::new_with_length(BLOCK_SIZE as u32);
+    let fa = Float32Array::new_with_length(BLOCK_SIZE);
     fa.copy_from(&sine_a);
     mixer.set_channel_input(0, &fa).expect("set input");
     mixer.set_channel_mute(0, true).expect("mute");
@@ -175,10 +177,10 @@ fn test_gain_control() {
     // Setting gain to 0.5 should halve the output.
     let sine_a = sine_wave(440.0, 1.0, BLOCK_SIZE as usize);
 
-    let mut mixer = mixer_wasm::MixerWasm::new(SAMPLE_RATE, BLOCK_SIZE, 2)
-        .expect("constructor should succeed");
+    let mut mixer =
+        mixer_wasm::MixerWasm::new(SAMPLE_RATE, BLOCK_SIZE, 2).expect("constructor should succeed");
 
-    let fa = Float32Array::new_with_length(BLOCK_SIZE as u32);
+    let fa = Float32Array::new_with_length(BLOCK_SIZE);
     fa.copy_from(&sine_a);
     mixer.set_channel_input(0, &fa).expect("set input");
 

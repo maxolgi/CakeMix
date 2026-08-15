@@ -19,14 +19,21 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Install wasm target
         run: rustup target add wasm32-unknown-unknown
 
       - name: Install wasm-pack
         run: cargo install wasm-pack
 
+      # Scoped to workspace members, not `--all`: rustfmt follows the
+      # cakemix-server path dependency into vendor/WebSRT and would flag the
+      # pinned submodule (formatted by an older rustfmt — not ours to fix).
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: cargo fmt -p mixer-wasm -p cakemix-server -- --check
 
       - name: Clippy lints
         run: cargo clippy --all-targets -- -D warnings
@@ -48,3 +55,19 @@ jobs:
 
       - name: Run WASM tests
         run: cd crates/mixer-wasm && node tests/run_tests.mjs
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # Stages the WebSRT wasm into vendor/WebSRT/web/wasm/ — must run before
+      # the Vite build below, which bundles the submodule's receive worker.
+      - name: Build WebSRT WASM (submodule)
+        run: bash build/build-websrt-wasm.sh
+
+      # Proves the frontend build works end-to-end. web/assets is committed
+      # build output; bundle hashes may legitimately differ, so this step
+      # deliberately does NOT diff the result against the checkout.
+      - name: Build frontend
+        working-directory: frontend
+        run: npx vite build

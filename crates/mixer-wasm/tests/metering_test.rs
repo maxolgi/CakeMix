@@ -91,10 +91,7 @@ fn test_meter_silence() {
     meter.process(&silence);
 
     let peak = meter.data().peak[0].current_db;
-    assert!(
-        peak < -100.0,
-        "Silence peak too high: {peak:.2} dB"
-    );
+    assert!(peak < -100.0, "Silence peak too high: {peak:.2} dB");
 }
 
 /// Test: RMS is lower than peak for a sine wave.

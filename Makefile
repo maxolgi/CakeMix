@@ -4,7 +4,7 @@
 RUST_TARGET := wasm32-unknown-unknown
 CRATE_DIR := crates/mixer-wasm
 
-.PHONY: build-wasm build-web build-node test-native test-wasm test-all check clean serve build-websrt-wasm bump-websrt
+.PHONY: build-wasm build-web build-node test-native test-wasm test-all check clean serve serve-tls ci clippy fmt-check build-ui build-websrt-wasm bump-websrt build-all
 
 # Build for wasm32-unknown-unknown (first gate)
 build-wasm:
@@ -37,7 +37,9 @@ clean:
 	cargo clean
 	rm -rf $(CRATE_DIR)/pkg
 
-# Build WASM pkg + start the server (http://localhost:8200)
+# Build WASM pkg + start the server (http://localhost:8200).
+# build-ui pulls in build-websrt-wasm (the Vite build bundles the WebSRT
+# receive worker, which needs the submodule's web/wasm/ staged first).
 serve: build-web build-ui
 	cargo run -p cakemix-server -- --no-tls --port 8200
 
@@ -47,20 +49,25 @@ serve-tls: build-web build-ui
 
 
 # Full CI check (matches .github/workflows/ci.yml)
-ci: test-native test-wasm build-web
+ci: fmt-check clippy test-native test-wasm build-web build-websrt-wasm build-ui
 	@echo "✓ All CI checks pass"
 
 # Clippy lints
 clippy:
 	cargo clippy --all-targets -- -D warnings
 
-# Format check
+# Format check. Scoped to workspace members, not `--all`: rustfmt follows the
+# cakemix-server path dependency into vendor/WebSRT and would reformat the
+# pinned submodule (its files were formatted by an older rustfmt — not ours
+# to fix here).
 fmt-check:
-	cargo fmt --all -- --check
+	cargo fmt -p mixer-wasm -p cakemix-server -- --check
 
 
-# Build SolidJS frontend → web/ (one-time, no runtime dependency)
-build-ui:
+# Build SolidJS frontend → web/ (one-time, no runtime dependency).
+# Needs the WebSRT wasm staged in vendor/WebSRT/web/wasm/ before Vite bundles
+# the receive worker — hence the build-websrt-wasm prerequisite.
+build-ui: build-websrt-wasm
 	cd frontend && npx vite build
 
 # Build WebSRT wasm crates from vendor/WebSRT + stage where the submodule's
@@ -75,7 +82,8 @@ bump-websrt:
 	git submodule update --remote vendor/WebSRT
 	@echo "Reminder: vendor/WebSRT pin changed — commit it: git add vendor/WebSRT && git commit"
 
-# Full rebuild: WASM + worklet + UI
-build-all: build-web build-websrt-wasm
-	cd frontend && npx vite build
+# Full rebuild: WASM + worklet + UI.
+# Order: build-web (mixer pkg) and build-ui (→ build-websrt-wasm, then Vite)
+# complete first; build-worklet.js only needs the mixer pkg, so it runs last.
+build-all: build-web build-ui
 	node build/build-worklet.js

@@ -1,12 +1,12 @@
 //! Dynamics integration tests — verifies comp/gate work through
 //! the effects chain in the real process_mix path.
 
+use oximedia_audio::ChannelLayout;
 use oximedia_mixer::{
     channel::ChannelType,
     processing::{PanLawType, RuntimeEffectSlot},
     AudioMixer, ChannelProcessParams, MixerConfig,
 };
-use oximedia_audio::ChannelLayout;
 
 use mixer_wasm::effects::{CompressorEffect, GateEffect};
 
@@ -25,12 +25,20 @@ fn sine(freq: f32, gain: f32, n: usize) -> Vec<f32> {
 
 fn rms(samples: &[f32]) -> f64 {
     if samples.len() <= 128 {
-        return (samples.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>()
+        return (samples
+            .iter()
+            .map(|s| (*s as f64) * (*s as f64))
+            .sum::<f64>()
             / samples.len() as f64)
             .sqrt();
     }
     let usable = &samples[128..];
-    (usable.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>() / usable.len() as f64).sqrt()
+    (usable
+        .iter()
+        .map(|s| (*s as f64) * (*s as f64))
+        .sum::<f64>()
+        / usable.len() as f64)
+        .sqrt()
 }
 
 /// Test: compressor in the effects chain reduces loud signals.
@@ -55,7 +63,7 @@ fn test_compressor_in_chain() {
             ratio: 4.0,
             attack_ms: 5.0,
             release_ms: 100.0,
-            makeup_gain_db: 0.0,  // no makeup so we can verify pure reduction
+            makeup_gain_db: 0.0, // no makeup so we can verify pure reduction
             knee_db: 3.0,
         },
         SAMPLE_RATE,
@@ -91,7 +99,6 @@ fn test_compressor_in_chain() {
     let ch_plain = mixer_plain
         .add_channel("ch".into(), ChannelType::Mono, ChannelLayout::Mono)
         .unwrap();
-    let (left_plain, _) = mixer_plain.engine_mut().process_mix(&params, &loud_input);
     // Rebuild params for the plain mixer's channel ID
     let params_plain = vec![(
         ch_plain,
@@ -104,7 +111,9 @@ fn test_compressor_in_chain() {
             pan_law: PanLawType::Minus6dB,
         },
     )];
-    let (left_plain, _) = mixer_plain.engine_mut().process_mix(&params_plain, &loud_input);
+    let (left_plain, _) = mixer_plain
+        .engine_mut()
+        .process_mix(&params_plain, &loud_input);
     let rms_plain = rms(&left_plain);
 
     // Compressed signal should be quieter than uncompressed (for loud signals above threshold).
@@ -126,7 +135,9 @@ fn test_compressor_passthrough_quiet() {
         max_channels: 4,
         ..Default::default()
     });
-    let ch_comp = mixer_comp.add_channel("ch".into(), ChannelType::Mono, ChannelLayout::Mono).unwrap();
+    let ch_comp = mixer_comp
+        .add_channel("ch".into(), ChannelType::Mono, ChannelLayout::Mono)
+        .unwrap();
     use oximedia_mixer::dynamics::CompressorConfig;
     let comp = CompressorEffect::new(
         CompressorConfig {
@@ -139,13 +150,24 @@ fn test_compressor_passthrough_quiet() {
         },
         SAMPLE_RATE,
     );
-    mixer_comp.add_channel_effect(ch_comp, RuntimeEffectSlot::new(Box::new(comp))).unwrap();
+    mixer_comp
+        .add_channel_effect(ch_comp, RuntimeEffectSlot::new(Box::new(comp)))
+        .unwrap();
 
-    let params_comp = vec![(ch_comp, ChannelProcessParams {
-        fader_gain: 1.0, pan: 0.0, muted: false, input_gain_db: 0.0,
-        phase_inverted: false, pan_law: PanLawType::Minus6dB,
-    })];
-    let (left_comp, _) = mixer_comp.engine_mut().process_mix(&params_comp, &quiet_input);
+    let params_comp = vec![(
+        ch_comp,
+        ChannelProcessParams {
+            fader_gain: 1.0,
+            pan: 0.0,
+            muted: false,
+            input_gain_db: 0.0,
+            phase_inverted: false,
+            pan_law: PanLawType::Minus6dB,
+        },
+    )];
+    let (left_comp, _) = mixer_comp
+        .engine_mut()
+        .process_mix(&params_comp, &quiet_input);
     let rms_comp = rms(&left_comp);
 
     // Mixer without compressor (same pan law, same signal).
@@ -155,12 +177,23 @@ fn test_compressor_passthrough_quiet() {
         max_channels: 4,
         ..Default::default()
     });
-    let ch_plain = mixer_plain.add_channel("ch".into(), ChannelType::Mono, ChannelLayout::Mono).unwrap();
-    let params_plain = vec![(ch_plain, ChannelProcessParams {
-        fader_gain: 1.0, pan: 0.0, muted: false, input_gain_db: 0.0,
-        phase_inverted: false, pan_law: PanLawType::Minus6dB,
-    })];
-    let (left_plain, _) = mixer_plain.engine_mut().process_mix(&params_plain, &quiet_input);
+    let ch_plain = mixer_plain
+        .add_channel("ch".into(), ChannelType::Mono, ChannelLayout::Mono)
+        .unwrap();
+    let params_plain = vec![(
+        ch_plain,
+        ChannelProcessParams {
+            fader_gain: 1.0,
+            pan: 0.0,
+            muted: false,
+            input_gain_db: 0.0,
+            phase_inverted: false,
+            pan_law: PanLawType::Minus6dB,
+        },
+    )];
+    let (left_plain, _) = mixer_plain
+        .engine_mut()
+        .process_mix(&params_plain, &quiet_input);
     let rms_plain = rms(&left_plain);
 
     // Quiet signal below threshold: compressor output ≈ plain output.

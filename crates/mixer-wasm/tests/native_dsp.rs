@@ -5,21 +5,19 @@
 //! The wasm binding tests (tests/known_answer.rs) verify the same
 //! DSP through the JS interop layer.
 
+use oximedia_audio::ChannelLayout;
 use oximedia_mixer::{
     channel::{ChannelType, PanLaw},
     processing::PanLawType,
     AudioMixer, ChannelProcessParams, MixerConfig,
 };
-use oximedia_audio::ChannelLayout;
 
 const SAMPLE_RATE: u32 = 48_000;
 const BLOCK_SIZE: usize = 128;
 
 fn sine(freq: f32, gain: f32, n: usize) -> Vec<f32> {
     (0..n)
-        .map(|i| {
-            gain * (2.0 * std::f32::consts::PI * freq * i as f32 / SAMPLE_RATE as f32).sin()
-        })
+        .map(|i| gain * (2.0 * std::f32::consts::PI * freq * i as f32 / SAMPLE_RATE as f32).sin())
         .collect()
 }
 
@@ -167,7 +165,12 @@ fn test_linear_pan_law() {
     // left = 0.0, right = 1.0
     for i in 0..BLOCK_SIZE {
         assert!(left[i].abs() < 1e-5, "L[{}] = {}", i, left[i]);
-        assert!((right[i] - input[i]).abs() < 1e-5, "R[{}] = {}", i, right[i]);
+        assert!(
+            (right[i] - input[i]).abs() < 1e-5,
+            "R[{}] = {}",
+            i,
+            right[i]
+        );
     }
 }
 
@@ -271,7 +274,7 @@ fn test_input_gain_db() {
         },
     )];
 
-    let (left, right) = mixer.engine_mut().process_mix(&params, &input);
+    let (left, _right) = mixer.engine_mut().process_mix(&params, &input);
 
     // Linear pan center: 0.5 × input_gain_linear(2.0) = 1.0
     for i in 0..BLOCK_SIZE {
@@ -308,7 +311,7 @@ fn test_phase_inversion() {
         },
     )];
 
-    let (left, right) = mixer.engine_mut().process_mix(&params, &input);
+    let (left, _right) = mixer.engine_mut().process_mix(&params, &input);
 
     // Phase inverted: output = -input × 0.5 (Linear center pan)
     for i in 0..BLOCK_SIZE {
@@ -346,7 +349,7 @@ fn test_fader_gain() {
         },
     )];
 
-    let (left, right) = mixer.engine_mut().process_mix(&params, &input);
+    let (left, _right) = mixer.engine_mut().process_mix(&params, &input);
 
     // output = input × fader(0.5) × pan(0.5)
     for i in 0..BLOCK_SIZE {
@@ -421,7 +424,7 @@ fn test_multiple_channel_sum() {
             pan_law: PanLawType::Linear,
         },
     )];
-    let (left0, right0) = mixer.engine_mut().process_mix(&params0, &sine_a);
+    let (left0, _right0) = mixer.engine_mut().process_mix(&params0, &sine_a);
 
     // Both channels
     let params_both = vec![
@@ -448,8 +451,14 @@ fn test_multiple_channel_sum() {
             },
         ),
     ];
-    let combined_input: Vec<f32> = sine_a.iter().zip(sine_b.iter()).map(|(a, b)| a + b).collect();
-    let (left_both, _right_both) = mixer.engine_mut().process_mix(&params_both, &combined_input);
+    let combined_input: Vec<f32> = sine_a
+        .iter()
+        .zip(sine_b.iter())
+        .map(|(a, b)| a + b)
+        .collect();
+    let (left_both, _right_both) = mixer
+        .engine_mut()
+        .process_mix(&params_both, &combined_input);
 
     // Both channels should be louder than one.
     let max0 = left0.iter().fold(0.0f32, |a, &b| a.max(b.abs()));

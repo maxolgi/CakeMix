@@ -1,7 +1,9 @@
 //! Tests for interleaved input de-interleaving and PID mapping.
 
-use oximedia_mixer::{channel::ChannelType, processing::PanLawType, AudioMixer, ChannelProcessParams, MixerConfig};
 use oximedia_audio::ChannelLayout;
+use oximedia_mixer::{
+    channel::ChannelType, processing::PanLawType, AudioMixer, ChannelProcessParams, MixerConfig,
+};
 
 const SAMPLE_RATE: u32 = 48_000;
 const BLOCK_SIZE: usize = 128;
@@ -56,24 +58,42 @@ fn test_interleaved_through_mixer() {
         ..Default::default()
     });
 
-    let ch0 = mixer.add_channel("ch0".into(), ChannelType::Mono, ChannelLayout::Mono).unwrap();
-    let ch1 = mixer.add_channel("ch1".into(), ChannelType::Mono, ChannelLayout::Mono).unwrap();
+    let ch0 = mixer
+        .add_channel("ch0".into(), ChannelType::Mono, ChannelLayout::Mono)
+        .unwrap();
+    let ch1 = mixer
+        .add_channel("ch1".into(), ChannelType::Mono, ChannelLayout::Mono)
+        .unwrap();
 
     let sine_l = sine(220.0, 0.5, BLOCK_SIZE);
     let sine_r = sine(330.0, 0.5, BLOCK_SIZE);
 
     // Process channel 0 with left sine.
-    let params0 = vec![(ch0, ChannelProcessParams {
-        fader_gain: 1.0, pan: 0.0, muted: false, input_gain_db: 0.0,
-        phase_inverted: false, pan_law: PanLawType::Linear,
-    })];
+    let params0 = vec![(
+        ch0,
+        ChannelProcessParams {
+            fader_gain: 1.0,
+            pan: 0.0,
+            muted: false,
+            input_gain_db: 0.0,
+            phase_inverted: false,
+            pan_law: PanLawType::Linear,
+        },
+    )];
     let (left0, _) = mixer.engine_mut().process_mix(&params0, &sine_l);
 
     // Process channel 1 with right sine.
-    let params1 = vec![(ch1, ChannelProcessParams {
-        fader_gain: 1.0, pan: 0.0, muted: false, input_gain_db: 0.0,
-        phase_inverted: false, pan_law: PanLawType::Linear,
-    })];
+    let params1 = vec![(
+        ch1,
+        ChannelProcessParams {
+            fader_gain: 1.0,
+            pan: 0.0,
+            muted: false,
+            input_gain_db: 0.0,
+            phase_inverted: false,
+            pan_law: PanLawType::Linear,
+        },
+    )];
     let (left1, _) = mixer.engine_mut().process_mix(&params1, &sine_r);
 
     // Sum: master_left = sine_l * 0.5 + sine_r * 0.5
@@ -104,7 +124,7 @@ fn test_pid_mapping_idempotent() {
     // Idempotent remove.
     pid_map.remove(&0x101);
     pid_map.remove(&0x101); // should not panic
-    assert!(pid_map.get(&0x101).is_none());
+    assert!(!pid_map.contains_key(&0x101));
 
     // Re-map after removal.
     pid_map.insert(0x101, 8);

@@ -1,14 +1,15 @@
 //! Limiter test — verifies the master bus limiter prevents overs.
 
-use oximedia_mixer::{
-    channel::ChannelType,
-    processing::PanLawType,
-    AudioMixer, ChannelProcessParams, MixerConfig,
-};
 use oximedia_audio::ChannelLayout;
+use oximedia_mixer::{
+    channel::ChannelType, processing::PanLawType, AudioMixer, ChannelProcessParams, MixerConfig,
+};
 
 const SAMPLE_RATE: u32 = 48_000;
 const BLOCK_SIZE: usize = 128;
+/// Master-bus limiter latency: 1 ms lookahead delay line (48 samples @ 48 kHz)
+/// plus one sample from the 4x oversample/decimate path.
+const LOOKAHEAD: usize = 49;
 
 fn sine(freq: f32, gain: f32, n: usize) -> Vec<f32> {
     (0..n)
@@ -54,8 +55,12 @@ fn test_limiter_prevents_overs() {
         // Apply limiter manually (since process() does this, but process_mix doesn't).
         let mut limited_l = vec![0.0f32; BLOCK_SIZE];
         let mut limited_r = vec![0.0f32; BLOCK_SIZE];
-        mixer.master_limiter_l_mut().process_block(&left, &mut limited_l);
-        mixer.master_limiter_r_mut().process_block(&right, &mut limited_r);
+        mixer
+            .master_limiter_l_mut()
+            .process_block(&left, &mut limited_l);
+        mixer
+            .master_limiter_r_mut()
+            .process_block(&right, &mut limited_r);
 
         for &s in &limited_l {
             max_output = max_output.max(s.abs());
@@ -104,17 +109,29 @@ fn test_limiter_passthrough_quiet() {
     )];
 
     let (left, _right) = mixer.engine_mut().process_mix(&params, &quiet_input);
-    let mut limited_l = vec![0.0f32; BLOCK_SIZE];
-    mixer.master_limiter_l_mut().process_block(&left, &mut limited_l);
 
-    // Quiet signal should pass through relatively unchanged.
-    for i in 128..BLOCK_SIZE {
-        let expected = left[i]; // No limiting for quiet signals
+    // The master limiter (oversampled lookahead) delays the signal by
+    // LOOKAHEAD samples. Process the block twice: the first pass fills the
+    // delay line, the second is steady state.
+    let mut limited_l = vec![0.0f32; BLOCK_SIZE];
+    mixer
+        .master_limiter_l_mut()
+        .process_block(&left, &mut limited_l);
+    mixer
+        .master_limiter_l_mut()
+        .process_block(&left, &mut limited_l);
+
+    // Quiet signal: gain envelope stays at unity — the steady-state output
+    // equals the input rotated by the lookahead delay (the same block is fed
+    // twice, so rotation models the delay-line wrap).
+    let mut expected = left.clone();
+    expected.rotate_right(LOOKAHEAD);
+    for i in 0..BLOCK_SIZE {
         assert!(
-            (limited_l[i] - expected).abs() < 0.01,
-            "Limiter altered quiet signal at [{i}]: in={:.4}, out={:.4}",
-            left[i],
-            limited_l[i]
+            (limited_l[i] - expected[i]).abs() < 1e-5,
+            "Limiter altered quiet signal at [{i}]: out={:.5}, expected={:.5}",
+            limited_l[i],
+            expected[i]
         );
     }
 }
@@ -134,7 +151,9 @@ fn test_limiter_gain_reduction() {
     // Feed a full-scale signal.
     let loud_input = sine(440.0, 2.0, BLOCK_SIZE);
     let mut limited = vec![0.0f32; BLOCK_SIZE];
-    mixer.master_limiter_l_mut().process_block(&loud_input, &mut limited);
+    mixer
+        .master_limiter_l_mut()
+        .process_block(&loud_input, &mut limited);
 
     // The limiter reports the current gain multiplier in dB.
     // gain_reduction_db() returns linear_to_db(gain_env) where gain_env < 1.0
