@@ -134,6 +134,9 @@ async function doInit(url: string, certHash: Uint8Array | null, latencyMs: numbe
     // consecutive PIDs via addAudioPid (muxer test convention, ef18993).
     const pidCount = Math.ceil(channels / 2);
     muxer = new TsMuxer();
+    // Sparse suppression is untested upstream and drops silent PIDs from
+    // the PMT — keep all PIDs flowing; revisit as an opt-in later.
+    muxer.setSparseEnabled(false);
     muxer.setVideoEnabled(false);
     muxer.setAudioCodec("s302m", 2);
     for (let i = 1; i < pidCount; i++) {
