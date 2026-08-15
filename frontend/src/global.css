@@ -16,7 +16,7 @@ body {
 ::-webkit-scrollbar-thumb:hover { background: #3a3a45; }
 * { scrollbar-width: thin; scrollbar-color: #2a2a35 #0a0a0f; }
 
-.app { min-width: 0; }
+.app { display: flex; flex-direction: column; height: 100vh; min-width: 0; }
 
 /* ── Header ──────────────────────────── */
 .header {
@@ -209,17 +209,17 @@ body {
 
 /* ── Mixer Console ───────────────────── */
 .mixer-console {
-    display: flex; align-items: flex-start; gap: 2px;
+    display: flex; align-items: stretch; gap: 2px;
     padding: 4px 2px; overflow-x: auto; overflow-y: hidden;
-    height: calc(100vh - 40px);
+    flex: 1; min-height: 0;
 }
 
 /* ── Detail Panel ────────────────────── */
 .detail-panel {
     background: #0e0e14; border-left: 1px solid #1e1e28; padding: 8px 10px 8px;
     display: flex; flex-direction: column; gap: 4px; font-size: 12px;
-    flex-shrink: 0; position: sticky; top: 0;
-    height: calc(100vh - 40px); overflow-y: auto; overflow-x: hidden;
+    flex-shrink: 0;
+    overflow-y: auto; overflow-x: hidden;
     transition: width 0.15s ease;
 }
 .detail-panel .knob-label { font-size: 10px; }
