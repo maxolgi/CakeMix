@@ -85,17 +85,6 @@ export function WebSRTPanel(props: { expanded: boolean }) {
                 ? "Connected — click to disconnect the WebSRT receiver and stop the worker"
                 : "Connect the WebSRT receiver to the target gateway (URL below)"}
             >RECEIVE</button>
-            <button
-              class={`btn ${isRunning() ? "btn-stop" : "btn-start"}`}
-              disabled={!wasmReady()}
-              onClick={toggleEngine}
-              title="Run / freeze the mixer engine. Starts automatically when WebSRT connects."
-            >{isRunning() ? "ENGINE ON" : "ENGINE OFF"}</button>
-            <button
-              class={`btn ${tonesOn() ? "btn-stop" : "btn-start"}`}
-              onClick={toggleTones}
-              title="Sine tones (A major chord) into mixer inputs 1–4. Only audible while the engine runs."
-            >{tonesOn() ? "TONES ON" : "TONES OFF"}</button>
             <label class="detail-select-label">LATENCY
               <select
                 class="detail-select"
@@ -109,6 +98,17 @@ export function WebSRTPanel(props: { expanded: boolean }) {
                 </For>
               </select>
             </label>
+            <button
+              class={`btn ${isRunning() ? "btn-stop" : "btn-start"}`}
+              disabled={!wasmReady()}
+              onClick={toggleEngine}
+              title="Run / freeze the mixer engine. Starts automatically when WebSRT connects."
+            >{isRunning() ? "ENGINE ON" : "ENGINE OFF"}</button>
+            <button
+              class={`btn ${tonesOn() ? "btn-stop" : "btn-start"}`}
+              onClick={toggleTones}
+              title="Sine tones (A major chord) into mixer inputs 1–4. Only audible while the engine runs."
+            >{tonesOn() ? "TONES ON" : "TONES OFF"}</button>
             <span
               class={`websrt-pill ${websrtStatus()}`}
               title={`WebSRT connection status: ${websrtStatus()}`}
