@@ -18,4 +18,6 @@ js-sys.workspace = true
 console_error_panic_hook.workspace = true
 
 [dev-dependencies]
-wasm-bindgen-test = "0.2"
+# 0.3.x required: 0.2.x ended at 0.2.50, which registers zero tests against
+# wasm-bindgen 0.2.127 ("no tests to run!"). 0.3.77 pins wasm-bindgen =0.2.127.
+wasm-bindgen-test = "0.3"

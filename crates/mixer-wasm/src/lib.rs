@@ -7,7 +7,7 @@ use oximedia_mixer::metering::{Meter, MeterBallistics};
 use oximedia_mixer::oversampled_limiter::OversampledLimiter;
 use oximedia_mixer::{
     bus::{BusId, BusType},
-    channel::{ChannelType, PanLaw},
+    channel::{db_to_linear, ChannelType, PanLaw},
     ChannelId, ChannelProcessParams, MixerConfig, PanLawType,
 };
 
@@ -58,6 +58,11 @@ impl ChannelDynamics {
 /// 5. Fader gain × VCA (engine)
 /// 6. Pan (engine)
 /// → summed to master bus → OversampledLimiter → output
+///
+/// Channel direct-out tap: `set_channel_tap()` captures each input
+/// channel's MONO signal at the pan-stage input (post input gain/phase,
+/// post gate/comp/EQ, post fader) during `process()` for external
+/// publishing (WebSRT Nch out).
 #[wasm_bindgen]
 pub struct MixerWasm {
     engine: oximedia_mixer::AudioMixer,
@@ -102,6 +107,13 @@ pub struct MixerWasm {
     bus_right: Vec<Vec<f32>>,
     bus_peak: HashMap<u32, f32>,
     bus_rms: HashMap<u32, f32>,
+    // ── Channel direct-out tap (post-chain, post-fader, pre-pan mono) ──
+    // 0 = disabled; otherwise channels 0..tap_channels are tapped.
+    tap_channels: u32,
+    // Interleaved [frame][channel]: index i * N + c is channel c, frame i.
+    channel_tap_buf: Vec<f32>,
+    // Frames valid in the most recent processed block; 0 = nothing new.
+    tap_frames: usize,
     // ── Counters ──
     unmapped_pid_drops: u64,
     sample_rate: u32,
@@ -170,6 +182,9 @@ impl MixerWasm {
             bus_right: (0..8).map(|_| vec![0.0; bs]).collect(),
             bus_peak: HashMap::new(),
             bus_rms: HashMap::new(),
+            tap_channels: 0,
+            channel_tap_buf: Vec::new(),
+            tap_frames: 0,
             unmapped_pid_drops: 0,
             sample_rate,
         })
@@ -738,6 +753,50 @@ impl MixerWasm {
         self.limiter_l.gain_reduction_db()
     }
 
+    // ── Channel direct-out tap ────────────────────────
+
+    /// Enable the per-channel direct-out tap: during `process()`, channels
+    /// `0..channels` are captured MONO at the pan-stage input — post input
+    /// gain and phase inversion, post gate/comp/EQ chain, post fader gain,
+    /// PRE pan (pan is a stereo-bus concept; direct outs are mono per
+    /// channel). Drain the captured block with `take_channel_tap()`.
+    ///
+    /// * `channels = 0` (or never calling this) disables the tap. Clamped
+    ///   to 0..=128; slot channels (128-255, bus slots) are never tapped.
+    /// * Idempotent; re-enabling with a different N resizes the accumulator.
+    /// * Muted channels tap SILENCE, and solo gating applies exactly as it
+    ///   does to the mix: when any channel is soloed, non-soloed channels
+    ///   are silent in the tap too (a muted/solo-gated channel produces no
+    ///   output anywhere, direct out included).
+    /// * Channels with no input data contribute zeros.
+    /// * `process()` output is identical whether the tap is on or off.
+    pub fn set_channel_tap(&mut self, channels: u32) {
+        let n = channels.min(128) as usize;
+        self.tap_channels = n as u32;
+        self.channel_tap_buf.clear();
+        self.channel_tap_buf.resize(n * self.buffer_size, 0.0);
+        self.tap_frames = 0;
+    }
+
+    /// Drain the channel direct-out tap captured by the last `process()`
+    /// call: one block of `bs` frames × N channels, interleaved per frame
+    /// (frame i: ch0[i], ch1[i], ..., chN-1[i]). Empties the accumulator —
+    /// call once per processed block.
+    ///
+    /// Returns an empty Float32Array when the tap is disabled or no block
+    /// has been processed since the last take. If two `process()` calls
+    /// happen without a take in between, only the LATEST block is kept.
+    pub fn take_channel_tap(&mut self) -> js_sys::Float32Array {
+        if self.tap_channels == 0 || self.tap_frames == 0 {
+            return js_sys::Float32Array::new_with_length(0);
+        }
+        let len = self.tap_frames * self.tap_channels as usize;
+        let out = js_sys::Float32Array::new_with_length(len as u32);
+        out.copy_from(&self.channel_tap_buf[..len]);
+        self.tap_frames = 0;
+        out
+    }
+
     // ── Processing ─────────────────────────────────────
 
     pub fn process(&mut self, block_size: u32) -> Result<js_sys::Float32Array, JsValue> {
@@ -755,6 +814,14 @@ impl MixerWasm {
                 self.bus_left[b][s] = 0.0;
                 self.bus_right[b][s] = 0.0;
             }
+        }
+
+        // ── Channel direct-out tap: start a fresh block ──
+        // Zeroed here so muted / solo-gated / input-less channels surface
+        // as silence; active channels overwrite their slots in pass 1.
+        if self.tap_channels > 0 {
+            self.channel_tap_buf[..bs * self.tap_channels as usize].fill(0.0);
+            self.tap_frames = bs;
         }
 
         // Collect channel data upfront (avoid borrow conflicts).
@@ -818,6 +885,22 @@ impl MixerWasm {
                     -200.0
                 },
             );
+
+            // ── Direct-out tap: capture the pan-stage input ──
+            // eq_scratch holds the post gate/comp/EQ signal; apply the same
+            // input gain × phase × fader × VCA the engine applies inside
+            // process_mix, but NOT pan → the classic post-fader mono direct
+            // out. (Muted/solo-gated channels `continue`d above, so their
+            // slots stay zeroed.)
+            if self.tap_channels > ch_idx {
+                let n = self.tap_channels as usize;
+                let phase: f32 = if params.phase_inverted { -1.0 } else { 1.0 };
+                let vca = self.engine.engine().vca_gain_for_channel(id);
+                let tap_gain = db_to_linear(params.input_gain_db) * phase * params.fader_gain * vca;
+                for i in 0..bs {
+                    self.channel_tap_buf[i * n + ch_idx as usize] = self.eq_scratch[i] * tap_gain;
+                }
+            }
 
             // Engine: input gain, fader, pan → stereo pair
             let (ch_left, ch_right) = self

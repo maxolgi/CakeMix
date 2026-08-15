@@ -363,5 +363,42 @@ try {
 } catch (e) { console.error('FAIL: unmapped PID counter -', e.message); failed++; }
 
 
+// ── Channel direct-out tap (post-chain post-fader mono, Nch) ──
+// 4ch tap: ch0 sine unity, ch1 sine with fader 0.5, ch2/ch3 unfed → zeros.
+// Tap is PRE pan: full input amplitude (master would apply the 0.5 Linear
+// center-pan gain on top). take() drains — second take is empty.
+try {
+    const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 4);
+    mixer.set_limiter_enabled(false);
+    for (let ch = 0; ch < 4; ch++) mixer.set_eq_bypass(ch, true);
+    mixer.set_channel_tap(4);
+
+    const sineA = sineWave(220, 0.5, BLOCK_SIZE);
+    const sineB = sineWave(330, 0.25, BLOCK_SIZE);
+    mixer.set_channel_input(0, sineA);
+    mixer.set_channel_input(1, sineB);
+    mixer.set_channel_gain(1, 0.5); // fader applies to the tap
+
+    mixer.process(BLOCK_SIZE);
+    const tap = mixer.take_channel_tap();
+    assert(tap.length === BLOCK_SIZE * 4, `tap length ${tap.length} !== ${BLOCK_SIZE * 4}`);
+
+    for (let i = 0; i < BLOCK_SIZE; i++) {
+        assert(Math.abs(tap[i * 4] - sineA[i]) < 1e-4, `frame ${i} ch0: tap=${tap[i * 4]} ref=${sineA[i]}`);
+        assert(Math.abs(tap[i * 4 + 1] - sineB[i] * 0.5) < 1e-4, `frame ${i} ch1: tap=${tap[i * 4 + 1]} ref=${sineB[i] * 0.5}`);
+        assert(tap[i * 4 + 2] === 0, `frame ${i} ch2 must be silent, got ${tap[i * 4 + 2]}`);
+        assert(tap[i * 4 + 3] === 0, `frame ${i} ch3 must be silent, got ${tap[i * 4 + 3]}`);
+    }
+
+    const tap2 = mixer.take_channel_tap();
+    assert(tap2.length === 0, `tap must drain on take, got ${tap2.length} samples`);
+    passed++;
+    console.log('PASS: channel direct-out tap (Nch, post-fader pre-pan, zero-fill, drain)');
+} catch (e) {
+    console.error('FAIL: channel direct-out tap -', e.message);
+    failed++;
+}
+
+
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 process.exit(failed > 0 ? 1 : 0);

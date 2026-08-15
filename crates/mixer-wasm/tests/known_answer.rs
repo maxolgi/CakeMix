@@ -37,9 +37,14 @@ fn test_basic_sum_two_sines() {
         })
         .collect();
 
-    // Build and configure the mixer.
+    // Build and configure the mixer. EQ bypassed + limiter off for an exact
+    // known answer (the six-band EQ and limiter are otherwise always-on) —
+    // mirrors tests/run_tests.mjs test 1.
     let mut mixer =
         mixer_wasm::MixerWasm::new(SAMPLE_RATE, BLOCK_SIZE, 4).expect("constructor should succeed");
+    mixer.set_limiter_enabled(false);
+    mixer.set_eq_bypass(0, true).expect("bypass eq ch0");
+    mixer.set_eq_bypass(1, true).expect("bypass eq ch1");
 
     // Set per-channel inputs via Float32Array interop.
     let fa = Float32Array::new_with_length(BLOCK_SIZE);
@@ -175,10 +180,14 @@ fn test_mute_channel() {
 #[wasm_bindgen_test]
 fn test_gain_control() {
     // Setting gain to 0.5 should halve the output.
+    // EQ bypassed + limiter off for an exact ratio check — mirrors
+    // tests/run_tests.mjs test 5.
     let sine_a = sine_wave(440.0, 1.0, BLOCK_SIZE as usize);
 
     let mut mixer =
         mixer_wasm::MixerWasm::new(SAMPLE_RATE, BLOCK_SIZE, 2).expect("constructor should succeed");
+    mixer.set_limiter_enabled(false);
+    mixer.set_eq_bypass(0, true).expect("bypass eq");
 
     let fa = Float32Array::new_with_length(BLOCK_SIZE);
     fa.copy_from(&sine_a);
