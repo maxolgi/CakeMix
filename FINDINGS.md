@@ -200,3 +200,38 @@ SlopShady references (local, in this repo):
 - `../src/js/features/stream-worker.js`
 - `../vendor/WebSRT/crates/ts-muxer-wasm/src/lib.rs`
 - `../vendor/WebSRT/web/src/shared/viewer.ts` (receive-side audio pipeline)
+
+---
+
+## 8. WebTransport datagram cap vs SRT payload (M2-out, load-bearing)
+
+Chrome will not place a datagram larger than ~1200 bytes into a single QUIC
+packet browser→gateway (Chrome's ~1350 B max QUIC packet minus framing). The
+write itself **resolves silently** — no error, no console message. The
+vendored SRT stack (`srt-wasm` + `websrt::srt_sender`) negotiates
+`max_packet_size = min(local, peer)` at HSv5 and both sides default to
+1316 → **1332 B wire packets → every browser→gateway data packet is
+silently dropped.** Control packets (handshake, ACK, keepalive) are tiny, so
+the session looks perfectly healthy: handshake completes, RTT ~1 ms, "tx
+kb/s" even climbs (it counts retransmits of the doomed packets) — but zero
+data is delivered. Symptom signature: tx bitrate ≈ 2× the true payload rate
++ monotonically climbing tx loss + receiver at 0.00 Mb/s.
+
+Empirically (wtransport 0.7.1 + Chrome, loopback): 1200 B datagrams pass,
+1332 B vanish. `WebTransport.datagrams.maxDatagramSize` reports 1024 but is
+NOT the hard send cap — measure, don't trust it.
+
+**Fix (CakeMix side, done):** `crates/cakemix-server/src/gateway.rs`
+advertises `SrtConfig.payload_size = 1128` (6×188, TS-aligned) → HSv5 pulls
+the browser's sender down to 1128+16 = 1144 B per datagram → passes.
+Gateway→browser direction is unaffected (that leg accepts larger datagrams).
+
+**WebSRT side (user's repo, pending):** the reference `websrt-gateway` and
+`srt-wasm` still advertise 1316. Until the gateway lowers
+`SrtConfig::payload_size` the same way (one line), browser publishers cannot
+deliver data to it — verified against the user's production gateway
+(192.168.1.214:4433): handshake OK, tx loss climbing, reference viewer rx 0.
+Also noted there: `ts-muxer-wasm` emits PAT/PMT only at stream start and
+around sparse-suppression transitions — mid-stream joiners can't tune until
+a silence→audio transition forces a PMT resend. Proper fix: periodic PSI
+(every ~100 ms) in `push_pcm`/`push_audio` (WebSRT-side edit).

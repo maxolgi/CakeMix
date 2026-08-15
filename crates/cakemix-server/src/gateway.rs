@@ -14,11 +14,23 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use websrt::cert::Cert;
 use websrt::ingest::srt::SrtIngester;
+use websrt::srt_sender::SrtConfig;
 use websrt::Gateway;
 
 /// Stream name SRT input is published under (browsers subscribe via
 /// `?stream=default`).
 pub const SRT_STREAM_NAME: &str = "default";
+
+/// SRT payload size for browser (WebTransport) sessions. The SRT default
+/// (1316 + 16-byte header = 1332 B on the wire) exceeds what Chrome will put
+/// in a single QUIC packet (~1350 B including QUIC framing) on the
+/// browser→gateway leg, so every full-size data datagram is silently dropped
+/// — the handshake (small control packets) still succeeds, which makes it
+/// look alive while no data flows. HSv5 negotiates `min(local, peer)`, so
+/// advertising 1128 (6 × 188, TS-aligned) caps the browser's sender at
+/// 1128 + 16 = 1144 B per datagram, which fits. Verified empirically against
+/// wtransport 0.7.1 + Chrome: 1200 B datagrams pass, 1332 B vanish.
+pub const WT_PAYLOAD_SIZE: u64 = 1128;
 
 /// Build the gateway, spawn the SRT ingest task, and return the running
 /// `gateway.run()` task. The gateway exits (draining sessions) when
@@ -34,6 +46,10 @@ pub fn spawn(
     let gateway = Gateway::builder()
         .bind_addr(bind_addr)
         .identity(wt_cert.identity.clone_identity())
+        .srt_config(SrtConfig {
+            payload_size: WT_PAYLOAD_SIZE,
+            ..SrtConfig::default()
+        })
         .latency_ms(latency_ms)
         .build()?;
 
