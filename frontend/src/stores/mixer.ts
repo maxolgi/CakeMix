@@ -120,13 +120,29 @@ export function formatGainDb(gain: number): string {
 
 export function updateMeterData(msg: MeterData) {
   setMeterData(msg);
-  if (msg.channels) for (const cm of msg.channels) {
-    setChannels(cm.ch, "peakDb", cm.peak);
-    setChannels(cm.ch, "rmsDb", cm.rms);
+  // Empty channel/bus lists (worklet's stopped report) reset every meter to
+  // -Infinity so the UI falls to zero; otherwise only reported entries update.
+  if (msg.channels && msg.channels.length) {
+    for (const cm of msg.channels) {
+      setChannels(cm.ch, "peakDb", cm.peak);
+      setChannels(cm.ch, "rmsDb", cm.rms);
+    }
+  } else {
+    for (let i = 0; i < channels.length; i++) {
+      setChannels(i, "peakDb", -Infinity);
+      setChannels(i, "rmsDb", -Infinity);
+    }
   }
-  if (msg.buses) for (const bm of msg.buses) {
-    setBusChannels(bm.bus, "peakDb", bm.peak);
-    setBusChannels(bm.bus, "rmsDb", bm.rms);
+  if (msg.buses && msg.buses.length) {
+    for (const bm of msg.buses) {
+      setBusChannels(bm.bus, "peakDb", bm.peak);
+      setBusChannels(bm.bus, "rmsDb", bm.rms);
+    }
+  } else {
+    for (let i = 0; i < busChannels.length; i++) {
+      setBusChannels(i, "peakDb", -Infinity);
+      setBusChannels(i, "rmsDb", -Infinity);
+    }
   }
 }
 
