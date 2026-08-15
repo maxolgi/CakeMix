@@ -331,6 +331,9 @@ body {
 .mode-toggle.bus { background: #3a2a10; color: #e0b050; border-color: #6a4a10; }
 .mode-toggle:hover { border-color: #444; }
 
+.status-text { font-size: 0.7em; color: #666; white-space: nowrap; }
+.status-text.err { color: #e05050; }
+
 /* ── Bus Manager Bar ─────────────────── */
 .bus-manager {
     display: flex; align-items: center; gap: 10px;

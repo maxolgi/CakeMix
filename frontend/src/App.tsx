@@ -21,6 +21,10 @@ export default function App() {
   onMount(async () => {
     try {
       audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+      if (!audioCtx.audioWorklet) {
+        setStatus("Init failed: AudioWorklet unavailable — secure context required. Use HTTPS or localhost.");
+        return;
+      }
       await audioCtx.audioWorklet.addModule("/mixer-worklet-processor.js");
       const node = new AudioWorkletNode(audioCtx, "mixer-processor", {
         numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
@@ -32,7 +36,7 @@ export default function App() {
         const msg = e.data;
         if (msg.type === "ready") { loadWasm(); }
         else if (msg.type === "wasm-ready") { setWasmReady(true); setStatus("Ready"); }
-        else if (msg.type === "error") { setStatus("Error: " + msg.msg); }
+        else if (msg.type === "error") { setStatus("Error: " + msg.msg); console.error("worklet:", msg.msg); }
         else if (msg.type === "meter") { updateMeterData(msg); }
       };
     } catch (e: any) { setStatus("Init failed: " + e.message); }
@@ -71,6 +75,7 @@ export default function App() {
       <BusManager
         running={isRunning()}
         wasmReady={wasmReady()}
+        status={status()}
         onStart={start}
         onStop={stop}
         mode={mode()}

@@ -108,6 +108,20 @@ fn build_router() -> Router {
         .fallback(serve_web_file)
 }
 
+fn local_lan_ips() -> Vec<std::net::IpAddr> {
+    // Dependency-free way to find the primary LAN IP: a UDP "connect"
+    // sends no packets but makes the OS pick the route's source address.
+    let mut ips = Vec::new();
+    if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if sock.connect("8.8.8.8:80").is_ok() {
+            if let Ok(addr) = sock.local_addr() {
+                ips.push(addr.ip());
+            }
+        }
+    }
+    ips
+}
+
 fn ensure_cert(cert_path: &std::path::Path, key_path: &std::path::Path) {
     if !cert_path.exists() || !key_path.exists() {
         println!("Generating self-signed certificate for HTTPS...");
@@ -120,6 +134,12 @@ fn ensure_cert(cert_path: &std::path::Path, key_path: &std::path::Path) {
             SanType::DnsName(Ia5String::try_from("localhost").unwrap()),
             SanType::IpAddress(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
         ];
+        // Cover LAN IPs so other machines can reach the server over HTTPS
+        // (AudioWorklet requires a secure context).
+        for ip in local_lan_ips() {
+            println!("Adding SAN for local IP: {ip}");
+            params.subject_alt_names.push(SanType::IpAddress(ip));
+        }
 
         let key_pair = KeyPair::generate().unwrap();
         let cert = params.self_signed(&key_pair).unwrap();

@@ -3,6 +3,7 @@ import { For } from "solid-js";
 export function BusManager(props: {
   running: boolean;
   wasmReady: boolean;
+  status: string;
   onStart: () => void;
   onStop: () => void;
   mode: "inputs" | "bus";
@@ -42,6 +43,10 @@ export function BusManager(props: {
           </For>
         </div>
       </div>
+      <span
+        class={`status-text ${/^(Error|Init failed|WASM load failed)/.test(props.status) ? "err" : ""}`}
+        title={props.status}
+      >{props.status}</span>
     </div>
   );
 }
