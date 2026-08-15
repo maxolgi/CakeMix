@@ -428,4 +428,6 @@ body {
     margin-top: 4px; padding-top: 6px; border-top: 1px solid #1e1e28;
 }
 .websrt-subsection-head { display: flex; align-items: center; gap: 8px; }
-.websrt-engine-btns { display: flex; gap: 6px; margin-left: auto; }
+.websrt-section-controls { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; }
+.websrt-section-controls .websrt-pill { margin-left: auto; }
+.websrt-section-controls .detail-select-label { white-space: nowrap; }

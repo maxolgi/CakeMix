@@ -76,21 +76,39 @@ export function WebSRTPanel(props: { expanded: boolean }) {
     <Show when={props.expanded}>
       <div class="settings-body">
         <div class="websrt-subsection">
-          <div class="websrt-subsection-head">
-            <span class="websrt-label">RECEIVE</span>
-            <div class="websrt-engine-btns">
-              <button
-                class={`btn ${isRunning() ? "btn-stop" : "btn-start"}`}
-                disabled={!wasmReady()}
-                onClick={toggleEngine}
-                title="Run / freeze the mixer engine. Starts automatically when WebSRT connects."
-              >{isRunning() ? "ENGINE ON" : "ENGINE OFF"}</button>
-              <button
-                class={`btn ${tonesOn() ? "btn-stop" : "btn-start"}`}
-                onClick={toggleTones}
-                title="Sine tones (A major chord) into mixer inputs 1–4. Only audible while the engine runs."
-              >{tonesOn() ? "TONES ON" : "TONES OFF"}</button>
-            </div>
+          <div class="websrt-section-controls">
+            <button
+              class={`btn ${active() ? "btn-stop" : "btn-start"}`}
+              disabled={websrtStatus() === "connecting"}
+              onClick={() => (active() ? disconnectWebsrt() : connectWebsrt())}
+              title={active()
+                ? "Connected — click to disconnect the WebSRT receiver and stop the worker"
+                : "Connect the WebSRT receiver to the target gateway (URL below)"}
+            >RECEIVE</button>
+            <button
+              class={`btn ${isRunning() ? "btn-stop" : "btn-start"}`}
+              disabled={!wasmReady()}
+              onClick={toggleEngine}
+              title="Run / freeze the mixer engine. Starts automatically when WebSRT connects."
+            >{isRunning() ? "ENGINE ON" : "ENGINE OFF"}</button>
+            <button
+              class={`btn ${tonesOn() ? "btn-stop" : "btn-start"}`}
+              onClick={toggleTones}
+              title="Sine tones (A major chord) into mixer inputs 1–4. Only audible while the engine runs."
+            >{tonesOn() ? "TONES ON" : "TONES OFF"}</button>
+            <label class="detail-select-label">LATENCY
+              <select
+                class="detail-select"
+                value={String(websrtLatencyMs())}
+                onInput={(e) => setWebsrtLatencyMs(parseInt(e.currentTarget.value, 10))}
+                disabled={websrtStatus() === "connected"}
+                title="TSBPD latency — higher = more robust, use ~1000 ms for LAN PCM. Disabled while connected: reconnect required to apply."
+              >
+                <For each={LATENCY_OPTIONS}>
+                  {(ms) => <option value={String(ms)}>{ms} ms</option>}
+                </For>
+              </select>
+            </label>
             <span
               class={`websrt-pill ${websrtStatus()}`}
               title={`WebSRT connection status: ${websrtStatus()}`}
@@ -108,30 +126,6 @@ export function WebSRTPanel(props: { expanded: boolean }) {
                 placeholder="this page — or https://192.168.1.214:5173/?stream=audio"
                 title="Web-viewer URL of a WebSRT gateway. Host, stream name and token are parsed from it; cert hash + WT port are fetched from its /cert-hash.js. Empty = the gateway serving this page, stream default."
               />
-            </label>
-          </div>
-
-          <div class="websrt-controls">
-            <button
-              class={`btn ${active() ? "btn-stop" : "btn-start"}`}
-              disabled={websrtStatus() === "connecting"}
-              onClick={() => (active() ? disconnectWebsrt() : connectWebsrt())}
-              title={active()
-                ? "Disconnect the WebSRT receiver and stop the worker"
-                : "Connect the WebSRT receiver to the target gateway (HOST/PORT/STREAM/CERT HASH above)"}
-            >{active() ? "DISCONNECT" : "CONNECT"}</button>
-            <label class="detail-select-label">LATENCY
-              <select
-                class="detail-select"
-                value={String(websrtLatencyMs())}
-                onInput={(e) => setWebsrtLatencyMs(parseInt(e.currentTarget.value, 10))}
-                disabled={websrtStatus() === "connected"}
-                title="TSBPD latency — higher = more robust, use ~1000 ms for LAN PCM. Disabled while connected: reconnect required to apply."
-              >
-                <For each={LATENCY_OPTIONS}>
-                  {(ms) => <option value={String(ms)}>{ms} ms</option>}
-                </For>
-              </select>
             </label>
           </div>
 
@@ -174,23 +168,15 @@ export function WebSRTPanel(props: { expanded: boolean }) {
         </div>
 
         <div class="websrt-subsection">
-          <div class="websrt-subsection-head">
-            <span class="websrt-label">PUBLISH</span>
-            <span
-              class={`websrt-pill ${publishStatus()}`}
-              title={`WebSRT publish status: ${publishStatus()}`}
-            >{publishStatus() === "disconnected" ? "" : publishStatus()}</span>
-          </div>
-
-          <div class="websrt-controls">
+          <div class="websrt-section-controls">
             <button
               class={`btn ${pubActive() ? "btn-stop" : "btn-start"}`}
               disabled={publishStatus() === "connecting"}
               onClick={() => (pubActive() ? disconnectPublish() : connectPublish())}
               title={pubActive()
-                ? "Stop publishing: closes the master-output tap and the publish worker's SRT/WebTransport session"
+                ? "Publishing — click to stop: closes the output tap and the publish worker's SRT/WebTransport session"
                 : `Publish the mixer output as SMPTE 302M PCM (48 kHz, no codecs) to the gateway, stream "${publishStreamName()}"`}
-            >{pubActive() ? "DISCONNECT" : "CONNECT"}</button>
+            >PUBLISH</button>
             <label class="detail-select-label">CHANNELS
               <select
                 class="detail-select"
@@ -204,6 +190,10 @@ export function WebSRTPanel(props: { expanded: boolean }) {
                 </For>
               </select>
             </label>
+            <span
+              class={`websrt-pill ${publishStatus()}`}
+              title={`WebSRT publish status: ${publishStatus()}`}
+            >{publishStatus() === "disconnected" ? "" : publishStatus()}</span>
           </div>
 
           <div
