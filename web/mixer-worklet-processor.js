@@ -55,6 +55,11 @@ try {
  * 5. Fader gain × VCA (engine)
  * 6. Pan (engine)
  * → summed to master bus → OversampledLimiter → output
+ *
+ * Channel direct-out tap: `set_channel_tap()` captures each input
+ * channel's MONO signal at the pan-stage input (post input gain/phase,
+ * post gate/comp/EQ, post fader) during `process()` for external
+ * publishing (WebSRT Nch out).
  */
 class MixerWasm {
     __destroy_into_raw() {
@@ -452,6 +457,27 @@ class MixerWasm {
         }
     }
     /**
+     * Enable the per-channel direct-out tap: during `process()`, channels
+     * `0..channels` are captured MONO at the pan-stage input — post input
+     * gain and phase inversion, post gate/comp/EQ chain, post fader gain,
+     * PRE pan (pan is a stereo-bus concept; direct outs are mono per
+     * channel). Drain the captured block with `take_channel_tap()`.
+     *
+     * * `channels = 0` (or never calling this) disables the tap. Clamped
+     *   to 0..=128; slot channels (128-255, bus slots) are never tapped.
+     * * Idempotent; re-enabling with a different N resizes the accumulator.
+     * * Muted channels tap SILENCE, and solo gating applies exactly as it
+     *   does to the mix: when any channel is soloed, non-soloed channels
+     *   are silent in the tap too (a muted/solo-gated channel produces no
+     *   output anywhere, direct out included).
+     * * Channels with no input data contribute zeros.
+     * * `process()` output is identical whether the tap is on or off.
+     * @param {number} channels
+     */
+    set_channel_tap(channels) {
+        wasm.mixerwasm_set_channel_tap(this.__wbg_ptr, channels);
+    }
+    /**
      * @param {number} ch
      * @param {number} param
      * @param {number} value
@@ -558,6 +584,21 @@ class MixerWasm {
         wasm.mixerwasm_subscribe_pid(this.__wbg_ptr, pid);
     }
     /**
+     * Drain the channel direct-out tap captured by the last `process()`
+     * call: one block of `bs` frames × N channels, interleaved per frame
+     * (frame i: ch0[i], ch1[i], ..., chN-1[i]). Empties the accumulator —
+     * call once per processed block.
+     *
+     * Returns an empty Float32Array when the tap is disabled or no block
+     * has been processed since the last take. If two `process()` calls
+     * happen without a take in between, only the LATEST block is kept.
+     * @returns {Float32Array}
+     */
+    take_channel_tap() {
+        const ret = wasm.mixerwasm_take_channel_tap(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * @param {number} pid
      */
     unmap_pid(pid) {
@@ -579,7 +620,6 @@ class MixerWasm {
     }
 }
 if (Symbol.dispose) MixerWasm.prototype[Symbol.dispose] = MixerWasm.prototype.free;
-
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
@@ -748,7 +788,15 @@ function takeFromExternrefTable0(idx) {
 
 let cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });
 cachedTextDecoder.decode();
+const MAX_SAFARI_DECODE_BYTES = 2146435072;
+let numBytesDecoded = 0;
 function decodeText(ptr, len) {
+    numBytesDecoded += len;
+    if (numBytesDecoded >= MAX_SAFARI_DECODE_BYTES) {
+        cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });
+        cachedTextDecoder.decode();
+        numBytesDecoded = len;
+    }
     return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
 }
 
@@ -767,12 +815,103 @@ if (!('encodeInto' in cachedTextEncoder)) {
 
 let WASM_VECTOR_LEN = 0;
 
-const wasmPath = `${__dirname}/mixer_wasm_bg.wasm`;
-const wasmBytes = require('fs').readFileSync(wasmPath);
-const wasmModule = new WebAssembly.Module(wasmBytes);
-let wasmInstance = new WebAssembly.Instance(wasmModule, __wbg_get_imports());
-let wasm = wasmInstance.exports;
-wasm.__wbindgen_start();
+let wasmModule, wasmInstance, wasm;
+function __wbg_finalize_init(instance, module) {
+    wasmInstance = instance;
+    wasm = instance.exports;
+    wasmModule = module;
+    cachedDataViewMemory0 = null;
+    cachedFloat32ArrayMemory0 = null;
+    cachedUint8ArrayMemory0 = null;
+    wasm.__wbindgen_start();
+    return wasm;
+}
+
+async function __wbg_load(module, imports) {
+    if (typeof Response === 'function' && module instanceof Response) {
+        if (!module.ok) {
+            throw new Error(`failed to fetch Wasm: ${module.status} ${module.statusText} fetching '${module.url}'`);
+        }
+
+        if (typeof WebAssembly.instantiateStreaming === 'function') {
+            try {
+                return await WebAssembly.instantiateStreaming(module, imports);
+            } catch (e) {
+                const validResponse = expectedResponseType(module.type);
+
+                if (validResponse && module.headers.get('Content-Type') !== 'application/wasm') {
+                    console.warn("`WebAssembly.instantiateStreaming` failed because your server does not serve Wasm with `application/wasm` MIME type. Falling back to `WebAssembly.instantiate` which is slower. Original error:\n", e);
+
+                } else { throw e; }
+            }
+        }
+
+        const bytes = await module.arrayBuffer();
+        return await WebAssembly.instantiate(bytes, imports);
+    } else {
+        const instance = await WebAssembly.instantiate(module, imports);
+
+        if (instance instanceof WebAssembly.Instance) {
+            return { instance, module };
+        } else {
+            return instance;
+        }
+    }
+
+    function expectedResponseType(type) {
+        switch (type) {
+            case 'basic': case 'cors': case 'default': return true;
+        }
+        return false;
+    }
+}
+
+function initSync(module) {
+    if (wasm !== undefined) return wasm;
+
+
+    if (module !== undefined) {
+        if (Object.getPrototypeOf(module) === Object.prototype) {
+            ({module} = module)
+        } else {
+            console.warn('using deprecated parameters for `initSync()`; pass a single object instead')
+        }
+    }
+
+    const imports = __wbg_get_imports();
+    if (!(module instanceof WebAssembly.Module)) {
+        module = new WebAssembly.Module(module);
+    }
+    const instance = new WebAssembly.Instance(module, imports);
+    return __wbg_finalize_init(instance, module);
+}
+
+async function __wbg_init(module_or_path) {
+    if (wasm !== undefined) return wasm;
+
+
+    if (module_or_path !== undefined) {
+        if (Object.getPrototypeOf(module_or_path) === Object.prototype) {
+            ({module_or_path} = module_or_path)
+        } else {
+            console.warn('using deprecated parameters for the initialization function; pass a single object instead')
+        }
+    }
+
+    if (module_or_path === undefined) {
+        module_or_path = undefined; // stripped for worklet
+    }
+    const imports = __wbg_get_imports();
+
+    if (typeof module_or_path === 'string' || (typeof Request === 'function' && module_or_path instanceof Request) || (typeof URL === 'function' && module_or_path instanceof URL)) {
+        module_or_path = fetch(module_or_path);
+    }
+
+    const { instance, module } = await __wbg_load(await module_or_path, imports);
+
+    return __wbg_finalize_init(instance, module);
+}
+
 
 // Processor
 // Crypto polyfill for AudioWorkletGlobalScope (no crypto API)
