@@ -889,6 +889,26 @@ if (typeof globalThis.crypto === 'undefined') {
 var BLOCK_SIZE = 128;
 var SAMPLE_RATE = 48000;
 var FREQS = [220.0, 277.18, 329.63, 440.0]; // A major chord for demo
+var PUB_BATCH_FRAMES = 1024; // publish tap batch size: 8 blocks of 128 frames
+
+// Publish-tap batching helpers — pure (no `this`) so the math is inspectable.
+
+// Interleave one block (n frames) of stereo into acc starting at
+// acc[fillFloats]. Returns the new fill (in floats); acc must have room.
+function pubInterleaveBlock(acc, fillFloats, blockL, blockR, n) {
+    for (var i = 0; i < n; i++) {
+        acc[fillFloats + i * 2] = blockL[i];
+        acc[fillFloats + i * 2 + 1] = blockR[i];
+    }
+    return fillFloats + n * 2;
+}
+
+// pts (µs) of the first frame of a batch, given the count of frames from
+// pub-start up to that first frame (48 kHz). Batch k pts = k * 1024/48000*1e6
+// ≈ k*21333.33 µs (rounded to whole µs; 1 µs ≪ 1 sample = 20.83 µs).
+function pubBatchPtsUs(framesBeforeBatch) {
+    return Math.round(framesBeforeBatch / SAMPLE_RATE * 1e6);
+}
 
 class MixerProcessor extends AudioWorkletProcessor {
     constructor(options) {
@@ -900,6 +920,11 @@ class MixerProcessor extends AudioWorkletProcessor {
         this._mode = "demo"; // "demo" or "live"
         this._pendingPcm = []; // queued PCM packets for live mode
         this._meterInterval = 0;
+        // Publish tap state (master-output PCM relay; see _pubTap).
+        this._pubActive = false;
+        this._pubBuf = null;   // interleaved batch accumulator, alloc'd on first pub-start
+        this._pubFill = 0;     // floats currently in the accumulator
+        this._pubFrames = 0;   // frames appended since pub-start (drives pts)
 
         this.port.onmessage = (e) => {
             var msg = e.data;
@@ -992,6 +1017,19 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (this._mixer && this._mode === "live") {
                     try { this._mixer.feed_pcm(msg.pid, msg.samples); } catch(e) {}
                 }
+            } else if (msg.type === "pub-start") {
+                // Enable master-output publish tap. Idempotent; does not affect
+                // running state. A start while already started cleanly restarts
+                // the accumulator + sample counter (partial batch dropped).
+                if (!this._pubBuf) this._pubBuf = new Float32Array(PUB_BATCH_FRAMES * 2);
+                this._pubFill = 0;
+                this._pubFrames = 0;
+                this._pubActive = true;
+            } else if (msg.type === "pub-stop") {
+                // Disable publish tap, drop any partial batch. Idempotent.
+                this._pubActive = false;
+                this._pubFill = 0;
+                this._pubFrames = 0;
             }
         };
         this.port.postMessage({ type: "ready" });
@@ -1003,6 +1041,9 @@ class MixerProcessor extends AudioWorkletProcessor {
         var outL = out[0], outR = out[1], n = Math.min(outL.length, BLOCK_SIZE);
         outL.fill(0); outR.fill(0);
         if (!this._running || !this._mixer) {
+            // Publish tap keeps posting silent batches while stopped/missing
+            // so the downstream publisher's stream stays continuous.
+            if (this._pubActive) this._pubTap(outL, outR, n); // outL/outR are zeros
             // Send zeroed meters when stopped so UI clears.
             this._meterInterval++;
             if (this._meterInterval >= 10) {
@@ -1035,11 +1076,15 @@ class MixerProcessor extends AudioWorkletProcessor {
         // just call process().
 
         var output;
-        try { output = this._mixer.process(BLOCK_SIZE); } catch(e) { return true; }
+        try { output = this._mixer.process(BLOCK_SIZE); }
+        catch(e) { if (this._pubActive) this._pubTap(outL, outR, n); return true; }
         for (var i = 0; i < n; i++) {
             outL[i] = output[i*2];
             outR[i] = output[i*2+1];
         }
+
+        // Publish tap: post batched master-output PCM (same data as above).
+        if (this._pubActive) this._pubTap(outL, outR, n);
 
         // Report meters every ~10 blocks (every ~2ms at 128/48k)
         this._meterInterval++;
@@ -1061,6 +1106,23 @@ class MixerProcessor extends AudioWorkletProcessor {
         }
 
         return true;
+    }
+
+    // Publish tap: append this block's master output (exactly what was written
+    // to the audio output) to the accumulator; when a full PUB_BATCH_FRAMES
+    // batch is ready, post it transferred with the pts of its first frame.
+    _pubTap(outL, outR, n) {
+        this._pubFill = pubInterleaveBlock(this._pubBuf, this._pubFill, outL, outR, n);
+        this._pubFrames += n;
+        if (this._pubFill < this._pubBuf.length) return;
+        // Transfer detaches the buffer, so the posted samples array is fresh.
+        var batch = new Float32Array(this._pubBuf);
+        this.port.postMessage({
+            type: "pub-pcm",
+            samples: batch,
+            ptsUs: pubBatchPtsUs(this._pubFrames - PUB_BATCH_FRAMES),
+        }, [batch.buffer]);
+        this._pubFill = 0;
     }
 }
 
