@@ -62,59 +62,59 @@ export function setWebsrtLatencyMs(ms: number): void {
 }
 
 // ── Connection target ─────────────────────────────────────────────────────
-// Editable from the settings drawer; initialized from the ?host/?port/
-// ?stream/?certHash URL params so shared links keep working.
-//  host ""        = the gateway serving this page (same origin)
-//  port ""        = auto (same-origin cert-hash WT_PORT, else 4433)
-//  certHash ""    = auto (same-origin /cert-hash.js fetch)
-//            "null" = system PKI (mkcert)   64-hex = pin that gateway's hash
+// One URL (settings drawer): the target's web-viewer URL, e.g.
+//   https://192.168.1.214:5173/?stream=audio
+// Host + stream name + token are parsed from it; the gateway's cert hash
+// and WT port are fetched from that origin's /cert-hash.js — exactly what
+// the target's own viewer does. Empty = the gateway serving this page,
+// stream "default" (same-origin cert-hash.js).
 const initialParams = new URLSearchParams(location.search);
-const [targetHost, setTargetHost] = createSignal(initialParams.get("host") ?? "");
-const [targetPort, setTargetPort] = createSignal(initialParams.get("port") ?? "");
-const [targetStream, setTargetStream] = createSignal(initialParams.get("stream") ?? "default");
-const [targetCertHash, setTargetCertHash] = createSignal(initialParams.get("certHash") ?? "");
-export const websrtTarget = {
-  host: targetHost, port: targetPort, stream: targetStream, certHash: targetCertHash,
-  setHost: setTargetHost, setPort: setTargetPort, setStream: setTargetStream, setCertHash: setTargetCertHash,
-};
+const initialTargetUrl = initialParams.get("host")
+  ? `https://${initialParams.get("host")}${initialParams.get("port") ? ":" + initialParams.get("port") : ""}/?stream=${initialParams.get("stream") ?? "default"}`
+  : "";
+const [targetUrl, setTargetUrl] = createSignal(initialTargetUrl);
+export const websrtTarget = { url: targetUrl, setUrl: setTargetUrl };
 
 let worker: Worker | null = null;
 let nextChStart = 0;
 
-/** Connect: resolve the target + gateway cert hash — drawer settings (init
- *  from ?host/?port/?stream/?certHash URL params), else same-origin
- *  /cert-hash.js — build the WebTransport URL, start the receive worker and
- *  post 'init'. User-triggered (settings drawer).
- *
- *  A remote host needs its OWN cert hash (the same-origin cert-hash.js
- *  would carry the WRONG hash and the WT handshake would fail) — paste it
- *  from that gateway's web viewer /cert-hash.js, or "null" for PKI. */
+/** Connect: parse the target URL (empty = this page's gateway, stream
+ *  "default"), fetch the target origin's /cert-hash.js for its cert hash +
+ *  WT port, build the WebTransport URL, start the receive worker and post
+ *  'init'. User-triggered (settings drawer). */
 export async function connectWebsrt(): Promise<void> {
   if (worker) return;
   userGestureUnlock(); // synchronous: keep the click's autoplay gesture
-  const host = targetHost().trim();
-  const portStr = targetPort().trim();
-  const streamName = targetStream().trim() || "default";
-  const certHashIn = targetCertHash().trim();
-  if (host && !certHashIn) {
-    setStatus("error");
-    setStatusDetail(`remote gateway ${host} needs its cert hash (from its web viewer /cert-hash.js) or "null" for PKI`);
-    return;
+  let target: URL | null = null;
+  const raw = targetUrl().trim();
+  if (raw) {
+    try { target = new URL(raw); }
+    catch {
+      setStatus("error");
+      setStatusDetail(`invalid URL: ${raw}`);
+      return;
+    }
   }
   setStatus("connecting");
   setStatusDetail("resolving cert-hash.js…");
   try {
     let certHashHex: string | null;
     let wtPort: number;
-    if (certHashIn) {
-      // Explicit override — skip the same-origin fetch entirely; the port
-      // then comes from the drawer field or the 4433 default.
-      certHashHex = certHashIn === "null" ? null : certHashIn;
-      wtPort = parseInt(portStr, 10) || 4433;
+    let wtHost: string;
+    let streamName: string;
+    let token: string | null = null;
+    if (target) {
+      ({ certHashHex, wtPort } = await resolveCertHash(target.origin));
+      wtHost = target.hostname;
+      streamName = target.searchParams.get("stream") ?? "default";
+      token = target.searchParams.get("token");
     } else {
       ({ certHashHex, wtPort } = await resolveCertHash());
+      const pageHost = location.hostname || "127.0.0.1";
+      wtHost = pageHost === "localhost" ? "127.0.0.1" : pageHost;
+      streamName = "default";
     }
-    const url = buildWtUrl(host, portStr, streamName, wtPort);
+    const url = buildWtUrl(wtHost, wtPort, streamName, token);
     const certHash = certHashHex ? hexToBytes(certHashHex) : null;
     const w = startWorker();
     setStatusDetail(certHashHex
@@ -245,7 +245,11 @@ function onPcm(pid: number, channelCount: number, samples: Float32Array): void {
   sendToWorklet({ type: "pcm", pid, samples }, [samples.buffer]);
 }
 
-/** cert-hash.js shape (written by the gateway, websrt-gateway/src/main.rs):
+/** Fetch + parse a gateway's cert-hash.js. Same origin when `origin` is
+ *  omitted; a remote origin goes through OUR server's /api/cert-hash proxy
+ *  (embedding.md "Delivering the cert hash cross-origin" — the browser
+ *  cannot fetch another origin's cert-hash.js directly, CORS). Shape
+ *  (written by websrt-gateway/src/main.rs):
  *      window.CERT_HASH = "<64 hex chars>";   …or null (mkcert/PKI mode)
  *      window.WT_PORT = 4433; */
 interface CertHashInfo {
@@ -253,12 +257,26 @@ interface CertHashInfo {
   wtPort: number;
 }
 
-async function resolveCertHash(): Promise<CertHashInfo> {
-  const resp = await fetch("cert-hash.js");
-  if (!resp.ok) {
-    throw new Error(`No cert-hash.js (HTTP ${resp.status}) — is the gateway running?`);
+async function resolveCertHash(origin?: string): Promise<CertHashInfo> {
+  if (!origin) {
+    const resp = await fetch("/cert-hash.js", { cache: "no-store" });
+    if (!resp.ok) {
+      throw new Error(`No cert-hash.js (HTTP ${resp.status}) — is the gateway running?`);
+    }
+    const text = await resp.text();
+    return parseCertHashJs(text);
   }
-  const text = await resp.text();
+  const resp = await fetch(`/api/cert-hash?url=${encodeURIComponent(origin)}`, { cache: "no-store" });
+  const j = await resp.json().catch(() => null);
+  if (!j) throw new Error(`proxy response not JSON (HTTP ${resp.status})`);
+  if (j.error) throw new Error(String(j.error));
+  return {
+    certHashHex: typeof j.hash === "string" && j.hash.length === 64 ? j.hash : null,
+    wtPort: Number(j.wtPort) || 4433,
+  };
+}
+
+function parseCertHashJs(text: string): CertHashInfo {
   const hash = text.match(/window\.CERT_HASH\s*=\s*(?:"([^"]*)"|null)/);
   const port = text.match(/window\.WT_PORT\s*=\s*(\d+)/);
   if (!hash || !port) {
@@ -281,16 +299,10 @@ function hexToBytes(hex: string): Uint8Array {
   return out;
 }
 
-/** Build the subscribe WT URL — pattern copied from WebSRT's own viewer
- *  (vendor/WebSRT/web/src/shared/viewer.ts doConnect): host from the target
- *  settings ("" = page host, "localhost" → 127.0.0.1), port from the target
- *  settings > cert-hash WT_PORT > 4433, fixed /wt path, ?token passthrough. */
-function buildWtUrl(host: string, portStr: string, streamName: string, wtPort: number): string {
-  const pageHost = location.hostname || "127.0.0.1";
-  const wtHost = host || (pageHost === "localhost" ? "127.0.0.1" : pageHost);
-  const port = portStr || String(wtPort || 4433);
+/** Build the subscribe WT URL: fixed /wt path, WT port from the target's
+ *  cert-hash.js (4433 fallback), ?stream= + ?token passthrough. */
+function buildWtUrl(wtHost: string, wtPort: number, streamName: string, token: string | null): string {
   const qp = new URLSearchParams({ stream: streamName });
-  const token = new URLSearchParams(location.search).get("token");
   if (token) qp.set("token", token);
-  return `https://${wtHost}:${port}/wt?${qp}`;
+  return `https://${wtHost}:${wtPort || 4433}/wt?${qp}`;
 }

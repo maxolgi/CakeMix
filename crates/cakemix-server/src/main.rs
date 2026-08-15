@@ -159,6 +159,7 @@ fn build_router(cert_hash_js: String) -> Router {
     Router::new()
         .route("/", get(serve_index))
         .route("/health", get(health))
+        .route("/api/cert-hash", get(api_cert_hash))
         // Served dynamically: the WT cert hash changes whenever the identity
         // is regenerated, so it must never be cached as a static asset.
         .route(
@@ -177,6 +178,95 @@ fn build_router(cert_hash_js: String) -> Router {
             }),
         )
         .fallback(serve_web_file)
+}
+
+/// Proxy a remote gateway's `cert-hash.js` (embedding.md "Delivering the
+/// cert hash cross-origin", pattern copied from SlopShady's
+/// /api/stream/cert-hash). The caller passes the gateway's WEB URL — the
+/// page the user browses to; cert-hash.js is served same-origin there. One
+/// fetch yields both CERT_HASH (hex for self-signed pinning, null for
+/// PKI/mkcert) and WT_PORT, which is everything the browser needs to build
+/// the WT URL and pin the cert.
+///
+/// `danger_accept_invalid_certs(true)` is acceptable here because the real
+/// trust anchor is the WebTransport `serverCertificateHashes` pinning done
+/// client-side from the hash this proxy returns — TLS is just a transport
+/// for the hash bytes, not the trust root.
+#[derive(serde::Deserialize)]
+struct CertHashParams {
+    url: String,
+}
+
+async fn api_cert_hash(axum::extract::Query(params): axum::extract::Query<CertHashParams>) -> Response {
+    let parsed = match url::Url::parse(&params.url) {
+        Ok(u) => u,
+        Err(_) => return cert_hash_json(None, None, Some("invalid gateway url")),
+    };
+    let host = parsed.host_str().unwrap_or("127.0.0.1");
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    let cert_url = format!("https://{host}:{port}/cert-hash.js");
+    let client = match reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(std::time::Duration::from_secs(4))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return cert_hash_json(None, None, Some(&format!("client build: {e}"))),
+    };
+    match client.get(&cert_url).send().await {
+        Ok(r) if r.status().is_success() => {
+            let text = r.text().await.unwrap_or_default();
+            cert_hash_json(extract_cert_hash(&text), extract_wt_port(&text), None)
+        }
+        Ok(r) => cert_hash_json(
+            None,
+            None,
+            Some(&format!("upstream status {} for {}", r.status(), cert_url)),
+        ),
+        Err(e) => cert_hash_json(
+            None,
+            None,
+            Some(&format!("fetch failed for {cert_url}: {e}")),
+        ),
+    }
+}
+
+fn cert_hash_json(hash: Option<String>, wt_port: Option<u16>, error: Option<&str>) -> Response {
+    let body = serde_json::json!({
+        "hash": hash,
+        "wtPort": wt_port,
+        "error": error,
+    });
+    (
+        [(header::CONTENT_TYPE, "application/json"),
+         (header::CACHE_CONTROL, "no-store")],
+        body.to_string(),
+    )
+        .into_response()
+}
+
+/// Parse `CERT_HASH = "…" | null` from the cert-hash.js body. Returns the hex
+/// hash string, or None for null/missing.
+fn extract_cert_hash(text: &str) -> Option<String> {
+    let idx = text.find("CERT_HASH")?;
+    let after = text[idx + "CERT_HASH".len()..].trim_start();
+    let after = after.strip_prefix('=')?.trim_start();
+    if let Some(rest) = after.strip_prefix('"') {
+        let end = rest.find('"')?;
+        Some(rest[..end].to_string())
+    } else {
+        None
+    }
+}
+
+/// Parse `WT_PORT = <number>;` from the cert-hash.js body. None when absent
+/// (older gateways that don't advertise it — caller falls back to 4433).
+fn extract_wt_port(text: &str) -> Option<u16> {
+    let idx = text.find("WT_PORT")?;
+    let after = text[idx + "WT_PORT".len()..].trim_start();
+    let after = after.strip_prefix('=')?.trim_start();
+    let end = after.find(|c: char| !c.is_ascii_digit())?;
+    after[..end].parse().ok()
 }
 
 /// cert-hash.js body, mirroring the websrt-gateway format: the DER SHA-256 hex

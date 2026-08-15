@@ -402,8 +402,7 @@ body {
 }
 .websrt-input:focus { border-color: #2a4a6a; }
 .websrt-input:disabled { opacity: 0.5; }
-.websrt-input-port { width: 44px; }
-.websrt-input-hash { width: 220px; }
+.websrt-input-url { flex: 1; min-width: 240px; }
 .websrt-controls .btn { padding: 4px 14px; font-size: 0.7em; }
 .websrt-status-detail {
     font-family: 'SF Mono', monospace; font-size: 0.6em; color: #666;

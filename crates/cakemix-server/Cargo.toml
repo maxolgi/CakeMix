@@ -38,3 +38,10 @@ open = "5"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+# Server-side fetch of remote gateways' cert-hash.js (embedding.md
+# "Delivering the cert hash cross-origin": the browser cannot fetch another
+# origin's cert-hash.js — CORS — so this server proxies it).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+url = "2"

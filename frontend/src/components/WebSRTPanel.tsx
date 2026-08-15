@@ -98,49 +98,15 @@ export function WebSRTPanel(props: { expanded: boolean }) {
           </div>
 
           <div class="websrt-target-row">
-            <label class="detail-select-label">HOST
+            <label class="detail-select-label">URL
               <input
-                class="websrt-input"
+                class="websrt-input websrt-input-url"
                 type="text"
-                value={websrtTarget.host()}
-                onInput={(e) => websrtTarget.setHost(e.currentTarget.value)}
+                value={websrtTarget.url()}
+                onInput={(e) => websrtTarget.setUrl(e.currentTarget.value)}
                 disabled={active()}
-                placeholder="this page"
-                title="Gateway hostname. Empty = the gateway serving this page. Set for a remote WebSRT gateway (e.g. 192.168.1.214)."
-              />
-            </label>
-            <label class="detail-select-label">PORT
-              <input
-                class="websrt-input websrt-input-port"
-                type="text"
-                inputmode="numeric"
-                value={websrtTarget.port()}
-                onInput={(e) => websrtTarget.setPort(e.currentTarget.value)}
-                disabled={active()}
-                placeholder="auto"
-                title="Gateway WebTransport port. Empty = auto (cert-hash.js WT_PORT, else 4433)."
-              />
-            </label>
-            <label class="detail-select-label">STREAM
-              <input
-                class="websrt-input"
-                type="text"
-                value={websrtTarget.stream()}
-                onInput={(e) => websrtTarget.setStream(e.currentTarget.value)}
-                disabled={active()}
-                placeholder="default"
-                title="Stream name to subscribe to on the gateway."
-              />
-            </label>
-            <label class="detail-select-label">CERT HASH
-              <input
-                class="websrt-input websrt-input-hash"
-                type="text"
-                value={websrtTarget.certHash()}
-                onInput={(e) => websrtTarget.setCertHash(e.currentTarget.value)}
-                disabled={active()}
-                placeholder="auto"
-                title="Gateway cert SHA-256 (64 hex). Empty = auto from this page's /cert-hash.js. Required for a remote self-signed gateway — copy it from that gateway's web viewer /cert-hash.js. Special value null = system PKI (mkcert)."
+                placeholder="this page — or https://192.168.1.214:5173/?stream=audio"
+                title="Web-viewer URL of a WebSRT gateway. Host, stream name and token are parsed from it; cert hash + WT port are fetched from its /cert-hash.js. Empty = the gateway serving this page, stream default."
               />
             </label>
           </div>
