@@ -16,7 +16,24 @@ tokio = { version = "1", features = ["full"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 rust-embed = "8"
 mime_guess = "2"
-rcgen = "0.13"
+# Web/HTTPS cert generation (13-month self-signed PEM). The WebTransport
+# identity comes from websrt::cert (wtransport, ≤14-day validity).
+rcgen = "0.14"
+# Parse the persisted web cert's expiry + SANs for the reuse check.
+x509-parser = "0.18"
+time = "0.3"
+# Validate the persisted key PEM before handing it to rustls.
+rustls-pki-types = "1"
+# WebSRT gateway library (crate inside the vendor/WebSRT submodule — its own
+# cargo workspace, referenced by path; NOT a member of this workspace).
+websrt = { path = "../../vendor/WebSRT/crates/websrt" }
+# quinn/wtransport (via websrt) use the ring rustls provider while axum-server's
+# rustls default is aws-lc-rs; with both compiled in, rustls cannot pick a
+# process default by itself — install ring explicitly at startup (same as the
+# websrt-gateway reference binary).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+hex = "0.4"
+anyhow = "1"
 open = "5"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"

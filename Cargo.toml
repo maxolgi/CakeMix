@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/mixer-wasm", "crates/cakemix-server"]
+# vendor/WebSRT is its own cargo workspace (git submodule); excluding it lets
+# its crates inherit from THEIR workspace root when pulled in as path deps.
+exclude = ["vendor/WebSRT"]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,3 +28,8 @@ oxifft = { path = "vendor/oxifft/oxifft" }
 oximedia-mixer = { git = "https://github.com/maxolgi/oximedia", branch = "master" }
 oximedia-core = { git = "https://github.com/maxolgi/oximedia", branch = "master" }
 oximedia-audio = { git = "https://github.com/maxolgi/oximedia", branch = "master" }
+# Patch: WebSRT's forked transports (copied from vendor/WebSRT/Cargo.toml —
+# patches do not cross workspaces). Required by the websrt library crate.
+srt-protocol = { git = "https://github.com/maxolgi/srt-rs.git", branch = "main" }
+srt-tokio = { git = "https://github.com/maxolgi/srt-rs.git", branch = "main" }
+mpeg2ts = { git = "https://github.com/maxolgi/mpeg2ts.git", branch = "master" }
