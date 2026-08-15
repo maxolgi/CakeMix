@@ -21,12 +21,11 @@
 //   { type: "map-pid",   pid, chStart, channelCount }  → mixer.map_pid
 //   { type: "pcm",       pid, samples }                → mixer.feed_pcm
 //   { type: "unmap-pid", pid }                         → mixer.unmap_pid
-// The worklet only feeds PCM in "live" mode, so the store switches it away
-// from "demo" (test tones) once the transport is ready.
 
 import { createSignal } from "solid-js";
 import { createWebsrtWorker, type WorkerCmd, type WorkerMsg } from "./client";
 import { wasmReady, sendToWorklet } from "../stores/mixer";
+import { userGestureUnlock } from "../audio/unlock";
 
 export type WebsrtStatus = "disconnected" | "connecting" | "connected" | "error";
 
@@ -75,6 +74,7 @@ let nextChStart = 0;
  *  fail. The special value ?certHash=null disables pinning (mkcert/PKI). */
 export async function connectWebsrt(): Promise<void> {
   if (worker) return;
+  userGestureUnlock(); // synchronous: keep the click's autoplay gesture
   setStatus("connecting");
   const certHashParam = new URLSearchParams(location.search).get("certHash");
   setStatusDetail("resolving cert-hash.js…");
@@ -164,8 +164,6 @@ function onWorkerMsg(msg: WorkerMsg): void {
     case "wtReady":
       setStatus("connected");
       setStatusDetail("WebTransport ready — awaiting stream");
-      // The worklet only feeds PCM in "live" mode; "demo" plays test tones.
-      sendToWorklet({ type: "set-mode", mode: "live" });
       break;
     case "wtClosed":
       // Stream is definitively over — full reset so a reconnect re-maps PIDs

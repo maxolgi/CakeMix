@@ -167,7 +167,10 @@ fn build_router(cert_hash_js: String) -> Router {
                 let js = cert_hash_js.clone();
                 async move {
                     (
-                        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                        [
+                            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+                            (header::CACHE_CONTROL, "no-store"),
+                        ],
                         js,
                     )
                 }

@@ -17,6 +17,7 @@
 import { createSignal } from "solid-js";
 import { sendToWorklet } from "../stores/mixer";
 import { websrtLatencyMs } from "./store";
+import { userGestureUnlock } from "../audio/unlock";
 import type { PubCmd, PubMsg, PubStats } from "./publish-worker";
 
 export type PublishStatus = "disconnected" | "connecting" | "connected" | "error";
@@ -65,6 +66,7 @@ let worker: Worker | null = null;
  *  (WebSRTPanel). */
 export async function connectPublish(): Promise<void> {
   if (worker) return;
+  userGestureUnlock(); // synchronous: keep the click's autoplay gesture
   setStatus("connecting");
   const certHashParam = new URLSearchParams(location.search).get("certHash");
   setStatusDetail("resolving cert-hash.js…");

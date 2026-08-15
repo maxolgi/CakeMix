@@ -20,6 +20,7 @@ import {
   connectPublish,
   disconnectPublish,
 } from "../websrt/publish";
+import { wasmReady, isRunning, setIsRunning, sendToWorklet } from "../stores/mixer";
 
 const LATENCY_OPTIONS = [120, 250, 500, 1000, 2000];
 const CHANNEL_OPTIONS: { value: PublishChannels; label: string }[] = [
@@ -33,8 +34,10 @@ const CHANNEL_OPTIONS: { value: PublishChannels; label: string }[] = [
 const mixerChRange = (chStart: number, channelCount: number) =>
   channelCount > 1 ? `${chStart + 1}–${chStart + channelCount}` : `${chStart + 1}`;
 
-export function WebSRTPanel() {
-  const [expanded, setExpanded] = createSignal(false);
+/** Settings drawer — engine controls, test tones, WebSRT receive + publish.
+ *  Toggled from the top bar (App owns `expanded`). */
+export function WebSRTPanel(props: { expanded: boolean }) {
+  const [tonesOn, setTonesOn] = createSignal(false);
 
   const active = () => {
     const s = websrtStatus();
@@ -46,23 +49,72 @@ export function WebSRTPanel() {
     return s === "connected" || s === "connecting";
   };
 
-  return (
-    <div class="websrt-panel">
-      <div class="websrt-header">
-        <span class="websrt-label">WEBSRT</span>
-        <span
-          class={`websrt-pill ${websrtStatus()}`}
-          title={`WebSRT connection status: ${websrtStatus()}`}
-        >{websrtStatus()}</span>
-        <button
-          class="websrt-chevron"
-          onClick={() => setExpanded(!expanded())}
-          title={expanded() ? "Collapse WebSRT panel" : "Expand WebSRT panel"}
-        >{expanded() ? "▾" : "▸"}</button>
-      </div>
+  const startEngine = () => {
+    if (!isRunning()) {
+      sendToWorklet({ type: "start" });
+      setIsRunning(true);
+    }
+  };
+  const stopEngine = () => {
+    sendToWorklet({ type: "stop" });
+    setIsRunning(false);
+  };
 
-      {expanded() && (
-        <div class="websrt-body">
+  const toggleTones = () => {
+    const on = !tonesOn();
+    setTonesOn(on);
+    if (on) startEngine(); // tones are inaudible with the engine stopped
+    sendToWorklet({ type: "tones", on });
+  };
+
+  return (
+    <Show when={props.expanded}>
+      <div class="settings-body">
+        <div class="websrt-subsection">
+          <div class="websrt-subsection-head">
+            <span class="websrt-label">ENGINE</span>
+            <span class={`websrt-pill ${isRunning() ? "connected" : "disconnected"}`}>
+              {isRunning() ? "running" : "stopped"}
+            </span>
+          </div>
+          <div class="websrt-controls">
+            <button
+              class="btn btn-start"
+              disabled={!wasmReady() || isRunning()}
+              onClick={startEngine}
+              title="Run the mixer engine (starts automatically when WebSRT connects)"
+            >START</button>
+            <button
+              class="btn btn-stop"
+              disabled={!isRunning()}
+              onClick={stopEngine}
+              title="Freeze the mixer engine (meters fall to zero; publish keeps streaming silence)"
+            >STOP</button>
+          </div>
+        </div>
+
+        <div class="websrt-subsection">
+          <div class="websrt-subsection-head">
+            <span class="websrt-label">TEST TONES</span>
+          </div>
+          <div class="websrt-controls">
+            <button
+              class={`btn ${tonesOn() ? "btn-stop" : "btn-start"}`}
+              onClick={toggleTones}
+              title="Sine tones (A major chord) into mixer inputs 1–4. Enabling also starts the engine."
+            >{tonesOn() ? "TONES ON" : "TONES OFF"}</button>
+          </div>
+        </div>
+
+        <div class="websrt-subsection">
+          <div class="websrt-subsection-head">
+            <span class="websrt-label">RECEIVE</span>
+            <span
+              class={`websrt-pill ${websrtStatus()}`}
+              title={`WebSRT connection status: ${websrtStatus()}`}
+            >{websrtStatus()}</span>
+          </div>
+
           <div class="websrt-controls">
             <button
               class={`btn ${active() ? "btn-stop" : "btn-start"}`}
@@ -123,60 +175,60 @@ export function WebSRTPanel() {
               </table>
             </div>
           </Show>
+        </div>
 
-          <div class="websrt-subsection">
-            <div class="websrt-subsection-head">
-              <span class="websrt-label">PUBLISH</span>
-              <span
-                class={`websrt-pill ${publishStatus()}`}
-                title={`WebSRT publish status: ${publishStatus()}`}
-              >{publishStatus()}</span>
-            </div>
+        <div class="websrt-subsection">
+          <div class="websrt-subsection-head">
+            <span class="websrt-label">PUBLISH</span>
+            <span
+              class={`websrt-pill ${publishStatus()}`}
+              title={`WebSRT publish status: ${publishStatus()}`}
+            >{publishStatus()}</span>
+          </div>
 
-            <div class="websrt-controls">
-              <button
-                class={`btn ${pubActive() ? "btn-stop" : "btn-start"}`}
-                disabled={publishStatus() === "connecting"}
-                onClick={() => (pubActive() ? disconnectPublish() : connectPublish())}
-                title={pubActive()
-                  ? "Stop publishing: closes the master-output tap and the publish worker's SRT/WebTransport session"
-                  : `Publish the mixer output as SMPTE 302M PCM (48 kHz, no codecs) to the gateway, stream "${publishStreamName()}"`}
-              >{pubActive() ? "DISCONNECT" : "CONNECT"}</button>
-              <label class="detail-select-label">CHANNELS
-                <select
-                  class="detail-select"
-                  value={String(publishChannels())}
-                  onInput={(e) => setPublishChannels(parseInt(e.currentTarget.value, 10) as PublishChannels)}
-                  disabled={pubActive()}
-                  title="Output channel count — packed as ceil(N/2) stereo s302m PIDs (PID i = channels 2i/2i+1), discovered by receivers via the PMT. 2 = the master stereo mix. 16–128 = channel direct outs: mono per channel, tapped after input gain, gate, compressor, EQ and fader (pre-pan); muted channels publish silence. Changeable only while disconnected: the PID set is fixed at connect."
-                >
-                  <For each={CHANNEL_OPTIONS}>
-                    {(o) => <option value={String(o.value)}>{o.label}</option>}
-                  </For>
-                </select>
-              </label>
-            </div>
+          <div class="websrt-controls">
+            <button
+              class={`btn ${pubActive() ? "btn-stop" : "btn-start"}`}
+              disabled={publishStatus() === "connecting"}
+              onClick={() => (pubActive() ? disconnectPublish() : connectPublish())}
+              title={pubActive()
+                ? "Stop publishing: closes the master-output tap and the publish worker's SRT/WebTransport session"
+                : `Publish the mixer output as SMPTE 302M PCM (48 kHz, no codecs) to the gateway, stream "${publishStreamName()}"`}
+            >{pubActive() ? "DISCONNECT" : "CONNECT"}</button>
+            <label class="detail-select-label">CHANNELS
+              <select
+                class="detail-select"
+                value={String(publishChannels())}
+                onInput={(e) => setPublishChannels(parseInt(e.currentTarget.value, 10) as PublishChannels)}
+                disabled={pubActive()}
+                title="Output channel count — packed as ceil(N/2) stereo s302m PIDs (PID i = channels 2i/2i+1), discovered by receivers via the PMT. 2 = the master stereo mix. 16–128 = channel direct outs: mono per channel, tapped after input gain, gate, compressor, EQ and fader (pre-pan); muted channels publish silence. Changeable only while disconnected: the PID set is fixed at connect."
+              >
+                <For each={CHANNEL_OPTIONS}>
+                  {(o) => <option value={String(o.value)}>{o.label}</option>}
+                </For>
+              </select>
+            </label>
+          </div>
 
-            <div
-              class="websrt-status-detail"
-              title={`Publish stream name and gateway target — same discovery as the receive path (?pubstream / ?host / ?port)`}
-            >{publishTarget() ? `stream ${publishStreamName()} → ${publishTarget()}` : `stream ${publishStreamName()} → not connected`}</div>
+          <div
+            class="websrt-status-detail"
+            title={`Publish stream name and gateway target — same discovery as the receive path (?pubstream / ?host / ?port)`}
+          >{publishTarget() ? `stream ${publishStreamName()} → ${publishTarget()}` : `stream ${publishStreamName()} → not connected`}</div>
 
-            <Show when={publishStats()}>
-              {(s) => (
-                <div
-                  class="websrt-status-detail"
-                  title="Publish link stats (last second): TS payload bitrate · SRT round-trip time · cumulative tx-lost packets"
-                >{`${s().kbps} kb/s · rtt ${s().rttMs.toFixed(0)} ms · tx loss ${s().txLoss}`}</div>
-              )}
-            </Show>
+          <Show when={publishStats()}>
+            {(s) => (
+              <div
+                class="websrt-status-detail"
+                title="Publish link stats (last second): TS payload bitrate · SRT round-trip time · cumulative tx-lost packets"
+              >{`${s().kbps} kb/s · rtt ${s().rttMs.toFixed(0)} ms · tx loss ${s().txLoss}`}</div>
+            )}
+          </Show>
 
-            <div class="websrt-status-detail" title={publishStatusDetail()}>
-              {publishStatusDetail()}
-            </div>
+          <div class="websrt-status-detail" title={publishStatusDetail()}>
+            {publishStatusDetail()}
           </div>
         </div>
-      )}
-    </div>
+      </div>
+    </Show>
   );
 }

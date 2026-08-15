@@ -4,25 +4,21 @@ export function BusManager(props: {
   running: boolean;
   wasmReady: boolean;
   status: string;
-  onStart: () => void;
-  onStop: () => void;
+  websrtStatus: string;
+  expanded: boolean;
+  onToggleExpanded: () => void;
   mode: "inputs" | "bus";
   onMode: (m: "inputs" | "bus") => void;
   index: number;
   onIndex: (i: number) => void;
 }) {
+  // Only transient/error states show in the top bar; "Ready" would be noise.
+  const showStatus = () =>
+    props.status === "Loading…" ||
+    /^(Error|Init failed|WASM load failed)/.test(props.status);
+
   return (
     <div class="bus-manager" title="Buses">
-      <button
-        class="btn btn-start"
-        disabled={!props.wasmReady || props.running}
-        onClick={props.onStart}
-      >Start</button>
-      <button
-        class="btn btn-stop"
-        disabled={!props.running}
-        onClick={props.onStop}
-      >Stop</button>
       <div class="view-selector">
         <button
           class={`mode-toggle ${props.mode === "bus" ? "bus" : ""}`}
@@ -45,8 +41,18 @@ export function BusManager(props: {
       </div>
       <span
         class={`status-text ${/^(Error|Init failed|WASM load failed)/.test(props.status) ? "err" : ""}`}
+        style={showStatus() ? {} : { display: "none" }}
         title={props.status}
       >{props.status}</span>
+      <span
+        class={`websrt-pill ${props.websrtStatus}`}
+        title={`WebSRT connection status: ${props.websrtStatus}`}
+      >{props.websrtStatus}</span>
+      <button
+        class="websrt-chevron"
+        onClick={() => props.onToggleExpanded()}
+        title={props.expanded ? "Collapse settings" : "Expand settings (engine, test tones, WebSRT)"}
+      >{props.expanded ? "▾" : "▸"}</button>
     </div>
   );
 }

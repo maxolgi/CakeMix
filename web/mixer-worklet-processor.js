@@ -929,7 +929,7 @@ if (typeof globalThis.crypto === 'undefined') {
 // AudioWorklet processor for CakeMix mixer
 var BLOCK_SIZE = 128;
 var SAMPLE_RATE = 48000;
-var FREQS = [220.0, 277.18, 329.63, 440.0]; // A major chord for demo
+var TONE_FREQS = [220.0, 277.18, 329.63, 440.0]; // A major chord for testing
 var PUB_BATCH_FRAMES = 1024; // publish tap batch size: 8 blocks of 128 frames
 
 // Publish-tap batching helpers — pure (no `this`) so the math is inspectable.
@@ -971,12 +971,11 @@ function pubBatchPtsUs(framesBeforeBatch) {
 class MixerProcessor extends AudioWorkletProcessor {
     constructor(options) {
         super();
-        this._phase = new Float32Array(FREQS.length);
+        this._tones = new Float32Array(TONE_FREQS.length);
+        this._tonesOn = false;
         this._running = false;
         this._mixer = null;
-        this._chBuf = new Float32Array(BLOCK_SIZE);
-        this._mode = "demo"; // "demo" or "live"
-        this._pendingPcm = []; // queued PCM packets for live mode
+        this._toneBuf = new Float32Array(BLOCK_SIZE);
         this._meterInterval = 0;
         // Publish tap state (output PCM relay; see _pubTap).
         this._pubActive = false;
@@ -1005,8 +1004,9 @@ class MixerProcessor extends AudioWorkletProcessor {
                 this._running = true;
             } else if (msg.type === "stop") {
                 this._running = false;
-            } else if (msg.type === "set-mode") {
-                this._mode = msg.mode; // "demo" or "live"
+            } else if (msg.type === "tones") {
+                // Test tones feed mixer inputs 0..3 whenever the engine runs.
+                this._tonesOn = !!msg.on;
             } else if (msg.type === "set-gain") {
                 if (this._mixer) try { this._mixer.set_channel_gain(msg.ch, msg.gain); } catch(e) {}
             } else if (msg.type === "set-pan") {
@@ -1078,7 +1078,7 @@ class MixerProcessor extends AudioWorkletProcessor {
             } else if (msg.type === "pcm") {
                 // External PCM from WebSRT worker (relayed via main thread).
                 // msg.samples is a Float32Array, msg.pid identifies the stream.
-                if (this._mixer && this._mode === "live") {
+                if (this._mixer) {
                     try { this._mixer.feed_pcm(msg.pid, msg.samples); } catch(e) {}
                 }
             } else if (msg.type === "pub-start") {
@@ -1138,19 +1138,18 @@ class MixerProcessor extends AudioWorkletProcessor {
             return true;
         }
 
-        if (this._mode === "demo") {
-            // Generate test tones, feed to mixer
-            for (var ch = 0; ch < FREQS.length; ch++) {
-                var freq = FREQS[ch];
+        if (this._tonesOn) {
+            // Test tones: sine generators fed to mixer inputs 0..3.
+            for (var ch = 0; ch < TONE_FREQS.length; ch++) {
+                var freq = TONE_FREQS[ch];
                 for (var i = 0; i < n; i++) {
-                    this._chBuf[i] = 0.2 * Math.sin(2 * Math.PI * freq * this._phase[ch] / SAMPLE_RATE);
-                    this._phase[ch] += 1;
+                    this._toneBuf[i] = 0.2 * Math.sin(2 * Math.PI * freq * this._tones[ch] / SAMPLE_RATE);
+                    this._tones[ch] += 1;
                 }
-                try { this._mixer.set_channel_input(ch, this._chBuf); } catch(e) {}
+                try { this._mixer.set_channel_input(ch, this._toneBuf); } catch(e) {}
             }
         }
-        // In "live" mode, PCM is already fed via feed_pcm messages —
-        // just call process().
+        // Live PCM arrives via feed_pcm messages — just call process().
 
         var output;
         try { output = this._mixer.process(BLOCK_SIZE); }

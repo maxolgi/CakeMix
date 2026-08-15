@@ -1,7 +1,9 @@
-import { onMount, onCleanup, createSignal, For } from "solid-js";
+import { onMount, onCleanup, createSignal, createEffect, For } from "solid-js";
 import * as websrt from "./websrt/client";
 import * as websrtStore from "./websrt/store";
-import { relayPubPcm } from "./websrt/publish";
+import { websrtStatus } from "./websrt/store";
+import { publishStatus, relayPubPcm } from "./websrt/publish";
+import { registerAudioUnlock } from "./audio/unlock";
 import { ChannelDetailPanel } from "./components/ChannelDetailPanel";
 import { MasterStrip } from "./components/MasterStrip";
 import { BusMasterStrip } from "./components/BusMasterStrip";
@@ -21,15 +23,20 @@ export default function App() {
   let audioCtx: AudioContext | null = null;
   const [mode, setMode] = createSignal<"inputs" | "bus">("inputs");
   const [bank, setBank] = createSignal(0);
+  const [settingsExpanded, setSettingsExpanded] = createSignal(false);
 
   onMount(async () => {
     // Build plumbing: expose the WebSRT client (receive worker + muxer init)
     // and the WebSRT store (connect/disconnect + status signals) on window
     // so the bundler keeps the worker chunk, wasm binaries and store in the
     // bundle. Also reachable from the console for manual testing; connection
-    // itself is user-triggered (WebSRTPanel).
+    // itself is user-triggered (settings drawer).
     (window as any).__cakemix_websrt = websrt;
     (window as any).__cakemix_websrt_store = websrtStore;
+
+    // Autoplay unlock: connect click handlers call this synchronously so
+    // resume() traces to the user gesture even across the async handshake.
+    registerAudioUnlock(() => { audioCtx?.resume(); });
 
     try {
       audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
@@ -50,9 +57,20 @@ export default function App() {
         else if (msg.type === "wasm-ready") { setWasmReady(true); setStatus("Ready"); }
         else if (msg.type === "error") { setStatus("Error: " + msg.msg); console.error("worklet:", msg.msg); }
         else if (msg.type === "meter") { updateMeterData(msg); }
-        else if (msg.type === "pub-pcm") { relayPubPcm(msg.samples, msg.ptsUs); }
+        else if (msg.type === "pub-pcm") { relayPubPcm(msg.samples, msg.ptsUs, msg.channels); }
       };
     } catch (e: any) { setStatus("Init failed: " + e.message); }
+  });
+
+  // Engine auto-start: any active transport (receive or publish) needs the
+  // mixer running; starting manually is still possible from the drawer.
+  createEffect(() => {
+    if (websrtStatus() === "connected" || publishStatus() === "connected") {
+      if (wasmReady() && !isRunning()) {
+        sendToWorklet({ type: "start" });
+        setIsRunning(true);
+      }
+    }
   });
 
   onCleanup(() => { websrtStore.disconnectWebsrt(); audioCtx?.close(); });
@@ -64,13 +82,6 @@ export default function App() {
       sendToWorklet({ type: "init-wasm", wasmBytes });
     } catch (e) { setStatus("WASM load failed"); }
   }
-
-  const start = async () => {
-    if (audioCtx?.state === "suspended") await audioCtx.resume();
-    sendToWorklet({ type: "start" });
-    setIsRunning(true);
-  };
-  const stop = () => { sendToWorklet({ type: "stop" }); setIsRunning(false); };
 
   const onSelectIndex = (i: number) => {
     if (mode() === "inputs") { setBank(i); }
@@ -89,14 +100,15 @@ export default function App() {
         running={isRunning()}
         wasmReady={wasmReady()}
         status={status()}
-        onStart={start}
-        onStop={stop}
+        websrtStatus={websrtStatus()}
+        expanded={settingsExpanded()}
+        onToggleExpanded={() => setSettingsExpanded(!settingsExpanded())}
         mode={mode()}
         onMode={onMode}
         index={mode() === "bus" ? (selectedBus() ?? 0) : bank()}
         onIndex={onSelectIndex}
       />
-      <WebSRTPanel />
+      <WebSRTPanel expanded={settingsExpanded()} />
       <div class="mixer-console">
         {selectedBus() === null ? (
           <For each={Array.from({ length: STRIPS_PER_BANK }, (_, i) => bank() * STRIPS_PER_BANK + i)}>
