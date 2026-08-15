@@ -100,7 +100,7 @@ export const [limiterRelease, setLimiterReleaseState] = createSignal(50);
 
 let mixerNode: AudioWorkletNode | null = null;
 export function setMixerNode(node: AudioWorkletNode) { mixerNode = node; }
-export function sendToWorklet(msg: any) { if (mixerNode) mixerNode.port.postMessage(msg); }
+export function sendToWorklet(msg: any, transfer: Transferable[] = []) { if (mixerNode) mixerNode.port.postMessage(msg, transfer); }
 
 export function faderToGain(pos: number): number {
   const db = -60 + pos * 66;

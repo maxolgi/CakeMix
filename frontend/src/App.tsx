@@ -1,5 +1,6 @@
 import { onMount, onCleanup, createSignal, For } from "solid-js";
 import * as websrt from "./websrt/client";
+import * as websrtStore from "./websrt/store";
 import { ChannelDetailPanel } from "./components/ChannelDetailPanel";
 import { MasterStrip } from "./components/MasterStrip";
 import { BusMasterStrip } from "./components/BusMasterStrip";
@@ -21,10 +22,12 @@ export default function App() {
 
   onMount(async () => {
     // Build plumbing: expose the WebSRT client (receive worker + muxer init)
-    // on window so the bundler keeps the worker chunk and wasm binaries in
-    // the bundle. Also reachable from the console for manual testing; real
-    // wiring lands with PCM ingestion.
+    // and the WebSRT store (connect/disconnect + status signals) on window
+    // so the bundler keeps the worker chunk, wasm binaries and store in the
+    // bundle. Also reachable from the console for manual testing; connection
+    // itself is user-triggered (WebSRTPanel).
     (window as any).__cakemix_websrt = websrt;
+    (window as any).__cakemix_websrt_store = websrtStore;
 
     try {
       audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
@@ -49,7 +52,7 @@ export default function App() {
     } catch (e: any) { setStatus("Init failed: " + e.message); }
   });
 
-  onCleanup(() => { audioCtx?.close(); });
+  onCleanup(() => { websrtStore.disconnectWebsrt(); audioCtx?.close(); });
 
   async function loadWasm() {
     try {
