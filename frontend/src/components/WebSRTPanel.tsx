@@ -99,7 +99,7 @@ export function WebSRTPanel(props: { expanded: boolean }) {
               </select>
             </label>
             <button
-              class={`btn ${isRunning() ? "btn-stop" : "btn-start"}`}
+              class={`btn btn-engine ${isRunning() ? "btn-stop" : "btn-start"}`}
               disabled={!wasmReady()}
               onClick={toggleEngine}
               title="Run / freeze the mixer engine. Starts automatically when WebSRT connects."
@@ -115,27 +115,24 @@ export function WebSRTPanel(props: { expanded: boolean }) {
             >{websrtStatus() === "disconnected" ? "" : websrtStatus()}</span>
           </div>
 
-          <div class="websrt-target-row">
-            <label class="detail-select-label">URL
-              <input
-                class="websrt-input websrt-input-url"
-                type="text"
-                value={websrtTarget.url()}
-                onInput={(e) => websrtTarget.setUrl(e.currentTarget.value)}
-                disabled={active()}
-                placeholder="this page — or https://192.168.1.214:5173/?stream=audio"
-                title="Web-viewer URL of a WebSRT gateway. Host, stream name and token are parsed from it; cert hash + WT port are fetched from its /cert-hash.js. Empty = the gateway serving this page, stream default."
-              />
-            </label>
-          </div>
+          <input
+            class="websrt-input websrt-input-url"
+            type="text"
+            value={websrtTarget.url()}
+            onInput={(e) => websrtTarget.setUrl(e.currentTarget.value)}
+            disabled={active()}
+            placeholder="this page — or https://192.168.1.214:5173/?stream=audio"
+            title="Web-viewer URL of a WebSRT gateway. Host, stream name and token are parsed from it; cert hash + WT port are fetched from its /cert-hash.js. Empty = the gateway serving this page, stream default."
+          />
 
-          <div class="websrt-status-detail" title={websrtStatusDetail()}>
-            {websrtStatusDetail()}
-          </div>
+          <Show when={websrtStatusDetail()}>
+            <div class="websrt-status-detail" title={websrtStatusDetail()}>
+              {websrtStatusDetail()}
+            </div>
+          </Show>
 
           <Show
-            when={websrtPids().length > 0}
-            fallback={<div class="websrt-pid-empty">No audio PIDs yet — waiting for PCM</div>}
+            when={active() && websrtPids().length > 0}
           >
             <div class="websrt-pid-scroll">
               <table class="websrt-pid-table">
@@ -210,9 +207,11 @@ export function WebSRTPanel(props: { expanded: boolean }) {
             )}
           </Show>
 
-          <div class="websrt-status-detail" title={publishStatusDetail()}>
-            {publishStatusDetail()}
-          </div>
+          <Show when={publishStatusDetail()}>
+            <div class="websrt-status-detail" title={publishStatusDetail()}>
+              {publishStatusDetail()}
+            </div>
+          </Show>
         </div>
       </div>
     </Show>

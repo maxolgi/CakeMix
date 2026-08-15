@@ -408,7 +408,6 @@ body {
     font-family: 'SF Mono', monospace; font-size: 0.6em; color: #666;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.websrt-pid-empty { font-size: 0.65em; color: #444; padding: 2px 0; }
 .websrt-pid-scroll { max-height: 140px; overflow-y: auto; border: 1px solid #1a1a25; border-radius: 3px; }
 .websrt-pid-table { width: 100%; border-collapse: collapse; font-size: 0.65em; }
 .websrt-pid-table th {
@@ -429,5 +428,6 @@ body {
 }
 .websrt-subsection-head { display: flex; align-items: center; gap: 8px; }
 .websrt-section-controls { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; }
-.websrt-section-controls .websrt-pill { margin-left: auto; }
+.websrt-section-controls .websrt-input-url { flex: 1; min-width: 120px; }
+.websrt-section-controls .btn.btn-engine { margin-left: auto; }
 .websrt-section-controls .detail-select-label { white-space: nowrap; }
