@@ -8,6 +8,15 @@ import {
   connectWebsrt,
   disconnectWebsrt,
 } from "../websrt/store";
+import {
+  publishStatus,
+  publishStatusDetail,
+  publishStats,
+  publishStreamName,
+  publishTarget,
+  connectPublish,
+  disconnectPublish,
+} from "../websrt/publish";
 
 const LATENCY_OPTIONS = [120, 250, 500, 1000, 2000];
 
@@ -19,6 +28,11 @@ export function WebSRTPanel() {
 
   const active = () => {
     const s = websrtStatus();
+    return s === "connected" || s === "connecting";
+  };
+
+  const pubActive = () => {
+    const s = publishStatus();
     return s === "connected" || s === "connecting";
   };
 
@@ -99,6 +113,45 @@ export function WebSRTPanel() {
               </table>
             </div>
           </Show>
+
+          <div class="websrt-subsection">
+            <div class="websrt-subsection-head">
+              <span class="websrt-label">PUBLISH</span>
+              <span
+                class={`websrt-pill ${publishStatus()}`}
+                title={`WebSRT publish status: ${publishStatus()}`}
+              >{publishStatus()}</span>
+            </div>
+
+            <div class="websrt-controls">
+              <button
+                class={`btn ${pubActive() ? "btn-stop" : "btn-start"}`}
+                disabled={publishStatus() === "connecting"}
+                onClick={() => (pubActive() ? disconnectPublish() : connectPublish())}
+                title={pubActive()
+                  ? "Stop publishing: closes the master-output tap and the publish worker's SRT/WebTransport session"
+                  : `Publish the master mix as stereo SMPTE 302M PCM (48 kHz, no codecs) to the gateway, stream "${publishStreamName()}"`}
+              >{pubActive() ? "DISCONNECT" : "CONNECT"}</button>
+            </div>
+
+            <div
+              class="websrt-status-detail"
+              title={`Publish stream name and gateway target — same discovery as the receive path (?pubstream / ?host / ?port)`}
+            >{publishTarget() ? `stream ${publishStreamName()} → ${publishTarget()}` : `stream ${publishStreamName()} → not connected`}</div>
+
+            <Show when={publishStats()}>
+              {(s) => (
+                <div
+                  class="websrt-status-detail"
+                  title="Publish link stats (last second): TS payload bitrate · SRT round-trip time · cumulative tx-lost packets"
+                >{`${s().kbps} kb/s · rtt ${s().rttMs.toFixed(0)} ms · tx loss ${s().txLoss}`}</div>
+              )}
+            </Show>
+
+            <div class="websrt-status-detail" title={publishStatusDetail()}>
+              {publishStatusDetail()}
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -1,6 +1,7 @@
 import { onMount, onCleanup, createSignal, For } from "solid-js";
 import * as websrt from "./websrt/client";
 import * as websrtStore from "./websrt/store";
+import { relayPubPcm } from "./websrt/publish";
 import { ChannelDetailPanel } from "./components/ChannelDetailPanel";
 import { MasterStrip } from "./components/MasterStrip";
 import { BusMasterStrip } from "./components/BusMasterStrip";
@@ -49,6 +50,7 @@ export default function App() {
         else if (msg.type === "wasm-ready") { setWasmReady(true); setStatus("Ready"); }
         else if (msg.type === "error") { setStatus("Error: " + msg.msg); console.error("worklet:", msg.msg); }
         else if (msg.type === "meter") { updateMeterData(msg); }
+        else if (msg.type === "pub-pcm") { relayPubPcm(msg.samples, msg.ptsUs); }
       };
     } catch (e: any) { setStatus("Init failed: " + e.message); }
   });
