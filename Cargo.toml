@@ -20,10 +20,7 @@ js-sys = "0.3"
 console_error_panic_hook = "0.1"
 getrandom = { version = "0.3", features = ["wasm_js"] }
 
-# Patch: make oxifft's threading (rayon) non-default so it compiles on wasm32.
-# Real-time audio is single-threaded; we never want oxifft's threading on any target.
 [patch.crates-io]
-oxifft = { path = "vendor/oxifft/oxifft" }
 # Patch: all three oximedia crates from our fork to keep versions unified.
 oximedia-mixer = { git = "https://github.com/maxolgi/oximedia", branch = "master" }
 oximedia-core = { git = "https://github.com/maxolgi/oximedia", branch = "master" }

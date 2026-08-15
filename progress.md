@@ -154,11 +154,13 @@ worklet via MessagePort, and the worklet compiles + instantiates via
 All changes are additive: existing behavior is preserved when the
 `parallel` feature is off and the target is not wasm32.
 
-## Vendored Dependencies (`vendor/oxifft/`)
+## oxifft
 
-oxifft 0.3.2 with `default = ["std"]` (no threading/rayon).
-Three crates (oxifft, oxifft-codegen, oxifft-codegen-impl) made
-standalone (no workspace inheritance).
+From crates.io: 0.4.2, `std`-only on wasm32. The oximedia fork
+(`aa9e68af`, upstream 0.2.1 base) requests it with
+`default-features = false, features = ["std"]` and gates oxifft's
+`threading` (rayon) feature to non-wasm targets. No fork, patch,
+or `vendor/` copy is needed.
 
 ---
 

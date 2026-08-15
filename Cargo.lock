@@ -635,6 +635,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
+name = "either"
+version = "1.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1381,14 +1387,16 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "oxifft"
-version = "0.3.2"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d47858f0ced62828f8e665439079356e975cc0cc40c41d2202aeebd05a4b915"
 dependencies = [
  "hashbrown",
  "libm",
  "num-complex",
  "num-traits",
  "oxifft-codegen",
- "seahash",
+ "rayon",
  "serde",
  "serde_json",
  "spin",
@@ -1396,7 +1404,9 @@ dependencies = [
 
 [[package]]
 name = "oxifft-codegen"
-version = "0.3.2"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3737a4347877da5f55154b93e892f924f90f0779b202453006e383ab444af7be"
 dependencies = [
  "oxifft-codegen-impl",
  "proc-macro2",
@@ -1406,7 +1416,9 @@ dependencies = [
 
 [[package]]
 name = "oxifft-codegen-impl"
-version = "0.3.2"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffadf182af87eba316b6761993d74072a6e54ff86efa9611fb0712ea619045cb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1415,8 +1427,8 @@ dependencies = [
 
 [[package]]
 name = "oximedia-audio"
-version = "0.2.0"
-source = "git+https://github.com/maxolgi/oximedia?branch=master#0e900b2099a21047925dbb04dcc67c418840a93b"
+version = "0.2.1"
+source = "git+https://github.com/maxolgi/oximedia?branch=master#aa9e68af6bb7b3bf6fab64fb4ce5a4861f6b5eff"
 dependencies = [
  "bytes",
  "oxifft",
@@ -1426,8 +1438,8 @@ dependencies = [
 
 [[package]]
 name = "oximedia-core"
-version = "0.2.0"
-source = "git+https://github.com/maxolgi/oximedia?branch=master#0e900b2099a21047925dbb04dcc67c418840a93b"
+version = "0.2.1"
+source = "git+https://github.com/maxolgi/oximedia?branch=master#aa9e68af6bb7b3bf6fab64fb4ce5a4861f6b5eff"
 dependencies = [
  "bitflags",
  "console_error_panic_hook",
@@ -1439,8 +1451,8 @@ dependencies = [
 
 [[package]]
 name = "oximedia-mixer"
-version = "0.2.0"
-source = "git+https://github.com/maxolgi/oximedia?branch=master#0e900b2099a21047925dbb04dcc67c418840a93b"
+version = "0.2.1"
+source = "git+https://github.com/maxolgi/oximedia?branch=master#aa9e68af6bb7b3bf6fab64fb4ce5a4861f6b5eff"
 dependencies = [
  "bytes",
  "oximedia-audio",
@@ -1672,6 +1684,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "rayon"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb39b166781f92d482534ef4b4b1b2568f42613b53e5b6c160e24cfbfa30926d"
+dependencies = [
+ "either",
+ "rayon-core",
+]
+
+[[package]]
+name = "rayon-core"
+version = "1.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
+dependencies = [
+ "crossbeam-deque",
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "rcgen"
 version = "0.14.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1890,12 +1922,6 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
-
-[[package]]
-name = "seahash"
-version = "4.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
 
 [[package]]
 name = "security-framework"
