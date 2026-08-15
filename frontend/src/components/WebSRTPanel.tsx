@@ -98,6 +98,15 @@ export function WebSRTPanel(props: { expanded: boolean }) {
                 </For>
               </select>
             </label>
+            <input
+              class="websrt-input websrt-input-url"
+              type="text"
+              value={websrtTarget.url()}
+              onInput={(e) => websrtTarget.setUrl(e.currentTarget.value)}
+              disabled={active()}
+              placeholder="this page — or https://192.168.1.214:5173/?stream=audio"
+              title="Web-viewer URL of a WebSRT gateway. Host, stream name and token are parsed from it; cert hash + WT port are fetched from its /cert-hash.js. Empty = the gateway serving this page, stream default."
+            />
             <button
               class={`btn btn-engine ${isRunning() ? "btn-stop" : "btn-start"}`}
               disabled={!wasmReady()}
@@ -114,16 +123,6 @@ export function WebSRTPanel(props: { expanded: boolean }) {
               title={`WebSRT connection status: ${websrtStatus()}`}
             >{websrtStatus() === "disconnected" ? "" : websrtStatus()}</span>
           </div>
-
-          <input
-            class="websrt-input websrt-input-url"
-            type="text"
-            value={websrtTarget.url()}
-            onInput={(e) => websrtTarget.setUrl(e.currentTarget.value)}
-            disabled={active()}
-            placeholder="this page — or https://192.168.1.214:5173/?stream=audio"
-            title="Web-viewer URL of a WebSRT gateway. Host, stream name and token are parsed from it; cert hash + WT port are fetched from its /cert-hash.js. Empty = the gateway serving this page, stream default."
-          />
 
           <Show when={websrtStatusDetail()}>
             <div class="websrt-status-detail" title={websrtStatusDetail()}>

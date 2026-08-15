@@ -428,6 +428,6 @@ body {
 }
 .websrt-subsection-head { display: flex; align-items: center; gap: 8px; }
 .websrt-section-controls { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; }
-.websrt-section-controls .websrt-input-url { flex: 1; min-width: 120px; }
+.websrt-section-controls .websrt-input-url { flex: 2 1 320px; min-width: 240px; }
 .websrt-section-controls .btn.btn-engine { margin-left: auto; }
 .websrt-section-controls .detail-select-label { white-space: nowrap; }
