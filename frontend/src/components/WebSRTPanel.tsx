@@ -5,6 +5,7 @@ import {
   websrtPids,
   websrtLatencyMs,
   setWebsrtLatencyMs,
+  websrtTarget,
   connectWebsrt,
   disconnectWebsrt,
 } from "../websrt/store";
@@ -60,10 +61,14 @@ export function WebSRTPanel(props: { expanded: boolean }) {
     setIsRunning(false);
   };
 
+  const toggleEngine = () => {
+    if (isRunning()) stopEngine();
+    else startEngine();
+  };
+
   const toggleTones = () => {
     const on = !tonesOn();
     setTonesOn(on);
-    if (on) startEngine(); // tones are inaudible with the engine stopped
     sendToWorklet({ type: "tones", on });
   };
 
@@ -72,47 +77,72 @@ export function WebSRTPanel(props: { expanded: boolean }) {
       <div class="settings-body">
         <div class="websrt-subsection">
           <div class="websrt-subsection-head">
-            <span class="websrt-label">ENGINE</span>
-            <span class={`websrt-pill ${isRunning() ? "connected" : "disconnected"}`}>
-              {isRunning() ? "running" : "stopped"}
-            </span>
-          </div>
-          <div class="websrt-controls">
-            <button
-              class="btn btn-start"
-              disabled={!wasmReady() || isRunning()}
-              onClick={startEngine}
-              title="Run the mixer engine (starts automatically when WebSRT connects)"
-            >START</button>
-            <button
-              class="btn btn-stop"
-              disabled={!isRunning()}
-              onClick={stopEngine}
-              title="Freeze the mixer engine (meters fall to zero; publish keeps streaming silence)"
-            >STOP</button>
-          </div>
-        </div>
-
-        <div class="websrt-subsection">
-          <div class="websrt-subsection-head">
-            <span class="websrt-label">TEST TONES</span>
-          </div>
-          <div class="websrt-controls">
-            <button
-              class={`btn ${tonesOn() ? "btn-stop" : "btn-start"}`}
-              onClick={toggleTones}
-              title="Sine tones (A major chord) into mixer inputs 1–4. Enabling also starts the engine."
-            >{tonesOn() ? "TONES ON" : "TONES OFF"}</button>
-          </div>
-        </div>
-
-        <div class="websrt-subsection">
-          <div class="websrt-subsection-head">
             <span class="websrt-label">RECEIVE</span>
+            <div class="websrt-engine-btns">
+              <button
+                class={`btn ${isRunning() ? "btn-stop" : "btn-start"}`}
+                disabled={!wasmReady()}
+                onClick={toggleEngine}
+                title="Run / freeze the mixer engine. Starts automatically when WebSRT connects."
+              >{isRunning() ? "ENGINE ON" : "ENGINE OFF"}</button>
+              <button
+                class={`btn ${tonesOn() ? "btn-stop" : "btn-start"}`}
+                onClick={toggleTones}
+                title="Sine tones (A major chord) into mixer inputs 1–4. Only audible while the engine runs."
+              >{tonesOn() ? "TONES ON" : "TONES OFF"}</button>
+            </div>
             <span
               class={`websrt-pill ${websrtStatus()}`}
               title={`WebSRT connection status: ${websrtStatus()}`}
             >{websrtStatus()}</span>
+          </div>
+
+          <div class="websrt-target-row">
+            <label class="detail-select-label">HOST
+              <input
+                class="websrt-input"
+                type="text"
+                value={websrtTarget.host()}
+                onInput={(e) => websrtTarget.setHost(e.currentTarget.value)}
+                disabled={active()}
+                placeholder="this page"
+                title="Gateway hostname. Empty = the gateway serving this page. Set for a remote WebSRT gateway (e.g. 192.168.1.214)."
+              />
+            </label>
+            <label class="detail-select-label">PORT
+              <input
+                class="websrt-input websrt-input-port"
+                type="text"
+                inputmode="numeric"
+                value={websrtTarget.port()}
+                onInput={(e) => websrtTarget.setPort(e.currentTarget.value)}
+                disabled={active()}
+                placeholder="auto"
+                title="Gateway WebTransport port. Empty = auto (cert-hash.js WT_PORT, else 4433)."
+              />
+            </label>
+            <label class="detail-select-label">STREAM
+              <input
+                class="websrt-input"
+                type="text"
+                value={websrtTarget.stream()}
+                onInput={(e) => websrtTarget.setStream(e.currentTarget.value)}
+                disabled={active()}
+                placeholder="default"
+                title="Stream name to subscribe to on the gateway."
+              />
+            </label>
+            <label class="detail-select-label">CERT HASH
+              <input
+                class="websrt-input websrt-input-hash"
+                type="text"
+                value={websrtTarget.certHash()}
+                onInput={(e) => websrtTarget.setCertHash(e.currentTarget.value)}
+                disabled={active()}
+                placeholder="auto"
+                title="Gateway cert SHA-256 (64 hex). Empty = auto from this page's /cert-hash.js. Required for a remote self-signed gateway — copy it from that gateway's web viewer /cert-hash.js. Special value null = system PKI (mkcert)."
+              />
+            </label>
           </div>
 
           <div class="websrt-controls">
@@ -122,7 +152,7 @@ export function WebSRTPanel(props: { expanded: boolean }) {
               onClick={() => (active() ? disconnectWebsrt() : connectWebsrt())}
               title={active()
                 ? "Disconnect the WebSRT receiver and stop the worker"
-                : "Fetch same-origin /cert-hash.js and connect to the gateway's WebTransport endpoint"}
+                : "Connect the WebSRT receiver to the target gateway (HOST/PORT/STREAM/CERT HASH above)"}
             >{active() ? "DISCONNECT" : "CONNECT"}</button>
             <label class="detail-select-label">LATENCY
               <select

@@ -393,6 +393,16 @@ body {
 .websrt-chevron:hover { border-color: #444; color: #aaa; }
 .settings-body { display: flex; flex-direction: column; gap: 6px; padding: 2px 12px 8px; }
 .websrt-controls { display: flex; align-items: center; gap: 10px; }
+.websrt-target-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.websrt-input {
+    background: #11111a; border: 1px solid #222230; border-radius: 3px; color: #ccc;
+    font-size: 0.7em; font-family: 'SF Mono', monospace; padding: 3px 5px; outline: none;
+    width: 96px;
+}
+.websrt-input:focus { border-color: #2a4a6a; }
+.websrt-input:disabled { opacity: 0.5; }
+.websrt-input-port { width: 44px; }
+.websrt-input-hash { width: 220px; }
 .websrt-controls .btn { padding: 4px 14px; font-size: 0.7em; }
 .websrt-status-detail {
     font-family: 'SF Mono', monospace; font-size: 0.6em; color: #666;
@@ -418,3 +428,4 @@ body {
     margin-top: 4px; padding-top: 6px; border-top: 1px solid #1e1e28;
 }
 .websrt-subsection-head { display: flex; align-items: center; gap: 8px; }
+.websrt-engine-btns { display: flex; gap: 6px; margin-left: auto; }

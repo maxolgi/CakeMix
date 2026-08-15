@@ -61,35 +61,60 @@ export function setWebsrtLatencyMs(ms: number): void {
   setLatencyMsSignal(ms);
 }
 
+// ── Connection target ─────────────────────────────────────────────────────
+// Editable from the settings drawer; initialized from the ?host/?port/
+// ?stream/?certHash URL params so shared links keep working.
+//  host ""        = the gateway serving this page (same origin)
+//  port ""        = auto (same-origin cert-hash WT_PORT, else 4433)
+//  certHash ""    = auto (same-origin /cert-hash.js fetch)
+//            "null" = system PKI (mkcert)   64-hex = pin that gateway's hash
+const initialParams = new URLSearchParams(location.search);
+const [targetHost, setTargetHost] = createSignal(initialParams.get("host") ?? "");
+const [targetPort, setTargetPort] = createSignal(initialParams.get("port") ?? "");
+const [targetStream, setTargetStream] = createSignal(initialParams.get("stream") ?? "default");
+const [targetCertHash, setTargetCertHash] = createSignal(initialParams.get("certHash") ?? "");
+export const websrtTarget = {
+  host: targetHost, port: targetPort, stream: targetStream, certHash: targetCertHash,
+  setHost: setTargetHost, setPort: setTargetPort, setStream: setTargetStream, setCertHash: setTargetCertHash,
+};
+
 let worker: Worker | null = null;
 let nextChStart = 0;
 
-/** Connect: resolve the gateway cert hash — ?certHash=<64-hex> URL param if
- *  present, else same-origin /cert-hash.js — build the WebTransport URL,
- *  start the receive worker and post 'init'. User-triggered (WebSRTPanel).
+/** Connect: resolve the target + gateway cert hash — drawer settings (init
+ *  from ?host/?port/?stream/?certHash URL params), else same-origin
+ *  /cert-hash.js — build the WebTransport URL, start the receive worker and
+ *  post 'init'. User-triggered (settings drawer).
  *
- *  The ?certHash= override exists because ?host/?port can point at a
- *  DIFFERENT gateway than the one serving this page; the same-origin
- *  cert-hash.js would then carry the WRONG hash and the WT handshake would
- *  fail. The special value ?certHash=null disables pinning (mkcert/PKI). */
+ *  A remote host needs its OWN cert hash (the same-origin cert-hash.js
+ *  would carry the WRONG hash and the WT handshake would fail) — paste it
+ *  from that gateway's web viewer /cert-hash.js, or "null" for PKI. */
 export async function connectWebsrt(): Promise<void> {
   if (worker) return;
   userGestureUnlock(); // synchronous: keep the click's autoplay gesture
+  const host = targetHost().trim();
+  const portStr = targetPort().trim();
+  const streamName = targetStream().trim() || "default";
+  const certHashIn = targetCertHash().trim();
+  if (host && !certHashIn) {
+    setStatus("error");
+    setStatusDetail(`remote gateway ${host} needs its cert hash (from its web viewer /cert-hash.js) or "null" for PKI`);
+    return;
+  }
   setStatus("connecting");
-  const certHashParam = new URLSearchParams(location.search).get("certHash");
   setStatusDetail("resolving cert-hash.js…");
   try {
     let certHashHex: string | null;
     let wtPort: number;
-    if (certHashParam !== null) {
-      // URL override — skip the same-origin fetch entirely; buildWtUrl then
-      // derives the port from ?port or its 4433 default.
-      certHashHex = certHashParam === "null" ? null : certHashParam;
-      wtPort = 0;
+    if (certHashIn) {
+      // Explicit override — skip the same-origin fetch entirely; the port
+      // then comes from the drawer field or the 4433 default.
+      certHashHex = certHashIn === "null" ? null : certHashIn;
+      wtPort = parseInt(portStr, 10) || 4433;
     } else {
       ({ certHashHex, wtPort } = await resolveCertHash());
     }
-    const url = buildWtUrl(wtPort);
+    const url = buildWtUrl(host, portStr, streamName, wtPort);
     const certHash = certHashHex ? hexToBytes(certHashHex) : null;
     const w = startWorker();
     setStatusDetail(certHashHex
@@ -257,17 +282,15 @@ function hexToBytes(hex: string): Uint8Array {
 }
 
 /** Build the subscribe WT URL — pattern copied from WebSRT's own viewer
- *  (vendor/WebSRT/web/src/shared/viewer.ts doConnect): same-origin hostname
- *  ("localhost" → 127.0.0.1), port from ?port= > cert-hash WT_PORT > 4433,
- *  stream from ?stream= > "default", fixed /wt path, ?token passthrough. */
-function buildWtUrl(wtPort: number): string {
-  const urlParams = new URLSearchParams(location.search);
+ *  (vendor/WebSRT/web/src/shared/viewer.ts doConnect): host from the target
+ *  settings ("" = page host, "localhost" → 127.0.0.1), port from the target
+ *  settings > cert-hash WT_PORT > 4433, fixed /wt path, ?token passthrough. */
+function buildWtUrl(host: string, portStr: string, streamName: string, wtPort: number): string {
   const pageHost = location.hostname || "127.0.0.1";
-  const wtHost = urlParams.get("host") ?? (pageHost === "localhost" ? "127.0.0.1" : pageHost);
-  const port = urlParams.get("port") ?? String(wtPort || 4433);
-  const streamName = urlParams.get("stream") ?? "default";
+  const wtHost = host || (pageHost === "localhost" ? "127.0.0.1" : pageHost);
+  const port = portStr || String(wtPort || 4433);
   const qp = new URLSearchParams({ stream: streamName });
-  const token = urlParams.get("token");
+  const token = new URLSearchParams(location.search).get("token");
   if (token) qp.set("token", token);
   return `https://${wtHost}:${port}/wt?${qp}`;
 }
