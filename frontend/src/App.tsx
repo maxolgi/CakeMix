@@ -5,6 +5,7 @@ import { ChannelDetailPanel } from "./components/ChannelDetailPanel";
 import { MasterStrip } from "./components/MasterStrip";
 import { BusMasterStrip } from "./components/BusMasterStrip";
 import { BusManager } from "./components/BusManager";
+import { WebSRTPanel } from "./components/WebSRTPanel";
 import {
   updateMeterData,
   wasmReady, setWasmReady, isRunning, setIsRunning,
@@ -93,6 +94,7 @@ export default function App() {
         index={mode() === "bus" ? (selectedBus() ?? 0) : bank()}
         onIndex={onSelectIndex}
       />
+      <WebSRTPanel />
       <div class="mixer-console">
         {selectedBus() === null ? (
           <For each={Array.from({ length: STRIPS_PER_BANK }, (_, i) => bank() * STRIPS_PER_BANK + i)}>
