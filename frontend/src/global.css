@@ -381,6 +381,7 @@ body {
     padding: 2px 7px; border-radius: 3px;
     border: 1px solid #2a2a30; background: #16161e; color: #666;
 }
+.websrt-pill:empty { display: none; }
 .websrt-pill.connecting { background: #3a2a10; color: #e0b050; border-color: #6a4a10; }
 .websrt-pill.connected { background: #1a3a1a; color: #4ade80; border-color: #2a5a2a; }
 .websrt-pill.error { background: #2a1414; color: #f87171; border-color: #5a2a2a; }

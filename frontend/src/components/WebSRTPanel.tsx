@@ -94,7 +94,7 @@ export function WebSRTPanel(props: { expanded: boolean }) {
             <span
               class={`websrt-pill ${websrtStatus()}`}
               title={`WebSRT connection status: ${websrtStatus()}`}
-            >{websrtStatus()}</span>
+            >{websrtStatus() === "disconnected" ? "" : websrtStatus()}</span>
           </div>
 
           <div class="websrt-target-row">
@@ -213,7 +213,7 @@ export function WebSRTPanel(props: { expanded: boolean }) {
             <span
               class={`websrt-pill ${publishStatus()}`}
               title={`WebSRT publish status: ${publishStatus()}`}
-            >{publishStatus()}</span>
+            >{publishStatus() === "disconnected" ? "" : publishStatus()}</span>
           </div>
 
           <div class="websrt-controls">
