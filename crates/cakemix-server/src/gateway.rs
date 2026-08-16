@@ -22,14 +22,15 @@ pub const SRT_STREAM_NAME: &str = "default";
 
 /// Build the gateway, spawn the SRT ingest task, and return the running
 /// `gateway.run()` task. The gateway exits (draining sessions) when
-/// `shutdown` fires.
+/// `shutdown` fires. Also returns a [`GatewayStatsHandle`] for the health/
+/// stats HTTP endpoints (owned Arc clones; safe to use from other tasks).
 pub fn spawn(
     wt_cert: Cert,
     wt_port: u16,
     srt_port: u16,
     latency_ms: u64,
     shutdown: Arc<Notify>,
-) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+) -> anyhow::Result<(JoinHandle<anyhow::Result<()>>, websrt::gateway::GatewayStatsHandle)> {
     let bind_addr: std::net::SocketAddr = format!("0.0.0.0:{wt_port}").parse()?;
     // Payload size needs no local override: since WebSRT 8da0d38 the
     // builder's `SrtConfig::default()` carries upstream `PAYLOAD_SIZE`
@@ -43,6 +44,7 @@ pub fn spawn(
         .build()?;
 
     let source = gateway.source_handle();
+    let stats = gateway.stats_handle();
 
     let srt_addr = format!("0.0.0.0:{srt_port}");
     tokio::spawn(async move {
@@ -65,7 +67,10 @@ pub fn spawn(
         }
     });
 
-    Ok(tokio::spawn(async move {
-        gateway.run(shutdown.notified()).await
-    }))
+    Ok((
+        tokio::spawn(async move {
+            gateway.run(shutdown.notified()).await
+        }),
+        stats,
+    ))
 }

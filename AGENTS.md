@@ -99,6 +99,12 @@ there, then bump the pin here once it's merged.
   carries N audio elementary streams each tagged mono/stereo/arbitrary.
   16ch = 16×mono or 8×stereo, per the source.
 - 128 input strips max.
+- **The `--srt-port` ingest leg (SrtIngester, default 9001) is legacy
+  direct-ingest compatibility — never use it for testing or demos.** All
+  source ingest goes through the user's websrt-gateway (:9000, stream
+  `audio`); CakeMix consumes over WebSRT via the drawer URL field. WebSRT
+  paths are the point of this project; SRT shortcuts mask real workflow
+  bugs (CORS, cert-hash, stream discovery).
 
 ### Verification
 
@@ -113,6 +119,11 @@ proves the milestone's claim.
   Source lives in `frontend/`, Vite builds to `web/assets/`. The Rust
   server (rust-embed) serves the built output — no Vite at runtime.
   Build: `cd frontend && npx vite build` or `make build-ui`.
+- The **reference WebSRT web app** (vendor/WebSRT/web — viewer, publisher,
+  debug panels) is served unmodified on its own HTTPS port (`--web-port`,
+  default 8201; `--no-tls` disables it). It is embedded at compile time:
+  `make build-websrt-web` then rebuild cakemix-server. Never write a custom
+  viewer page — the reference app IS the consumer.
 - All CSS in `frontend/src/global.css`, no inline styles.
 - Canvas-based meters via `requestAnimationFrame` — never update DOM
   elements at 60fps for meter bars. See `MeterCanvas.tsx`.

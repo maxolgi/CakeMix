@@ -4,7 +4,7 @@
 RUST_TARGET := wasm32-unknown-unknown
 CRATE_DIR := crates/mixer-wasm
 
-.PHONY: build-wasm build-web build-node test-native test-wasm test-all check clean serve serve-tls ci clippy fmt-check build-ui build-websrt-wasm bump-websrt build-all
+.PHONY: build-wasm build-web build-node test-native test-wasm test-all check clean serve serve-tls ci clippy fmt-check build-ui build-websrt-wasm build-websrt-web bump-websrt build-all
 
 # Build for wasm32-unknown-unknown (first gate)
 build-wasm:
@@ -75,6 +75,12 @@ build-ui: build-websrt-wasm
 # bundles the receive worker. Idempotent.
 build-websrt-wasm:
 	bash build/build-websrt-wasm.sh
+
+# Build the reference WebSRT web app (vendor/WebSRT/web) into its dist/.
+# The server embeds dist/ at COMPILE time (ref_web.rs rust-embed) — after
+# this target, rebuild cakemix-server for changes to show on :8201.
+build-websrt-web:
+	cd vendor/WebSRT/web && npx vite build
 
 # Update the vendor/WebSRT submodule pin to the remote's current HEAD.
 # The new pin is NOT auto-committed — commit the gitlink yourself.

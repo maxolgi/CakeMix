@@ -1,5 +1,6 @@
 mod certs;
 mod gateway;
+mod ref_web;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -61,8 +62,19 @@ struct Cli {
     #[arg(long, default_value_t = 4433u16, help = "WebTransport UDP port")]
     wt_port: u16,
 
+    // Legacy direct-ingest leg (OBS/fixture → this binary). Kept for
+    // compatibility; NOT the test path — sources publish to the user's
+    // websrt-gateway and CakeMix subscribes over WebSRT. See AGENTS.md.
     #[arg(long, default_value_t = 9000u16, help = "SRT ingest UDP port")]
     srt_port: u16,
+
+    // Reference web UI (vendor/WebSRT/web demo app: viewer, publisher, debug
+    // panels) on its own HTTPS port, mirroring websrt-gateway's --web-port.
+    #[arg(long, default_value_t = 8201u16, help = "HTTPS port for the reference WebSRT web UI (0 disables)")]
+    web_port: u16,
+
+    #[arg(long, default_value = "0.0.0.0", help = "Bind address for the reference web UI")]
+    web_bind: String,
 
     #[arg(long, default_value_t = 1000u64, value_parser = clap::value_parser!(u64).range(1..),
           help = "SRT TSBPD latency in ms (gateway and ingest legs)")]
@@ -155,11 +167,43 @@ async fn health() -> &'static str {
     "ok"
 }
 
-fn build_router(cert_hash_js: String) -> Router {
+fn build_router(cert_hash_js: String, stats: std::sync::Arc<websrt::gateway::GatewayStatsHandle>) -> Router {
     Router::new()
         .route("/", get(serve_index))
         .route("/health", get(health))
         .route("/api/cert-hash", get(api_cert_hash))
+        .route("/api/streams", get(move || {
+            let stats = stats.clone();
+            async move {
+            let s = stats.stats();
+            let streams: Vec<serde_json::Value> = s.per_stream.iter().map(|st| serde_json::json!({
+                "name": st.name,
+                "alive": st.alive,
+                "viewers": st.viewers,
+                "messagesSent": st.messages_sent,
+                "sendFailures": st.send_failures,
+            })).collect();
+            let sessions: Vec<serde_json::Value> = s.per_session.iter().map(|se| serde_json::json!({
+                "id": se.session_id,
+                "peer": se.peer.to_string(),
+                "stream": se.stream_name,
+                "messagesPushed": se.messages_pushed,
+                "publishDropped": se.publish_dropped,
+            })).collect();
+            let body = serde_json::json!({
+                "streams": streams,
+                "aliveStreams": s.alive_streams,
+                "totalViewers": s.total_viewers,
+                "activeSessions": s.active_sessions,
+                "sessions": sessions,
+            });
+            (
+                [(header::CONTENT_TYPE, "application/json"),
+                 (header::CACHE_CONTROL, "no-store")],
+                body.to_string(),
+            )
+            }
+        }))
         // Served dynamically: the WT cert hash changes whenever the identity
         // is regenerated, so it must never be cached as a static asset.
         .route(
@@ -404,6 +448,9 @@ async fn main() {
     };
 
     let cert_hash_js = build_cert_hash_js(&wt_cert, cli.wt_port);
+    // Same identity/port advertised to the reference web UI on :8201 — both
+    // servers front the SAME gateway.
+    let ref_cert_hash_js = cert_hash_js.clone();
 
     let bind_addr: std::net::IpAddr = cli
         .bind
@@ -448,7 +495,7 @@ async fn main() {
         }
     });
 
-    let gateway_task = gateway::spawn(
+    let (gateway_task, gateway_stats) = gateway::spawn(
         wt_cert,
         cli.wt_port,
         cli.srt_port,
@@ -467,14 +514,36 @@ async fn main() {
         let _ = open::that(&open_url);
     });
 
-    let axum_task = spawn_web_server(addr, build_router(cert_hash_js), web_tls, shutdown.clone())
+    let axum_task = spawn_web_server(addr, build_router(cert_hash_js, std::sync::Arc::new(gateway_stats)), web_tls.clone(), shutdown.clone())
         .await
         .unwrap_or_else(|e| {
             eprintln!("Error: {e}");
             std::process::exit(1);
         });
 
-    // Exit on ctrl-c, or as soon as either server task fails.
+    // Reference WebSRT web UI on its own HTTPS port (vendor demo app — the
+    // canonical viewer/publisher pages for our gateway). Requires web TLS
+    // material; skipped when disabled (--web-port 0) or in --no-tls dev mode.
+    let ref_web_task: Option<tokio::task::JoinHandle<anyhow::Result<()>>> = if cli.web_port != 0 {
+        match &web_tls {
+            Some((cert_pem, key_pem)) => Some(tokio::spawn(ref_web::run(
+                cli.web_bind.clone(),
+                cli.web_port,
+                ref_cert_hash_js,
+                cert_pem.clone(),
+                key_pem.clone(),
+                shutdown.clone(),
+            ))),
+            None => {
+                println!("  ref web:    disabled (--no-tls)");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Exit on ctrl-c, or as soon as any server task fails.
     tokio::pin!(axum_task);
     tokio::pin!(gateway_task);
 
@@ -482,6 +551,7 @@ async fn main() {
         CtrlC,
         WebServer,
         Gateway,
+        RefWeb,
     }
     let exited = tokio::select! {
         _ = shutdown.notified() => Exited::CtrlC,
@@ -496,6 +566,17 @@ async fn main() {
                 eprintln!("Error: WebTransport gateway failed: {e}");
             }
             Exited::Gateway
+        }
+        res = async {
+            match ref_web_task {
+                Some(t) => t.await.map_err(anyhow::Error::from).and_then(|r| r),
+                None => std::future::pending().await,
+            }
+        } => {
+            if let Err(e) = res {
+                eprintln!("Error: reference web server failed: {e}");
+            }
+            Exited::RefWeb
         }
     };
     if let Exited::CtrlC = exited {
