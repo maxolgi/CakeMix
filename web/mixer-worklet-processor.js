@@ -174,6 +174,22 @@ class MixerWasm {
         wasm.mixerwasm_disable_gate(this.__wbg_ptr, ch);
     }
     /**
+     * Total insert slips applied (net-slow delivery corrections).
+     * @returns {bigint}
+     */
+    elastic_inserts() {
+        const ret = wasm.mixerwasm_elastic_inserts(this.__wbg_ptr);
+        return BigInt.asUintN(64, ret);
+    }
+    /**
+     * Total trim slips applied (net-fast delivery corrections).
+     * @returns {bigint}
+     */
+    elastic_slips() {
+        const ret = wasm.mixerwasm_elastic_slips(this.__wbg_ptr);
+        return BigInt.asUintN(64, ret);
+    }
+    /**
      * Enable compressor on a channel with broadcast defaults (-12 dB threshold, 3:1 ratio).
      * @param {number} ch
      */
@@ -202,6 +218,23 @@ class MixerWasm {
         }
     }
     /**
+     * Core interleaved feed (shared by the wasm binding and native
+     * tests): deinterleave `interleaved` into channels
+     * `ch_start..ch_start + num_channels`, appending to each channel's
+     * elastic FIFO.
+     * @param {number} ch_start
+     * @param {Float32Array} interleaved
+     * @param {number} num_channels
+     */
+    feed_interleaved(ch_start, interleaved, num_channels) {
+        const ptr0 = passArrayF32ToWasm0(interleaved, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.mixerwasm_feed_interleaved(this.__wbg_ptr, ch_start, ptr0, len0, num_channels);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {number} pid
      * @param {Float32Array} data
      */
@@ -210,6 +243,14 @@ class MixerWasm {
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
+    }
+    /**
+     * Deepest current FIFO depth across all channels (frames).
+     * @returns {number}
+     */
+    fifo_max_depth() {
+        const ret = wasm.mixerwasm_fifo_max_depth(this.__wbg_ptr);
+        return ret >>> 0;
     }
     /**
      * @returns {number}
@@ -295,6 +336,11 @@ class MixerWasm {
         return ret >>> 0;
     }
     /**
+     * Process one block and return the interleaved stereo output.
+     *
+     * Thin wrapper over [`MixerWasm::process_block`] (the pure-Rust core,
+     * also used by native tests) that copies the result into a fresh
+     * `Float32Array` for JS.
      * @param {number} block_size
      * @returns {Float32Array}
      */
@@ -578,6 +624,14 @@ class MixerWasm {
         wasm.mixerwasm_set_master_gain(this.__wbg_ptr, gain);
     }
     /**
+     * Channel-blocks that drained an empty FIFO (starvation events).
+     * @returns {bigint}
+     */
+    starved_blocks() {
+        const ret = wasm.mixerwasm_starved_blocks(this.__wbg_ptr);
+        return BigInt.asUintN(64, ret);
+    }
+    /**
      * @param {number} pid
      */
     subscribe_pid(pid) {
@@ -741,6 +795,13 @@ function handleError(f, args) {
         const idx = addToExternrefTable0(e);
         wasm.__wbindgen_exn_store(idx);
     }
+}
+
+function passArrayF32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getFloat32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passStringToWasm0(arg, malloc, realloc) {
@@ -1168,7 +1229,7 @@ class MixerProcessor extends AudioWorkletProcessor {
         if (this._meterInterval >= 10) {
             this._meterInterval = 0;
             try {
-                this.port.postMessage({
+                var meter = {
                     type: "meter",
                     peakL: this._mixer.master_peak_db_l(),
                     peakR: this._mixer.master_peak_db_r(),
@@ -1178,7 +1239,18 @@ class MixerProcessor extends AudioWorkletProcessor {
                     limiterGr: this._mixer.limiter_gain_reduction_db(),
                     channels: JSON.parse(this._mixer.channel_meters_json()),
                     buses: JSON.parse(this._mixer.bus_meters_json()),
-                });
+                };
+                // Elastic playout diagnostics (drift corrections applied by
+                // the wasm FIFOs; nonzero slips/inserts are normal — they
+                // reconcile source-clock vs audio-clock ppm drift. Growing
+                // starved counts or maxed depth indicate delivery problems).
+                if (typeof this._mixer.elastic_slips === "function") {
+                    meter.elasticSlips = Number(this._mixer.elastic_slips());
+                    meter.elasticInserts = Number(this._mixer.elastic_inserts());
+                    meter.starvedBlocks = Number(this._mixer.starved_blocks());
+                    meter.fifoMaxDepth = Number(this._mixer.fifo_max_depth());
+                }
+                this.port.postMessage(meter);
             } catch(e) {}
         }
 

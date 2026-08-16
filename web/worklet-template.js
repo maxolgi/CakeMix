@@ -252,7 +252,7 @@ class MixerProcessor extends AudioWorkletProcessor {
         if (this._meterInterval >= 10) {
             this._meterInterval = 0;
             try {
-                this.port.postMessage({
+                var meter = {
                     type: "meter",
                     peakL: this._mixer.master_peak_db_l(),
                     peakR: this._mixer.master_peak_db_r(),
@@ -262,7 +262,18 @@ class MixerProcessor extends AudioWorkletProcessor {
                     limiterGr: this._mixer.limiter_gain_reduction_db(),
                     channels: JSON.parse(this._mixer.channel_meters_json()),
                     buses: JSON.parse(this._mixer.bus_meters_json()),
-                });
+                };
+                // Elastic playout diagnostics (drift corrections applied by
+                // the wasm FIFOs; nonzero slips/inserts are normal — they
+                // reconcile source-clock vs audio-clock ppm drift. Growing
+                // starved counts or maxed depth indicate delivery problems).
+                if (typeof this._mixer.elastic_slips === "function") {
+                    meter.elasticSlips = Number(this._mixer.elastic_slips());
+                    meter.elasticInserts = Number(this._mixer.elastic_inserts());
+                    meter.starvedBlocks = Number(this._mixer.starved_blocks());
+                    meter.fifoMaxDepth = Number(this._mixer.fifo_max_depth());
+                }
+                this.port.postMessage(meter);
             } catch(e) {}
         }
 

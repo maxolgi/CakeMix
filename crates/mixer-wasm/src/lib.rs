@@ -2,23 +2,299 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use wasm_bindgen::prelude::*;
 
 use oximedia_audio::ChannelLayout;
+use oximedia_mixer::channel::compute_stereo_pan;
 use oximedia_mixer::effects_chain::AudioEffect;
-use oximedia_mixer::metering::{Meter, MeterBallistics};
 use oximedia_mixer::oversampled_limiter::OversampledLimiter;
 use oximedia_mixer::{
     bus::{BusId, BusType},
     channel::{db_to_linear, ChannelType, PanLaw},
-    ChannelId, ChannelProcessParams, MixerConfig, PanLawType,
+    ChannelId, MixerConfig,
 };
 
 pub mod effects;
 use effects::{CompressorEffect, EqEffect, ExpanderEffect, GateEffect};
 
-/// Per-channel input FIFO cap (frames @48 k ≈ 170 ms). Delivery is
-/// TSBPD-paced at ~1× realtime, so the queue hovers near zero; the cap only
-/// bounds latency/memory if a source stalls with the mixer running. Oldest
-/// frames are dropped on overflow.
+/// Per-channel input FIFO memory cap (frames @48 k ≈ 170 ms). The elastic
+/// playout logic below keeps live depth far below this; the cap is only a
+/// last-resort guard against unbounded growth if that logic ever fails.
+/// Oldest frames are dropped on overflow.
 const MAX_QUEUE_FRAMES: usize = 8192;
+
+// ── Elastic playout buffer ─────────────────────────────────────────────
+//
+// Delivery is paced by the WebSRT worker's `performance.now()` clock while
+// process() consumes at the audio hardware clock. The two always differ by
+// some ppm, so a fixed-cap FIFO either accumulates drift until it wraps
+// into drop-oldest glitching (net-fast delivery) or drains into periodic
+// starvation (net-slow). Instead each elastic FIFO tracks its depth's
+// smoothed window-minimum, anchors at the level established around stream
+// start, and reconciles drift with tiny crossfaded slips:
+//
+// - trim: drop SLIP_FRAMES from the queue head, crossfading the splice
+//   (net-fast delivery → standing latency would otherwise creep up).
+//   Fires when the smoothed depth rises above `anchor + PLAYOUT_BAND`.
+// - insert: repeat SLIP_FRAMES at the queue tail, crossfaded (net-slow
+//   delivery → the queue would otherwise starve). Fires when the smoothed
+//   depth falls below half the anchor (relative — chunked delivery
+//   establishes anchors of only a few hundred frames, so an absolute
+//   lower band could sit below zero and never trigger), or on live
+//   starvation. The burst is capped near the trigger so a between-windows
+//   stale statistic cannot overshoot.
+//
+// All channels of a PID mapping are fed and drained in lockstep, so their
+// depths, EWMA and cooldowns stay equal and every channel applies the same
+// correction at the same frame boundary (inter-channel phase preserved).
+// Corrections are rate-limited (one slip per COOLDOWN blocks) and bounded
+// by a hysteresis band around the anchor, so a correction never fires for
+// ordinary delivery jitter.
+//
+// The anchor is reset by `map_pid` — a remap onto the same channels is a
+// new stream whose natural standing depth may differ.
+
+/// Window length for depth statistics (blocks): 375 × 128 = 1 s @ 48 k.
+const DRIFT_WINDOW_BLOCKS: u64 = 375;
+/// EWMA smoothing factor applied to the per-window depth minimum.
+const EWMA_ALPHA: f32 = 0.25;
+/// Upper hysteresis band above the anchor (frames, ≈ 21 ms @ 48 k): the
+/// smoothed depth must rise past `anchor + BAND` before trims arm. The
+/// lower trigger is relative (`anchor / 2`) — see the notes above.
+const PLAYOUT_BAND_FRAMES: f32 = 1024.0;
+/// Correction size (frames, ≈ 1.3 ms @ 48 k) — the length of audio a slip
+/// drops or repeats.
+const SLIP_FRAMES: usize = 64;
+/// Crossfade length over which a splice morphs (frames). Must be ≤ SLIP.
+const SLIP_XFADE: usize = 32;
+/// Blocks between corrections on the same FIFO (rate limit: a slip every
+/// ~10.7 ms → max correction rate ≈ 6000 f/s, far above any real drift).
+const SLIP_COOLDOWN_BLOCKS: u32 = 4;
+/// A FIFO is "recently fed" if it saw input within this many windows.
+/// Insertions are gated on it (never stretch a stopped/disconnected
+/// source); trims are not (pre-draining a stall backlog is harmless).
+const FEED_RECENCY_WINDOWS: u64 = 2;
+/// Consecutive fed windows required before the anchor is set.
+const ANCHOR_INIT_WINDOWS: u32 = 2;
+
+/// Per-channel elastic input FIFO with drift bookkeeping.
+struct ChannelFifo {
+    q: VecDeque<f32>,
+    /// Elastic corrections apply (fed via the interleaved PCM path).
+    elastic: bool,
+    /// Current drift-statistics window id (`block_counter / WINDOW`).
+    window_id: u64,
+    /// Minimum depth observed in the current window.
+    window_min: usize,
+    /// Any block starved (queue empty mid-drain) in the current window.
+    window_starved: bool,
+    /// Smoothed window-min depth; negative = not yet initialized.
+    ewma: f32,
+    /// Consecutive windows with feed activity (anchor initialization).
+    fed_windows: u32,
+    /// Established standing depth; `None` until anchored.
+    anchor: Option<f32>,
+    /// Window id of the last feed.
+    last_fed_window: u64,
+    /// Blocks remaining before the next correction may fire.
+    cooldown: u32,
+    /// Diagnostics: total trim / insert corrections applied.
+    slips: u64,
+    inserts: u64,
+}
+
+impl ChannelFifo {
+    fn new() -> Self {
+        Self {
+            q: VecDeque::with_capacity(2048),
+            elastic: false,
+            window_id: 0,
+            window_min: usize::MAX,
+            window_starved: false,
+            ewma: -1.0,
+            fed_windows: 0,
+            anchor: None,
+            last_fed_window: 0,
+            cooldown: 0,
+            slips: 0,
+            inserts: 0,
+        }
+    }
+
+    /// Mark fed in `window` and arm elasticity (idempotent).
+    fn note_feed(&mut self, window: u64) {
+        self.elastic = true;
+        self.last_fed_window = window;
+    }
+
+    /// Close the statistics window that just ended: fold `window_min`
+    /// into the EWMA and initialize the anchor once the feed is stable.
+    fn finalize_window(&mut self) {
+        let m = self.window_min;
+        if self.ewma < 0.0 {
+            self.ewma = m as f32;
+        } else {
+            self.ewma += EWMA_ALPHA * (m as f32 - self.ewma);
+        }
+        self.window_min = usize::MAX;
+        self.window_starved = false;
+    }
+}
+
+/// Drop `SLIP_FRAMES` from the queue head, crossfading the boundary
+/// between the dropped tail and the kept head over `SLIP_XFADE` frames.
+/// No-op when the queue is too short to splice safely.
+fn slip_trim(q: &mut VecDeque<f32>) {
+    let d = SLIP_FRAMES;
+    let f = SLIP_XFADE;
+    if q.len() <= d + f {
+        return;
+    }
+    for i in 0..f {
+        let kept = q[d + i];
+        let dropped = q[d - f + i];
+        let w = (i + 1) as f32 / (f + 1) as f32;
+        q[d + i] = dropped * (1.0 - w) + kept * w;
+    }
+    q.drain(0..d);
+}
+
+/// Append `SLIP_FRAMES` at the queue tail by repeating the tail with a
+/// crossfaded splice (time-stretch: net depth grows by SLIP_FRAMES).
+/// No-op when the queue is too short to splice safely.
+fn slip_insert(q: &mut VecDeque<f32>) {
+    let d = SLIP_FRAMES;
+    let f = SLIP_XFADE;
+    let m = q.len();
+    if m < d + f {
+        return;
+    }
+    // Snapshot the pre-splice tail: the morph overwrites samples the
+    // appended segment must read in their original form.
+    let mut tail = [0.0f32; SLIP_FRAMES + SLIP_XFADE];
+    for (i, t) in tail.iter_mut().enumerate() {
+        *t = q[m - d - f + i];
+    }
+    // Morph the last f samples from the original timeline into the
+    // delayed-by-d timeline (position p plays original[p - d]).
+    for i in 0..f {
+        let orig = tail[d + i];
+        let delayed = tail[i];
+        let w = (i + 1) as f32 / (f + 1) as f32;
+        let idx = m - f + i;
+        q[idx] = orig * (1.0 - w) + delayed * w;
+    }
+    // The delayed timeline now continues with original[m - d .. m].
+    for j in 0..d {
+        q.push_back(tail[f + j]);
+    }
+}
+
+/// Inline stereo master metering (peak hold + decay, sliding-window RMS,
+/// sticky clip flag) replicating the oximedia `Meter` Fast ballistics the
+/// binding used previously — with pre-allocated ring buffers so the
+/// real-time path never allocates (`Meter::process` built four `Vec`s per
+/// block).
+struct MasterMeter {
+    peak: [f32; 2],
+    peak_hold_blocks: [u32; 2],
+    hold_blocks: u32,
+    rms_buf: Vec<f32>,
+    rms_window: usize,
+    rms_pos: usize,
+    rms_filled: usize,
+    rms_sq: [f64; 2],
+    clipped: [bool; 2],
+    processed_once: bool,
+}
+
+impl MasterMeter {
+    fn new(sample_rate: u32, block_size: usize) -> Self {
+        let hold_blocks = ((sample_rate as f32 / block_size.max(1) as f32).ceil() as u32).max(1);
+        let rms_window = (sample_rate as usize / 10).max(1); // Fast = 100 ms
+        Self {
+            peak: [0.0; 2],
+            peak_hold_blocks: [0; 2],
+            hold_blocks,
+            rms_buf: vec![0.0; rms_window * 2],
+            rms_window,
+            rms_pos: 0,
+            rms_filled: 0,
+            rms_sq: [0.0; 2],
+            clipped: [false; 2],
+            processed_once: false,
+        }
+    }
+
+    /// Process one block of deinterleaved stereo (`l`/`r`, equal length).
+    fn process(&mut self, l: &[f32], r: &[f32]) {
+        let n = l.len().min(r.len());
+        self.processed_once = true;
+        for ch in 0..2 {
+            let buf = if ch == 0 { l } else { r };
+            let block_peak = buf[..n].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            if block_peak >= 1.0 {
+                self.clipped[ch] = true;
+            }
+            if block_peak > self.peak[ch] {
+                self.peak[ch] = block_peak;
+                self.peak_hold_blocks[ch] = self.hold_blocks;
+            } else if self.peak_hold_blocks[ch] > 0 {
+                self.peak_hold_blocks[ch] -= 1;
+            } else {
+                self.peak[ch] *= 0.95;
+            }
+        }
+        // Sliding-window RMS per channel over an interleaved ring.
+        for i in 0..n {
+            for ch in 0..2 {
+                let s = if ch == 0 { l[i] } else { r[i] };
+                let ring_ch = self.rms_pos + ch * self.rms_window;
+                let old = self.rms_buf[ring_ch];
+                self.rms_sq[ch] -= f64::from(old * old);
+                self.rms_sq[ch] += f64::from(s * s);
+                self.rms_buf[ring_ch] = s;
+            }
+            self.rms_pos += 1;
+            if self.rms_pos >= self.rms_window {
+                self.rms_pos = 0;
+            }
+        }
+        self.rms_filled = (self.rms_filled + n).min(self.rms_window);
+    }
+
+    fn peak_db(&self, ch: usize) -> f32 {
+        if !self.processed_once {
+            return -f32::INFINITY;
+        }
+        master_lin_to_db(self.peak[ch])
+    }
+
+    fn rms_db(&self, ch: usize) -> f32 {
+        if !self.processed_once || self.rms_filled == 0 {
+            return -f32::INFINITY;
+        }
+        let mean = self.rms_sq[ch] / self.rms_filled as f64;
+        master_lin_to_db(mean.sqrt() as f32)
+    }
+}
+
+/// dBFS conversion matching the engine meter's floor (`linear_to_db`).
+fn master_lin_to_db(lin: f32) -> f32 {
+    if lin <= 0.0 {
+        -120.0
+    } else {
+        20.0 * lin.log10()
+    }
+}
+
+/// Gain-stage parameters for one channel, snapshotted once per block.
+#[derive(Clone, Copy)]
+struct MixParams {
+    muted: bool,
+    input_gain_db: f32,
+    phase_inverted: bool,
+    fader_gain: f32,
+    pan: f32,
+    pan_law: PanLaw,
+}
 
 struct ChannelDynamics {
     compressor: Option<CompressorEffect>,
@@ -74,16 +350,22 @@ pub struct MixerWasm {
     engine: oximedia_mixer::AudioMixer,
     buffer_size: usize,
     channel_ids: Vec<Option<ChannelId>>,
-    /// Per-channel input FIFOs. PCM arrives in ~23 ms chunks while
+    /// Per-channel elastic input FIFOs. PCM arrives in ~23 ms chunks while
     /// process() consumes 128 frames every 2.67 ms — buffers must queue,
     /// not replace (replace = only each chunk's first block ever plays).
-    channel_inputs: HashMap<u32, VecDeque<f32>>,
+    /// See the "Elastic playout buffer" constants above for the drift
+    /// reconciliation applied to `elastic` FIFOs.
+    channel_inputs: HashMap<u32, ChannelFifo>,
     /// Per-block drained snapshot of the input FIFOs: flat
     /// [channel][frame] (128 channels × buffer_size), zero on starvation.
     /// Filled at the top of process(); passes 1 and 2 read from it.
     block_inputs: Vec<f32>,
     pid_map: HashMap<u16, PidMapping>,
-    master_meter: Meter,
+    master_meter: MasterMeter,
+    /// Monotonic process() call count (drives drift-statistics windows).
+    block_counter: u64,
+    /// Diagnostics: channel-blocks that drained an empty FIFO.
+    starved_channel_blocks: u64,
     // ── Pre-allocated scratch buffers ──
     master_left: Vec<f32>,
     master_right: Vec<f32>,
@@ -91,6 +373,8 @@ pub struct MixerWasm {
     eq_scratch: Vec<f32>,
     deinterleave_scratch: Vec<Vec<f32>>,
     raw_input: Vec<f32>,
+    /// Reused per-block snapshot of input-channel gain params (pass 1).
+    pass1_params: Vec<(u32, ChannelId, MixParams)>,
     // ── Per-channel state ──
     soloed_channels: HashSet<u32>,
     user_muted: HashSet<u32>,
@@ -168,13 +452,16 @@ impl MixerWasm {
             channel_inputs: HashMap::new(),
             block_inputs: vec![0.0; 128 * bs],
             pid_map: HashMap::new(),
-            master_meter: Meter::new(2, sample_rate, MeterBallistics::Fast),
+            master_meter: MasterMeter::new(sample_rate, bs),
+            block_counter: 0,
+            starved_channel_blocks: 0,
             master_left: vec![0.0; bs],
             master_right: vec![0.0; bs],
             stereo_out: vec![0.0; bs * 2],
             eq_scratch: vec![0.0; bs],
             deinterleave_scratch: Vec::new(),
             raw_input: Vec::new(),
+            pass1_params: Vec::new(),
             soloed_channels: HashSet::new(),
             user_muted: HashSet::new(),
             eq_chains: HashMap::new(),
@@ -228,25 +515,25 @@ impl MixerWasm {
         Ok(self.channel_ids[i].unwrap())
     }
 
-    /// Build engine process params for a channel index (input or slot).
-    fn params_for(&self, ch_idx: u32) -> Option<(ChannelId, ChannelProcessParams)> {
+    /// Snapshot the gain-stage parameters for a channel index (input or
+    /// slot). Pan-law gains are applied by `process()` directly via
+    /// `compute_stereo_pan` — the engine's `process_mix` is bypassed
+    /// (it allocates several `Vec`s per channel per block, which is not
+    /// survivable on the 2.67 ms real-time budget at high strip counts).
+    fn mix_params_for(&self, ch_idx: u32) -> Option<(ChannelId, MixParams)> {
         let id = self.channel_ids.get(ch_idx as usize)?.as_ref().copied()?;
         let ch = self.engine.get_channel(id).ok()?;
-        let pan_law = match ch.pan_law() {
-            PanLaw::Linear => PanLawType::Linear,
-            PanLaw::Minus3dB => PanLawType::Minus3dB,
-            PanLaw::Minus4Dot5dB => PanLawType::Minus4Dot5dB,
-            PanLaw::Minus6dB => PanLawType::Minus6dB,
-        };
-        let params = ChannelProcessParams {
-            fader_gain: ch.gain(),
-            pan: ch.pan(),
-            muted: ch.is_muted(),
-            input_gain_db: ch.input().gain_db,
-            phase_inverted: ch.is_phase_inverted(),
-            pan_law,
-        };
-        Some((id, params))
+        Some((
+            id,
+            MixParams {
+                muted: ch.is_muted(),
+                input_gain_db: ch.input().gain_db,
+                phase_inverted: ch.is_phase_inverted(),
+                fader_gain: ch.gain(),
+                pan: ch.pan(),
+                pan_law: ch.pan_law(),
+            },
+        ))
     }
 
     // ── Input ──────────────────────────────────────────
@@ -260,14 +547,66 @@ impl MixerWasm {
         let len = data.length() as usize;
         self.raw_input.resize(len, 0.0);
         data.copy_to(&mut self.raw_input);
+        // Mono per-block feeds (test tones) are not drift-managed: plain FIFO.
         let slot = self
             .channel_inputs
             .entry(ch)
-            .or_insert_with(|| VecDeque::with_capacity(self.buffer_size));
-        slot.extend(self.raw_input.iter().copied());
-        let overflow = slot.len().saturating_sub(MAX_QUEUE_FRAMES);
+            .or_insert_with(ChannelFifo::new);
+        slot.q.extend(self.raw_input.iter().copied());
+        let overflow = slot.q.len().saturating_sub(MAX_QUEUE_FRAMES);
         if overflow > 0 {
-            slot.drain(0..overflow);
+            slot.q.drain(0..overflow);
+        }
+        Ok(())
+    }
+
+    /// Core interleaved feed (shared by the wasm binding and native
+    /// tests): deinterleave `interleaved` into channels
+    /// `ch_start..ch_start + num_channels`, appending to each channel's
+    /// elastic FIFO.
+    pub fn feed_interleaved(
+        &mut self,
+        ch_start: u32,
+        interleaved: &[f32],
+        num_channels: u32,
+    ) -> Result<(), JsValue> {
+        let nc = num_channels as usize;
+        if nc == 0 {
+            return Err(JsValue::from_str("num_channels must be > 0"));
+        }
+        let total = interleaved.len();
+        if !total.is_multiple_of(nc) {
+            return Err(JsValue::from_str(&format!(
+                "length {total} not divisible by {nc}"
+            )));
+        }
+        let frames = total / nc;
+        if self.deinterleave_scratch.len() < nc {
+            self.deinterleave_scratch.resize(nc, Vec::new());
+        }
+        let window = self.block_counter / DRIFT_WINDOW_BLOCKS;
+        for c in 0..nc {
+            self.deinterleave_scratch[c].clear();
+            self.deinterleave_scratch[c].reserve(frames);
+        }
+        for f in 0..frames {
+            for c in 0..nc {
+                self.deinterleave_scratch[c].push(interleaved[f * nc + c]);
+            }
+        }
+        for c in 0..nc {
+            let ch = ch_start + c as u32;
+            self.ensure_channel(ch)?;
+            let slot = self
+                .channel_inputs
+                .entry(ch)
+                .or_insert_with(ChannelFifo::new);
+            slot.note_feed(window);
+            slot.q.extend(self.deinterleave_scratch[c].iter().copied());
+            let overflow = slot.q.len().saturating_sub(MAX_QUEUE_FRAMES);
+            if overflow > 0 {
+                slot.q.drain(0..overflow);
+            }
         }
         Ok(())
     }
@@ -278,45 +617,13 @@ impl MixerWasm {
         data: &js_sys::Float32Array,
         num_channels: u32,
     ) -> Result<(), JsValue> {
-        let nc = num_channels as usize;
-        if nc == 0 {
-            return Err(JsValue::from_str("num_channels must be > 0"));
-        }
-        let total = data.length() as usize;
-        if !total.is_multiple_of(nc) {
-            return Err(JsValue::from_str(&format!(
-                "length {total} not divisible by {nc}"
-            )));
-        }
-        let frames = total / nc;
-        if self.deinterleave_scratch.len() < nc {
-            self.deinterleave_scratch.resize(nc, Vec::new());
-        }
-        for c in 0..nc {
-            self.deinterleave_scratch[c].clear();
-            self.deinterleave_scratch[c].reserve(frames);
-        }
-        self.raw_input.resize(total, 0.0);
+        let len = data.length() as usize;
+        self.raw_input.resize(len, 0.0);
         data.copy_to(&mut self.raw_input);
-        for f in 0..frames {
-            for c in 0..nc {
-                self.deinterleave_scratch[c].push(self.raw_input[f * nc + c]);
-            }
-        }
-        for c in 0..nc {
-            let ch = ch_start + c as u32;
-            self.ensure_channel(ch)?;
-            let slot = self
-                .channel_inputs
-                .entry(ch)
-                .or_insert_with(|| VecDeque::with_capacity(self.buffer_size));
-            slot.extend(self.deinterleave_scratch[c].iter().copied());
-            let overflow = slot.len().saturating_sub(MAX_QUEUE_FRAMES);
-            if overflow > 0 {
-                slot.drain(0..overflow);
-            }
-        }
-        Ok(())
+        let raw = std::mem::take(&mut self.raw_input);
+        let r = self.feed_interleaved(ch_start, &raw, num_channels);
+        self.raw_input = raw;
+        r
     }
 
     // ── PID mapping ────────────────────────────────────
@@ -324,6 +631,18 @@ impl MixerWasm {
     pub fn map_pid(&mut self, pid: u16, ch_start: u32, channel_count: u32) -> Result<(), JsValue> {
         for i in 0..channel_count {
             self.ensure_channel(ch_start + i)?;
+        }
+        // A (re)map is a new stream: drop the elastic anchors on its
+        // channels so the standing depth re-anchors at the new source's
+        // natural level instead of correcting toward the old stream's.
+        for i in 0..channel_count {
+            if let Some(fifo) = self.channel_inputs.get_mut(&(ch_start + i)) {
+                fifo.anchor = None;
+                fifo.ewma = -1.0;
+                fifo.fed_windows = 0;
+                fifo.window_min = usize::MAX;
+                fifo.window_starved = false;
+            }
         }
         self.pid_map.insert(
             pid,
@@ -820,7 +1139,28 @@ impl MixerWasm {
 
     // ── Processing ─────────────────────────────────────
 
+    /// Process one block and return the interleaved stereo output.
+    ///
+    /// Thin wrapper over [`MixerWasm::process_block`] (the pure-Rust core,
+    /// also used by native tests) that copies the result into a fresh
+    /// `Float32Array` for JS.
     pub fn process(&mut self, block_size: u32) -> Result<js_sys::Float32Array, JsValue> {
+        let out = self.process_block(block_size)?;
+        let js = js_sys::Float32Array::new_with_length(out.len() as u32);
+        js.copy_from(out);
+        Ok(js)
+    }
+}
+
+impl MixerWasm {
+    /// Process one block through the full console (pure Rust, no JS
+    /// interop — callable from native tests). Returns the interleaved
+    /// stereo output slice (`block_size × 2` frames), valid until the
+    /// next call.
+    ///
+    /// Zero-allocation in the steady state: every buffer is pre-allocated
+    /// and reused (regression-tested in `tests/alloc_test.rs`).
+    pub fn process_block(&mut self, block_size: u32) -> Result<&[f32], JsValue> {
         let bs = self.buffer_size.min(block_size as usize).max(1);
 
         // Clear master bus
@@ -849,33 +1189,100 @@ impl MixerWasm {
         // bs frames per input channel (0-127); starved channels surface as
         // zeros (clean dropout). Draining regardless of mute/solo keeps the
         // FIFOs rate-balanced so nothing accumulates while unheard.
+        // Elastic FIFOs additionally run drift reconciliation (see the
+        // playout-buffer notes at the top): window statistics fold into an
+        // EWMA, and a rate-limited crossfaded slip fires when the smoothed
+        // depth leaves the anchor's hysteresis band.
+        self.block_counter += 1;
+        let window = self.block_counter / DRIFT_WINDOW_BLOCKS;
         self.block_inputs[..128 * bs].fill(0.0);
-        for (&ch_idx, queue) in self.channel_inputs.iter_mut() {
+        for (&ch_idx, fifo) in self.channel_inputs.iter_mut() {
             if ch_idx >= 128 {
                 continue;
             }
             let base = ch_idx as usize * bs;
+            let mut starved = false;
             for d in self.block_inputs[base..base + bs].iter_mut() {
-                if let Some(s) = queue.pop_front() {
+                if let Some(s) = fifo.q.pop_front() {
                     *d = s;
                 } else {
+                    starved = true;
                     break;
+                }
+            }
+            if !fifo.elastic {
+                continue;
+            }
+            if starved {
+                self.starved_channel_blocks += 1;
+                fifo.window_starved = true;
+            }
+            // Window rollover: fold the finished window's minimum into the
+            // EWMA and, once feeding steadily, establish the anchor.
+            if fifo.window_id != window {
+                fifo.finalize_window();
+                fifo.window_id = window;
+                let fed_recent =
+                    window.saturating_sub(fifo.last_fed_window) <= FEED_RECENCY_WINDOWS;
+                fifo.fed_windows = if fed_recent { fifo.fed_windows + 1 } else { 0 };
+                if fifo.anchor.is_none() && fifo.fed_windows >= ANCHOR_INIT_WINDOWS {
+                    fifo.anchor = Some(fifo.ewma);
+                }
+            }
+            let depth = fifo.q.len();
+            if depth < fifo.window_min {
+                fifo.window_min = depth;
+            }
+            // Rate-limited correction. Channels of a PID mapping share
+            // feed/drain history, so every channel of the mapping makes
+            // the same decision on the same frame boundary — inter-channel
+            // phase stays intact.
+            if fifo.cooldown > 0 {
+                fifo.cooldown -= 1;
+                continue;
+            }
+            let Some(anchor) = fifo.anchor else { continue };
+            let fed_recent = window.saturating_sub(fifo.last_fed_window) <= FEED_RECENCY_WINDOWS;
+            let settle_to = anchor + PLAYOUT_BAND_FRAMES * 0.5;
+            let anchor_half = anchor * 0.5;
+            if fifo.ewma > anchor + PLAYOUT_BAND_FRAMES
+                && depth as f32 > settle_to
+                && depth > SLIP_FRAMES + SLIP_XFADE
+            {
+                // Sustained net-fast delivery: standing latency creeps up —
+                // trim the head back toward the anchor.
+                slip_trim(&mut fifo.q);
+                fifo.slips += 1;
+                fifo.cooldown = SLIP_COOLDOWN_BLOCKS;
+            } else if fed_recent
+                && depth >= SLIP_FRAMES + SLIP_XFADE
+                && (fifo.window_starved || fifo.ewma < anchor_half)
+                && (depth as f32) < anchor_half + (2.0 * SLIP_FRAMES as f32)
+            {
+                // Sustained net-slow delivery (or live starvation): the
+                // queue would run dry — stretch the tail. The depth cap
+                // just above the trigger bounds the burst against a
+                // between-windows stale statistic.
+                slip_insert(&mut fifo.q);
+                fifo.inserts += 1;
+                fifo.cooldown = SLIP_COOLDOWN_BLOCKS;
+            }
+        }
+
+        // Snapshot input-channel gain params into the reused scratch vec.
+        // Pass 1 covers input channels only (indices 0-127); slot channels
+        // (128-255) are handled in pass 2 below.
+        self.pass1_params.clear();
+        for &ch_idx in self.channel_inputs.keys() {
+            if ch_idx < 128 {
+                if let Some((id, p)) = self.mix_params_for(ch_idx) {
+                    self.pass1_params.push((ch_idx, id, p));
                 }
             }
         }
 
-        // Collect channel data upfront (avoid borrow conflicts).
-        // Pass 1 covers input channels only (indices 0-127); slot channels
-        // (128-255) are handled in pass 2 below.
-        let ch_data: Vec<(u32, ChannelId, ChannelProcessParams)> = self
-            .channel_inputs
-            .keys()
-            .filter(|&&ch_idx| ch_idx < 128)
-            .filter_map(|&ch_idx| self.params_for(ch_idx).map(|(id, p)| (ch_idx, id, p)))
-            .collect();
-
         // ── Pass 1: input channels ──
-        for (ch_idx, id, params) in ch_data {
+        for &(ch_idx, id, params) in &self.pass1_params {
             if params.muted {
                 continue;
             }
@@ -926,32 +1333,36 @@ impl MixerWasm {
 
             // ── Direct-out tap: capture the pan-stage input ──
             // eq_scratch holds the post gate/comp/EQ signal; apply the same
-            // input gain × phase × fader × VCA the engine applies inside
-            // process_mix, but NOT pan → the classic post-fader mono direct
-            // out. (Muted/solo-gated channels `continue`d above, so their
-            // slots stay zeroed.)
+            // input gain × phase × fader × VCA the engine would apply, but
+            // NOT pan → the classic post-fader mono direct out.
+            // (Muted/solo-gated channels `continue`d above, so their slots
+            // stay zeroed.)
+            let (lg, rg) = compute_stereo_pan(params.pan, &params.pan_law);
+            let phase: f32 = if params.phase_inverted { -1.0 } else { 1.0 };
+            let vca = self.engine.engine().vca_gain_for_channel(id);
+            let g = db_to_linear(params.input_gain_db) * phase * params.fader_gain * vca;
             if self.tap_channels > ch_idx {
                 let n = self.tap_channels as usize;
-                let phase: f32 = if params.phase_inverted { -1.0 } else { 1.0 };
-                let vca = self.engine.engine().vca_gain_for_channel(id);
-                let tap_gain = db_to_linear(params.input_gain_db) * phase * params.fader_gain * vca;
                 for i in 0..bs {
-                    self.channel_tap_buf[i * n + ch_idx as usize] = self.eq_scratch[i] * tap_gain;
+                    self.channel_tap_buf[i * n + ch_idx as usize] = self.eq_scratch[i] * g;
                 }
             }
 
-            // Engine: input gain, fader, pan → stereo pair
-            let (ch_left, ch_right) = self
-                .engine
-                .engine_mut()
-                .process_mix(&[(id, params)], &self.eq_scratch[..bs]);
-
+            // Gain stage: input gain × phase × fader × VCA, then pan-law
+            // gains, accumulated straight into the master bus. This is the
+            // same math the engine applies in process_mix (compute_stereo_pan
+            // is the engine's own function) minus its per-channel Vec
+            // allocations — the RT budget does not survive those at high
+            // strip counts.
+            //
             // Direct to master — always, unconditionally. Bus slots tap the
             // RAW input buffer in parallel (pass 2), so bus assignment never
             // diverts or silences the direct input path.
+            let gl = g * lg;
+            let gr = g * rg;
             for i in 0..bs {
-                self.master_left[i] += ch_left[i];
-                self.master_right[i] += ch_right[i];
+                self.master_left[i] += self.eq_scratch[i] * gl;
+                self.master_right[i] += self.eq_scratch[i] * gr;
             }
         }
 
@@ -975,7 +1386,7 @@ impl MixerWasm {
 
                 // Skip muted/missing slot channels (defensive: set_bus_source
                 // lazily creates the engine channel with defaults).
-                let Some((id, params)) = self.params_for(slot_idx) else {
+                let Some((id, params)) = self.mix_params_for(slot_idx) else {
                     continue;
                 };
                 if params.muted {
@@ -1021,16 +1432,18 @@ impl MixerWasm {
                     },
                 );
 
-                // Engine: slot input gain, fader, pan on the mono tap →
-                // stereo result into the bus accumulator.
-                let (ch_left, ch_right) = self
-                    .engine
-                    .engine_mut()
-                    .process_mix(&[(id, params)], &self.eq_scratch[..bs]);
+                // Gain stage on the mono tap → stereo result into the bus
+                // accumulator (same direct math as pass 1 — see note there).
+                let (lg, rg) = compute_stereo_pan(params.pan, &params.pan_law);
+                let phase: f32 = if params.phase_inverted { -1.0 } else { 1.0 };
+                let vca = self.engine.engine().vca_gain_for_channel(id);
+                let g = db_to_linear(params.input_gain_db) * phase * params.fader_gain * vca;
+                let gl = g * lg;
+                let gr = g * rg;
                 let bi = bus_idx as usize;
                 for i in 0..bs {
-                    self.bus_left[bi][i] += ch_left[i];
-                    self.bus_right[bi][i] += ch_right[i];
+                    self.bus_left[bi][i] += self.eq_scratch[i] * gl;
+                    self.bus_right[bi][i] += self.eq_scratch[i] * gr;
                 }
             }
         }
@@ -1098,48 +1511,54 @@ impl MixerWasm {
             self.stereo_out[i * 2 + 1] = self.master_right[i];
         }
 
-        self.master_meter.process(&self.stereo_out[..bs * 2]);
-
-        let out = js_sys::Float32Array::new_with_length((bs * 2) as u32);
-        out.copy_from(&self.stereo_out[..bs * 2]);
-        Ok(out)
-    }
-
-    // ── Metering ───────────────────────────────────────
-
-    pub fn master_peak_db_l(&self) -> f32 {
         self.master_meter
-            .data()
-            .peak
-            .first()
-            .map(|p| p.current_db)
-            .unwrap_or(-f32::INFINITY)
+            .process(&self.master_left[..bs], &self.master_right[..bs]);
+
+        Ok(&self.stereo_out[..bs * 2])
+    }
+}
+
+// ── Metering + diagnostics (exported) ────────────────────────────────
+#[wasm_bindgen]
+impl MixerWasm {
+    pub fn master_peak_db_l(&self) -> f32 {
+        self.master_meter.peak_db(0)
     }
     pub fn master_peak_db_r(&self) -> f32 {
-        self.master_meter
-            .data()
-            .peak
-            .get(1)
-            .map(|p| p.current_db)
-            .unwrap_or(-f32::INFINITY)
+        self.master_meter.peak_db(1)
     }
     pub fn master_rms_db_l(&self) -> f32 {
-        self.master_meter
-            .data()
-            .rms
-            .first()
-            .map(|r| r.current_db)
-            .unwrap_or(-f32::INFINITY)
+        self.master_meter.rms_db(0)
     }
     pub fn master_rms_db_r(&self) -> f32 {
-        self.master_meter
-            .data()
-            .rms
-            .get(1)
-            .map(|r| r.current_db)
-            .unwrap_or(-f32::INFINITY)
+        self.master_meter.rms_db(1)
     }
     pub fn master_clipping(&self) -> bool {
-        self.master_meter.data().peak.iter().any(|p| p.clipped)
+        self.master_meter.clipped[0] || self.master_meter.clipped[1]
+    }
+
+    // ── Elastic playout diagnostics ────────────────────
+    // Live counters for the drift reconciliation (surfaced by the worklet
+    // in its meter messages; see web/worklet-template.js).
+
+    /// Total trim slips applied (net-fast delivery corrections).
+    pub fn elastic_slips(&self) -> u64 {
+        self.channel_inputs.values().map(|f| f.slips).sum()
+    }
+    /// Total insert slips applied (net-slow delivery corrections).
+    pub fn elastic_inserts(&self) -> u64 {
+        self.channel_inputs.values().map(|f| f.inserts).sum()
+    }
+    /// Channel-blocks that drained an empty FIFO (starvation events).
+    pub fn starved_blocks(&self) -> u64 {
+        self.starved_channel_blocks
+    }
+    /// Deepest current FIFO depth across all channels (frames).
+    pub fn fifo_max_depth(&self) -> u32 {
+        self.channel_inputs
+            .values()
+            .map(|f| f.q.len())
+            .max()
+            .unwrap_or(0) as u32
     }
 }
