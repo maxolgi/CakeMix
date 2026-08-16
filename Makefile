@@ -74,7 +74,7 @@ fmt-check:
 # the receive worker — hence the build-websrt-wasm prerequisite.
 build-ui: build-websrt-wasm
 	rm -rf web
-	cd frontend && npx vite build
+	cd frontend && { [ -d node_modules ] || npm ci; } && npx vite build
 
 # Worklet bundle → web/mixer-worklet-processor.js (polyfill + wasm glue +
 # processor, from frontend/src/worklet/ + the mixer pkg).
