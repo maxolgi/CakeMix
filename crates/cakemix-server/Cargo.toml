@@ -14,7 +14,7 @@ path = "src/main.rs"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
-rust-embed = "8"
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 mime_guess = "2"
 # Web/HTTPS cert generation (13-month self-signed PEM). The WebTransport
 # identity comes from websrt::cert (wtransport, ≤14-day validity).

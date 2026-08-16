@@ -3,93 +3,79 @@ name: CI
 on:
   push:
     branches: [master]
+    tags: ['v*']
   pull_request:
-    branches: [master]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  native-tests:
+  # ---------------------------------------------------------------------------
+  # 1. Fast checks on every push / PR.
+  #    No WASM, no web build — cakemix-server's build.rs creates the
+  #    rust-embed folders when missing, so cargo compiles with empty embeds.
+  # ---------------------------------------------------------------------------
+  check:
+    name: Lint + test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
 
       # Match rust-toolchain.toml so rustfmt output is reproducible.
       - uses: dtolnay/rust-toolchain@1.95
-
-      - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          components: rustfmt, clippy
 
-      - name: Install wasm target
-        run: rustup target add wasm32-unknown-unknown
-
-      - name: Install wasm-pack
-        run: cargo install wasm-pack
-
-      # --- Build all rust-embed inputs BEFORE any cargo step: cakemix-server
-      # embeds web/ (Vite output), crates/mixer-wasm/pkg (wasm-pack) and
-      # vendor/WebSRT/web/dist (submodule Vite output) at COMPILE time, so
-      # cargo build/clippy/test fail if these directories do not exist. ---
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Install reference web app dependencies (submodule)
-        working-directory: vendor/WebSRT/web
-        run: npm ci
-
-      # Stages the WebSRT wasm into vendor/WebSRT/web/wasm/ — must run before
-      # the Vite build below, which bundles the submodule's receive worker.
-      - name: Build WebSRT WASM (submodule)
-        run: bash build/build-websrt-wasm.sh
-
-      # Reference WebSRT web app (viewer/publisher) → vendor/WebSRT/web/dist.
-      - name: Build reference web app (submodule)
-        working-directory: vendor/WebSRT/web
-        run: npx vite build
-
-      # Mixer wasm pkg (AudioWorklet glue) → crates/mixer-wasm/pkg.
-      - name: Build WASM (wasm-pack web)
-        run: cd crates/mixer-wasm && wasm-pack build --target web --release
-
-      # SolidJS frontend → web/ (gitignored, generated).
-      - name: Build frontend
-        working-directory: frontend
-        run: npx vite build
-
-      # Worklet bundle (polyfill + wasm glue + processor) → web/.
-      - name: Build mixer worklet
-        run: node build/build-worklet.js
-
-      # --- Rust gates ---
+      - uses: Swatinem/rust-cache@v2
 
       # Scoped to workspace members, not `--all`: rustfmt follows the
       # cakemix-server path dependency into vendor/WebSRT and would flag the
       # pinned submodule (formatted by an older rustfmt — not ours to fix).
-      - name: Check formatting
+      - name: cargo fmt --check
         run: cargo fmt -p mixer-wasm -p cakemix-server -- --check
 
-      - name: Clippy lints
+      - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Build native
-        run: cargo build --verbose
+      - name: cargo test
+        run: cargo test
 
-      - name: Run native tests
-        run: cargo test --verbose
+  # ---------------------------------------------------------------------------
+  # 2. WASM tests — the known-answer DSP suite under wasm (node).
+  # ---------------------------------------------------------------------------
+  wasm-tests:
+    name: WASM tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
 
-      - name: Build WASM
-        run: cargo build --target wasm32-unknown-unknown -p mixer-wasm
+      - uses: dtolnay/rust-toolchain@1.95
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build WASM (wasm-pack nodejs)
         run: cd crates/mixer-wasm && wasm-pack build --target nodejs --release
 
-      - name: Run WASM tests
+      - name: Run WASM known-answer tests (node)
         run: cd crates/mixer-wasm && node tests/run_tests.mjs
 
       # The #[wasm_bindgen_test] suite (bus_parallel, channel_params,
@@ -97,3 +83,166 @@ jobs:
       # only executable under wasm.
       - name: Run wasm_bindgen_test suite (node)
         run: cd crates/mixer-wasm && wasm-pack test --node --release
+
+  # ---------------------------------------------------------------------------
+  # 3. Full build — Linux, Windows, macOS (ARM).
+  #    Each matrix entry builds WASM → web/ → server binary independently,
+  #    because rust-embed embeds web/, pkg/ and vendor/WebSRT/web/dist at
+  #    compile time.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            os: ubuntu-latest
+            binary: cakemix
+            artifact: cakemix-linux-x64
+          - name: Windows x64
+            os: windows-latest
+            binary: cakemix.exe
+            artifact: cakemix-windows-x64
+          - name: macOS ARM
+            os: macos-latest
+            binary: cakemix
+            artifact: cakemix-macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@1.95
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack (Unix)
+        if: runner.os != 'Windows'
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Install wasm-pack (Windows)
+        if: runner.os == 'Windows'
+        run: cargo install wasm-pack --locked
+
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            frontend/package-lock.json
+            vendor/WebSRT/web/package-lock.json
+
+      # Step 1: WebSRT wasm crates → vendor/WebSRT/web/wasm/ (gitignored in
+      # the submodule; the Vite build below bundles the receive worker from
+      # there).
+      - name: Build WebSRT WASM (submodule)
+        shell: bash
+        run: bash build/build-websrt-wasm.sh
+
+      # Step 2: reference web app → vendor/WebSRT/web/dist (rust-embed input).
+      - name: Build reference web app (npm ci + vite)
+        shell: bash
+        working-directory: vendor/WebSRT/web
+        run: |
+          npm ci
+          npx vite build
+
+      # Step 3: mixer wasm pkg (AudioWorklet glue) → crates/mixer-wasm/pkg.
+      - name: Build mixer WASM pkg (wasm-pack web)
+        shell: bash
+        run: cd crates/mixer-wasm && wasm-pack build --target web --release
+
+      # Step 4: frontend → web/ (gitignored, generated) + worklet bundle.
+      - name: Build frontend (npm ci + vite)
+        shell: bash
+        working-directory: frontend
+        run: |
+          npm ci
+          npx vite build
+
+      - name: Build mixer worklet
+        shell: bash
+        run: node build/build-worklet.js
+
+      # Step 5: server binary — embeds web/, pkg/, vendor/WebSRT/web/dist.
+      - name: Build server binary
+        run: cargo build --release -p cakemix-server
+
+      - name: Strip binary (Unix only)
+        if: runner.os != 'Windows'
+        run: strip target/release/${{ matrix.binary }}
+
+      - name: Upload server binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: target/release/${{ matrix.binary }}
+          if-no-files-found: error
+
+      # web/ is platform-agnostic — upload once from Linux only
+      - name: Upload web dist
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: cakemix-web-dist
+          path: web/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 4. Publish a GitHub Release for every successful build.
+  #    - Push to master  → prerelease tagged dev-<short_sha>
+  #    - v* tag push     → stable release tagged <version>, marked "latest"
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish release
+    needs: [build, wasm-tests]
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Stage release assets
+        run: |
+          mkdir -p release
+          cp artifacts/cakemix-linux-x64/cakemix       release/cakemix-linux
+          cp artifacts/cakemix-windows-x64/cakemix.exe release/cakemix-windows.exe
+          cp artifacts/cakemix-macos-arm64/cakemix     release/cakemix-macos
+          (cd artifacts/cakemix-web-dist && zip -r "$GITHUB_WORKSPACE/release/cakemix-web-dist.zip" .)
+
+      - name: Set release metadata
+        id: meta
+        env:
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
+        run: |
+          short="${SHA:0:7}"
+          if [[ "$REF" == refs/tags/v* ]]; then
+            echo "tag=${REF#refs/tags/}"    >> "$GITHUB_OUTPUT"
+            echo "name=${REF#refs/tags/}"   >> "$GITHUB_OUTPUT"
+            echo "prerelease=false"         >> "$GITHUB_OUTPUT"
+            echo "make_latest=true"         >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=dev-${short}"         >> "$GITHUB_OUTPUT"
+            echo "name=Dev ${short}"        >> "$GITHUB_OUTPUT"
+            echo "prerelease=true"          >> "$GITHUB_OUTPUT"
+            echo "make_latest=false"        >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          prerelease: ${{ steps.meta.outputs.prerelease }}
+          make_latest: ${{ steps.meta.outputs.make_latest }}
+          files: release/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

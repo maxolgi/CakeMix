@@ -18,14 +18,13 @@ use tokio::sync::Notify;
 use websrt::cert::{Cert, CertSource};
 
 /// Embedded static assets from web/ and the WASM pkg.
-/// Paths are relative to this crate's manifest dir (crates/cakemix-server).
 #[derive(Embed)]
-#[folder = "../../web"]
+#[folder = "$CARGO_MANIFEST_DIR/../../web"]
 #[prefix = "web/"]
 struct WebAsset;
 
 #[derive(Embed)]
-#[folder = "../mixer-wasm/pkg"]
+#[folder = "$CARGO_MANIFEST_DIR/../mixer-wasm/pkg"]
 #[prefix = "pkg/"]
 struct WasmAsset;
 
