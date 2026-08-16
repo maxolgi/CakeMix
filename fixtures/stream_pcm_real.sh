@@ -1,8 +1,10 @@
 #!/bin/bash
 # Real-audio source — pushes the 30-track Pawel Maciwoda session over SRT to
-# the running WebSRT gateway. Audio-only MPEG-2 TS, no video: one stereo s302m
-# PID per track (mono tracks duplicated L=R — s302m has no mono layout), all
-# resampled to 48 kHz (s302m requirement) and looped forever.
+# the running WebSRT gateway. All tracks come from one sample-aligned
+# multi-channel WAV (tmp/broadcast30.wav, built by make_broadcast_wav.sh if
+# missing) and are split here into 30 stereo s302m PIDs — one PID per track,
+# mono tracks duplicated L=R (s302m has no mono layout), 48 kHz, looped
+# forever on a single shared loop point. Audio-only MPEG-2 TS, no video.
 #
 # Usage: ./fixtures/stream_pcm_real.sh
 # Override source dir:  AUDIO_DIR=/path/to/wavs ./fixtures/stream_pcm_real.sh
@@ -14,6 +16,8 @@ set -euo pipefail
 
 AUDIO_DIR="${AUDIO_DIR:-/home/flibb/Downloads/audio/PawelMaciwoda_1OfTheFirst_Full}"
 SRT_URL="${WEBSTRT_SRT_URL:-srt://127.0.0.1:9000?streamid=audio}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BROADCAST_WAV="$ROOT/tmp/broadcast30.wav"
 
 if ! ffmpeg -hide_banner -encoders 2>/dev/null | grep -qw s302m; then
   echo "error: this ffmpeg build does not include the s302m encoder (SMPTE 302M)." >&2
@@ -21,26 +25,42 @@ if ! ffmpeg -hide_banner -encoders 2>/dev/null | grep -qw s302m; then
   exit 1
 fi
 
-if [ ! -d "$AUDIO_DIR" ]; then
-  echo "error: AUDIO_DIR does not exist: ${AUDIO_DIR}" >&2
-  exit 1
+if [ ! -f "$BROADCAST_WAV" ]; then
+  echo "broadcast WAV missing — building it (one-time, ~1.8 GB)..." >&2
+  AUDIO_DIR="$AUDIO_DIR" OUT="$BROADCAST_WAV" "$ROOT/fixtures/make_broadcast_wav.sh"
 fi
 
-FFMPEG_INPUTS=()
-FFMPEG_MAPS=()
-FFMPEG_META=()
+# Channel plan must match make_broadcast_wav.sh: track order = filename sort,
+# stereo tracks keep L+R. Track i -> PID i.
+PANS=()
+MAPS=()
+META=()
+ch=0
 i=0
 for f in "$AUDIO_DIR"/*.wav; do
-  FFMPEG_INPUTS+=( -stream_loop -1 -i "$f" )
-  FFMPEG_MAPS+=( -map "${i}:a" )
-  FFMPEG_META+=( -metadata:"s:a:${i}" "language=ch${i}" )
+  chs=$(ffprobe -v error -show_entries stream=channels -of csv=p=0 "$f")
+  if [ "$chs" = "1" ]; then
+    PANS+=( "[s${i}]pan=stereo|c0=c${ch}|c1=c${ch}[a${i}]" )
+    ch=$((ch + 1))
+  else
+    PANS+=( "[s${i}]pan=stereo|c0=c${ch}|c1=c$((ch + 1))[a${i}]" )
+    ch=$((ch + 2))
+  fi
+  MAPS+=( -map "[a${i}]" )
+  META+=( -metadata:"s:a:${i}" "language=ch${i}" )
   i=$((i + 1))
 done
 
-echo "PCM: ${i} tracks as ${i} stereo s302m PIDs from ${AUDIO_DIR}" >&2
+SPLITS=()
+for ((k = 0; k < i; k++)); do SPLITS+=( "[s${k}]" ); done
+FC="[0:a]asplit=${i}$(IFS=''; echo "${SPLITS[*]}")"
+FC+=";$(IFS=';'; echo "${PANS[*]}")"
+
+echo "PCM: ${i} tracks as ${i} stereo s302m PIDs from ${BROADCAST_WAV}" >&2
 exec ffmpeg -re \
-  "${FFMPEG_INPUTS[@]}" \
-  "${FFMPEG_MAPS[@]}" \
+  -stream_loop -1 -i "$BROADCAST_WAV" \
+  -filter_complex "$FC" \
+  "${MAPS[@]}" \
   -c:a s302m -ac 2 -ar 48000 -sample_fmt s32 -strict -2 \
-  "${FFMPEG_META[@]}" \
+  "${META[@]}" \
   -f mpegts "$SRT_URL"
