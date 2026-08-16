@@ -17,6 +17,8 @@ import {
   publishTarget,
   publishChannels,
   setPublishChannels,
+  publishLatencyMs,
+  setPublishLatencyMs,
   type PublishChannels,
   connectPublish,
   disconnectPublish,
@@ -173,6 +175,19 @@ export function WebSRTPanel(props: { expanded: boolean }) {
                 ? "Publishing — click to stop: closes the output tap and the publish worker's SRT/WebTransport session"
                 : `Publish the mixer output as SMPTE 302M PCM (48 kHz, no codecs) to the gateway, stream "${publishStreamName()}"`}
             >PUBLISH</button>
+            <label class="detail-select-label">LATENCY
+              <select
+                class="detail-select"
+                value={String(publishLatencyMs())}
+                onInput={(e) => setPublishLatencyMs(parseInt(e.currentTarget.value, 10))}
+                disabled={pubActive()}
+                title="Publish TSBPD latency — how long the gateway buffers our outgoing stream before fan-out. Independent of the receive latency. Disabled while connected: reconnect required to apply."
+              >
+                <For each={LATENCY_OPTIONS}>
+                  {(ms) => <option value={String(ms)}>{ms} ms</option>}
+                </For>
+              </select>
+            </label>
             <label class="detail-select-label">CHANNELS
               <select
                 class="detail-select"

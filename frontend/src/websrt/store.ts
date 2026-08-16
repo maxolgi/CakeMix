@@ -44,7 +44,7 @@ const MAX_MIXER_CHANNELS = 128;
 const [status, setStatus] = createSignal<WebsrtStatus>("disconnected");
 const [statusDetail, setStatusDetail] = createSignal("");
 const [pids, setPids] = createSignal<WebsrtPidInfo[]>([]);
-const [latencyMs, setLatencyMsSignal] = createSignal(1000);
+const [latencyMs, setLatencyMsSignal] = createSignal(120);
 const [droppedPcm, setDroppedPcm] = createSignal(0);
 
 export const websrtStatus = status;

@@ -16,7 +16,6 @@
 
 import { createSignal } from "solid-js";
 import { sendToWorklet } from "../stores/mixer";
-import { websrtLatencyMs } from "./store";
 import { userGestureUnlock } from "../audio/unlock";
 import type { PubCmd, PubMsg, PubStats } from "./publish-worker";
 
@@ -34,6 +33,17 @@ const [statusDetail, setStatusDetail] = createSignal("");
 const [stats, setStats] = createSignal<PubStats | null>(null);
 const [target, setTarget] = createSignal("");
 const [channels, setChannels] = createSignal<PublishChannels>(2);
+// Publish TSBPD latency — independent of the receive side (each direction
+// has its own SRT peer). ?pubLatency= overrides the 120 ms default.
+const [latencyMs, setLatencyMsSignal] = createSignal(
+  parseInt(new URLSearchParams(location.search).get("pubLatency") ?? "", 10) || 120,
+);
+
+export const publishLatencyMs = latencyMs;
+/** Change the publish TSBPD latency. Only applies at next connect. */
+export function setPublishLatencyMs(ms: number): void {
+  if (status() === "disconnected") setLatencyMsSignal(ms);
+}
 
 export const publishStatus = status;
 /** Last log/error/stats line from the publish path. */
@@ -90,7 +100,7 @@ export async function connectPublish(): Promise<void> {
       : `connecting to ${url} (mkcert/PKI)`);
     const cmd: PubCmd = {
       cmd: "init", url, certHash,
-      latencyMs: websrtLatencyMs(), channels: channels(),
+      latencyMs: latencyMs(), channels: channels(),
     };
     w.postMessage(cmd);
     // Output tap on: the worklet posts {type:'pub-pcm', samples, ptsUs,
