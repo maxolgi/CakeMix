@@ -56,7 +56,13 @@ export default function App() {
         if (msg.type === "ready") { loadWasm(); }
         else if (msg.type === "wasm-ready") { setWasmReady(true); setStatus("Ready"); }
         else if (msg.type === "error") { setStatus("Error: " + msg.msg); console.error("worklet:", msg.msg); }
-        else if (msg.type === "meter") { updateMeterData(msg); }
+        else if (msg.type === "meter") {
+          updateMeterData(msg);
+          // Cumulative worklet-side pcm drop count rides the meter tick.
+          if (typeof msg.droppedPcm === "number") websrtStore.onWorkletPcmDropped(msg.droppedPcm);
+        }
+        else if (msg.type === "pid-mapped") { websrtStore.onWorkletPidMapped(msg); }
+        else if (msg.type === "pcm-dropped") { websrtStore.onWorkletPcmDropped(msg.total); }
         else if (msg.type === "pub-pcm") { relayPubPcm(msg.samples, msg.ptsUs, msg.channels); }
       };
     } catch (e: any) { setStatus("Init failed: " + e.message); }

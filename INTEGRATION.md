@@ -5,128 +5,97 @@
 ```
 [ffmpeg s302m] →SRT→ [WebSRT gateway] →WebTransport→ [WebSRT worker]
                                                           │
-                                                {type:'pcm', pid,
-                                                 channelCount,
-                                                 samples, pts}
+                                                pcm-port (transferred MessagePort,
+                                                created by the store per connect)
                                                           │
-                                            ┌─────────────┴──────────────┐
-                                            │  CakeMix main thread (app.js)
-                                            │  - Receives PCM from WebSRT worker
-                                            │  - Relays to mixer AudioWorklet
-                                            │  - UI: channel strips, meters
-                                            └─────────────────────────────┘
+                                             ┌────────────┴─────────────┐
+                                             │  Mixer AudioWorklet      │
+                                             │  - auto-maps PIDs on     │
+                                             │    first pcm (packed     │
+                                             │    from ch 0, cap 128)   │
+                                             │  - WASM MixerWasm: feed, │
+                                             │    elastic FIFOs, gain/  │
+                                             │    pan/EQ/dynamics       │
+                                             └────────────┬─────────────┘
                                                           │
-                                            port.postMessage({type:'pcm', pid, samples})
+                                        {type:'pid-mapped' / 'pcm-dropped'}
                                                           │
-                                            ┌─────────────┴──────────────┐
-                                            │  Mixer AudioWorklet
-                                            │  - WASM MixerWasm processes
-                                            │  - gain/pan/EQ/dynamics
-                                            │  - stereo output
-                                            └─────────────────────────────┘
+                                             ┌────────────┴─────────────┐
+                                             │  CakeMix main thread     │
+                                             │  - mirrors mapping for   │
+                                             │    the UI (strips,       │
+                                             │    meters, drawer)       │
+                                             │  (no PCM on this thread) │
+                                             └──────────────────────────┘
 ```
 
 ## PCM Handoff Contract
 
-WebSRT worker emits (see `web/src/worker.ts`):
+Raw pcm flows **worker → worklet over a transferred `MessagePort`** (zero
+main-thread hops; vendor/WebSRT `docs/embedding.md` "pcm-port"). The store
+creates a fresh `MessageChannel` per connect, transfers port1 to the worker
+(`{cmd:'pcm-port', port}`) and port2 to the worklet
+(`{type:'pcm-port', port}`); a fresh channel per connect is required
+because the worker is recreated on reconnect and transferred ports die
+with it.
+
+Worker → worklet, on the port (batched, sample buffers transferred — see
+`vendor/WebSRT/web/src/worker.ts` `flushOutgoing`):
 ```ts
-{ type: 'pcm', pid: number, channelCount: number, samples: Float32Array, pts: number | null }
+{ type: 'batch', msgs: [{ type: 'pcm', pid: number, channelCount: number,
+    samples: Float32Array, pts: number | null, schedUs?: number, relUs?: number }] }
 ```
 
-CakeMix mixer worklet receives (see `web/worklet-template.js`):
+Worklet → main (events, on the worklet's own port):
 ```js
-port.onmessage = (e) => {
-    if (e.data.type === 'pcm') {
-        mixer.feed_pcm(e.data.pid, e.data.samples);
-    }
-};
+{ type: 'pid-mapped', pid, chStart, channelCount }  // chStart -1 = capped at 128 ch
+{ type: 'pcm-dropped', total }                       // cumulative (wasm not ready / cap)
 ```
+
+The parent-channel relay (`{type:'pcm', pid, samples}` → worklet) remains
+as a fallback for when the port is not wired (e.g. mid-handshake); it runs
+the identical worklet-side auto-mapping and is counted in
+`websrtRelayPcm()` — 0 in normal operation.
 
 ## PID Mapping
 
-On PMT events, WebSRT worker emits (see `web/src/worker.ts`):
-```ts
-{ type: 'pmt', videoPid: number, audioPid: number, audioStreamType: number, videoCodec: ... }
-```
+Mapping is triggered by the **first pcm per PID** (not the PMT — the
+channelCount carried there is authoritative, auto-detected from the AES3
+frame header by the WebSRT demuxer; see `mpeg2ts-wasm/src/aes3.rs`). It
+executes worklet-side (see `web/worklet-template.js` `_onPcm`) so the
+direct port path needs no main-thread round trip:
+
+- PIDs are packed consecutively from mixer channel 0.
+- Capped at 128 channels total (AGENTS.md "128 input strips max");
+  overflow PIDs report `chStart: -1` via `pid-mapped` and their PCM is
+  dropped (counted).
+- The store mirrors the mapping for the UI from `pid-mapped` events
+  (`frontend/src/websrt/store.ts`).
+- `map_pid` also (re)anchors the channel's elastic playout FIFOs — a
+  remap onto the same channels is a new stream.
 
 For multi-PID audio (CakeMix use case), the PMT entries from the demuxer
 (`TsEvent` kind=1) carry per-PID format IDs. PIDs with "BSSD" registration
 are SMPTE 302M audio streams.
 
-CakeMix maps each audio PID to consecutive mixer channels:
-```js
-// For each BSSD PID in the PMT:
-sendToWorklet({
-    type: 'map-pid',
-    pid: pid,
-    chStart: nextChannelStart,
-    channelCount: channelCount
-});
-nextChannelStart += channelCount;
-```
-
-## Integration Steps
-
-### 1. Replace WebSRT's PcmPlayer with CakeMix Mixer
-
-In WebSRT's `viewer.ts`, replace the `PcmPlayer` instantiation with a
-CakeMix mixer AudioWorklet connection:
-
-```ts
-// Before (WebSRT standalone):
-pcmPlayer = new PcmPlayer();
-
-// After (with CakeMix):
-// Create a MessagePort bridge between the WebSRT worker and the CakeMix worklet.
-// The main thread relays PCM messages.
-```
-
-### 2. Bridge PCM Events
-
-The WebSRT worker posts PCM to the main thread. The main thread relays
-to the CakeMix worklet:
-
-```ts
-case 'pcm': {
-    // Feed PCM to CakeMix mixer worklet
-    mixerNode.port.postMessage({
-        type: 'pcm',
-        pid: msg.pid,
-        samples: msg.samples
-    }, [msg.samples.buffer]); // transferable, zero-copy
-    break;
-}
-```
-
-### 3. Channel Count Discovery
-
-The WebSRT demuxer auto-detects channel count from the AES3 frame header
-(see `mpeg2ts-wasm/src/aes3.rs`). The PCM event carries `channelCount`
-in `event.program_num`. Use this to configure mixer channel mapping.
-
-### 4. Run ffmpeg Publisher
+## Run ffmpeg Publisher
 
 ```bash
-# Mono (440 Hz sine, duplicated to stereo pair for AES3)
-./fixtures/stream_pcm.sh mono
-
-# Stereo (440/660 Hz pair)
-./fixtures/stream_pcm.sh stereo
-
-# 5.1 surround (6-channel sine bed)
-./fixtures/stream_pcm.sh surround
+# Real-audio 30-track session (30 stereo s302m PIDs, looped):
+./fixtures/stream_pcm_real.sh
 ```
 
-Default SRT target: `srt://127.0.0.1:9000`. Override with:
+Default SRT target: `srt://127.0.0.1:9000?streamid=audio`. Override with:
 ```bash
-WEBSTRT_SRT_URL=srt://host:port ./fixtures/stream_pcm.sh stereo
+WEBSTRT_SRT_URL=srt://host:port?streamid=NAME ./fixtures/stream_pcm_real.sh
 ```
 
 ## No Compile-Time Dependency
 
 CakeMix and WebSRT communicate purely through browser APIs:
-- `postMessage` (worker → main thread)
-- `AudioWorkletNode.port` (main thread → worklet)
+- `MessagePort` (worker → worklet, PCM — transferred, zero-copy)
+- `postMessage` (worker → main thread, control/stats)
+- `AudioWorkletNode.port` (main thread → worklet, control + events)
 
 Neither repo needs to import the other's WASM or Rust code. The WASM
 modules (mixer-wasm + mpeg2ts-wasm) are loaded independently in the browser.

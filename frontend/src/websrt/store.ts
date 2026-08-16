@@ -5,26 +5,39 @@
 // auto-maps every audio PID to consecutive mixer input channels
 // (INTEGRATION.md "PCM Handoff Contract" / "PID Mapping").
 //
-// Mapping policy:
+// PCM path: one MessageChannel per connect — port1 transferred to the
+// worker (its 'pcm-port' cmd), port2 to the mixer worklet — so raw pcm
+// flows worker→worklet with zero main-thread hops (vendor/WebSRT
+// docs/embedding.md "pcm-port"; the worker splits pcm batches onto the
+// port, control/stats stay on the parent channel). A fresh channel per
+// connect is required: the worker is recreated on reconnect and
+// transferred ports die with it.
+//
+// Mapping policy (executed worklet-side so the direct path needs no
+// main-thread round trip — the worklet posts "pid-mapped" events back,
+// which feed websrtPids()):
 // - A PID is mapped on its FIRST 'pcm' message. The channelCount carried
 //   there is authoritative (auto-detected from the AES3 frame header by the
 //   WebSRT demuxer — INTEGRATION.md "Channel Count Discovery"); the PMT
 //   never triggers mapping.
 // - PIDs are packed consecutively from mixer channel 0, capped at 128
-//   channels total. Overflow PIDs are logged once and their PCM dropped
-//   (chStart stays -1).
-// - While the mixer WASM is not ready (wasmReady() === false) PCM is
-//   dropped silently and counted (websrtDroppedPcm()); first-PCM mapping is
-//   deferred with it, so a PID maps only once PCM can actually flow.
+//   channels total. Overflow PIDs report chStart -1 and their PCM is
+//   dropped (counted in websrtDroppedPcm(), as are pre-WASM drops).
+// - The parent-channel relay remains as a fallback (worker pcm-port not
+//   wired, e.g. mid-handshake): identical worklet-side auto-mapping, and
+//   counted in websrtRelayPcm() so the direct path is verifiable — it
+//   should stay 0 in normal operation.
 //
-// Worklet relay messages (see web/mixer-worklet-processor.js):
-//   { type: "map-pid",   pid, chStart, channelCount }  → mixer.map_pid
-//   { type: "pcm",       pid, samples }                → mixer.feed_pcm
-//   { type: "unmap-pid", pid }                         → mixer.unmap_pid
+// Worklet messages (see web/worklet-template.js):
+//   { type: "pcm-port", port }                       → direct pcm channel
+//   { type: "pcm",       pid, samples }              → fallback relay
+//   { type: "unmap-pid", pid }                       → mixer.unmap_pid
+//   { type: "pid-mapped", pid, chStart, channelCount }  (worklet → main)
+//   { type: "pcm-dropped", total }                      (worklet → main)
 
 import { createSignal } from "solid-js";
 import { createWebsrtWorker, type WorkerCmd, type WorkerMsg } from "./client";
-import { wasmReady, sendToWorklet } from "../stores/mixer";
+import { sendToWorklet } from "../stores/mixer";
 import { userGestureUnlock } from "../audio/unlock";
 
 export type WebsrtStatus = "disconnected" | "connecting" | "connected" | "error";
@@ -46,6 +59,7 @@ const [statusDetail, setStatusDetail] = createSignal("");
 const [pids, setPids] = createSignal<WebsrtPidInfo[]>([]);
 const [latencyMs, setLatencyMsSignal] = createSignal(120);
 const [droppedPcm, setDroppedPcm] = createSignal(0);
+const [relayPcm, setRelayPcm] = createSignal(0);
 
 export const websrtStatus = status;
 /** Last log/error/stats line from the receive path. */
@@ -54,8 +68,11 @@ export const websrtStatusDetail = statusDetail;
 export const websrtPids = pids;
 /** TSBPD latency in ms (the glass-to-glass buffer). Applies on next connect. */
 export const websrtLatencyMs = latencyMs;
-/** PCM messages dropped: mixer WASM not ready, or PID beyond the 128-ch cap. */
+/** PCM dropped worklet-side (WASM not ready, or PID beyond the 128-ch cap). Cumulative. */
 export const websrtDroppedPcm = droppedPcm;
+/** PCM that arrived via the parent-channel fallback instead of the direct
+ *  port — 0 in normal operation (proves the direct path is live). */
+export const websrtRelayPcm = relayPcm;
 
 export function setWebsrtLatencyMs(ms: number): void {
   setLatencyMsSignal(ms);
@@ -76,7 +93,6 @@ const [targetUrl, setTargetUrl] = createSignal(initialTargetUrl);
 export const websrtTarget = { url: targetUrl, setUrl: setTargetUrl };
 
 let worker: Worker | null = null;
-let nextChStart = 0;
 
 /** Connect: parse the target URL (empty = this page's gateway, stream
  *  "default"), fetch the target origin's /cert-hash.js for its cert hash +
@@ -122,6 +138,11 @@ export async function connectWebsrt(): Promise<void> {
       : `connecting to ${url} (mkcert/PKI)`);
     const cmd: WorkerCmd = { cmd: "init", url, certHash, latencyMs: latencyMs() };
     w.postMessage(cmd);
+    // Direct pcm channel (queued behind init — the worker processes
+    // cmds in order, so no pcm can bypass it once the stream starts).
+    const chan = new MessageChannel();
+    w.postMessage({ cmd: "pcm-port", port: chan.port1 } as WorkerCmd, [chan.port1]);
+    sendToWorklet({ type: "pcm-port", port: chan.port2 }, [chan.port2]);
   } catch (e) {
     terminateWorker();
     setStatus("error");
@@ -129,16 +150,18 @@ export async function connectWebsrt(): Promise<void> {
   }
 }
 
-/** Disconnect: unmap every mapped PID in the worklet, terminate the worker,
- *  reset the channel allocator and the discovered-PID list. */
+/** Disconnect: unmap every mapped PID in the worklet, close the direct
+ *  pcm channel (also resets the worklet-side auto-mapper so a reconnect
+ *  maps from channel 0), terminate the worker, reset the discovered-PID
+ *  list. */
 export function disconnectWebsrt(): void {
   if (worker) {
     unmapAll();
+    sendToWorklet({ type: "pcm-port", port: null });
     terminateWorker();
     setStatusDetail("disconnected");
   }
   setPids([]);
-  nextChStart = 0;
   setStatus("disconnected");
 }
 
@@ -172,7 +195,7 @@ function unmapAll(): void {
 function onWorkerMsg(msg: WorkerMsg): void {
   switch (msg.type) {
     case "pcm":
-      onPcm(msg.pid, msg.channelCount, msg.samples);
+      onPcm(msg.pid, msg.samples);
       break;
     case "pmt":
       // Informational only — mapping happens on first PCM per PID.
@@ -194,9 +217,9 @@ function onWorkerMsg(msg: WorkerMsg): void {
       // Stream is definitively over — full reset so a reconnect re-maps PIDs
       // from channel 0 instead of leaking the old allocation.
       unmapAll();
+      sendToWorklet({ type: "pcm-port", port: null });
       terminateWorker();
       setPids([]);
-      nextChStart = 0;
       if (msg.error) {
         setStatus("error");
         setStatusDetail(msg.error);
@@ -211,37 +234,38 @@ function onWorkerMsg(msg: WorkerMsg): void {
   }
 }
 
-function onPcm(pid: number, channelCount: number, samples: Float32Array): void {
-  // Mixer WASM not instantiated yet — drop (counted) and defer mapping, so
-  // the PID maps on the first PCM that can actually be fed to the mixer.
-  if (!wasmReady()) {
-    setDroppedPcm((n) => n + 1);
-    return;
+// ── Worklet events (direct path bookkeeping) ──────────────────────────────
+
+/** Worklet "pid-mapped": a PID was auto-mapped on its first pcm.
+ *  chStart -1 = capped (128-channel cap); its PCM is dropped worklet-side. */
+export function onWorkletPidMapped(msg: {
+  pid: number;
+  chStart: number;
+  channelCount: number;
+}): void {
+  if (pids().some((p) => p.pid === msg.pid)) return;
+  setPids([
+    ...pids(),
+    { pid: msg.pid, channelCount: msg.channelCount, chStart: msg.chStart, seenPcm: true },
+  ]);
+  if (msg.chStart < 0) {
+    setStatusDetail(
+      `pid ${msg.pid}: +${msg.channelCount} ch exceeds the ${MAX_MIXER_CHANNELS}-channel cap — dropping`,
+    );
   }
-  let info = pids().find((p) => p.pid === pid);
-  if (!info) {
-    info = { pid, channelCount, chStart: -1, seenPcm: false };
-    if (nextChStart + channelCount > MAX_MIXER_CHANNELS) {
-      setStatusDetail(
-        `pid ${pid}: +${channelCount} ch exceeds the ${MAX_MIXER_CHANNELS}-channel cap — dropping`,
-      );
-    } else {
-      info.chStart = nextChStart;
-      nextChStart += channelCount;
-    }
-    setPids([...pids(), info]);
-  }
-  if (info.chStart < 0) {
-    setDroppedPcm((n) => n + 1);
-    return;
-  }
-  if (!info.seenPcm) {
-    // First PCM for this PID — channelCount is authoritative here.
-    sendToWorklet({ type: "map-pid", pid, chStart: info.chStart, channelCount: info.channelCount });
-    setPids((list) => list.map((p) => (p.pid === pid ? { ...p, seenPcm: true } : p)));
-  }
-  // Zero-copy relay: the worker transferred the samples' ArrayBuffer to us;
-  // transfer it on into the worklet.
+}
+
+/** Worklet "pcm-dropped": cumulative drop count (WASM not ready, or cap).
+ *  Absolute — the worklet is the single counting authority. */
+export function onWorkletPcmDropped(total: number): void {
+  setDroppedPcm(total);
+}
+
+// Fallback parent-channel pcm path: the worker posts pcm on its parent
+// channel only while no pcm-port is wired. Relay to the worklet (which
+// auto-maps identically) and count — 0 in normal operation.
+function onPcm(pid: number, samples: Float32Array): void {
+  setRelayPcm((n) => n + 1);
   sendToWorklet({ type: "pcm", pid, samples }, [samples.buffer]);
 }
 

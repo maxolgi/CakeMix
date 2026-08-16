@@ -1046,6 +1046,16 @@ class MixerProcessor extends AudioWorkletProcessor {
         this._pubChannels = 2; // tap width: 2 = master pair, >2 = channel direct outs
         this._tapMissingWarned = false; // log-once guards for the channel tap
         this._tapErrorWarned = false;
+        // Direct pcm path (worker → worklet MessagePort; see _attachPcmPort).
+        this._pcmPort = null;
+        // Worklet-side PID→mixer-channel auto-mapper (the store's old
+        // mapping policy, relocated so the direct port path can map
+        // without a main-thread round trip). The store's UI list mirrors
+        // the "pid-mapped" events posted here.
+        this._pidMap = {};
+        this._pidAlloc = 0;
+        this._cappedPids = {};
+        this._droppedPcm = 0;
 
         this.port.onmessage = (e) => {
             var msg = e.data;
@@ -1085,9 +1095,22 @@ class MixerProcessor extends AudioWorkletProcessor {
             } else if (msg.type === "set-eq-bypass") {
                 if (this._mixer) try { this._mixer.set_eq_bypass(msg.ch, msg.bypassed); } catch(e) {}
             } else if (msg.type === "map-pid") {
-                if (this._mixer) try { this._mixer.map_pid(msg.pid, msg.chStart, msg.channelCount); } catch(e) {}
+                if (this._mixer) try {
+                    this._mixer.map_pid(msg.pid, msg.chStart, msg.channelCount);
+                    // Explicit mapping registers without allocating (the
+                    // auto-mapper skips it from then on).
+                    this._pidMap[msg.pid] = { chStart: msg.chStart, channelCount: msg.channelCount };
+                } catch(e) {}
             } else if (msg.type === "unmap-pid") {
                 if (this._mixer) try { this._mixer.unmap_pid(msg.pid); } catch(e) {}
+                delete this._pidMap[msg.pid];
+                if (Object.keys(this._pidMap).length === 0) this._pidAlloc = 0;
+            } else if (msg.type === "pcm-port") {
+                this._attachPcmPort(msg.port || null);
+            } else if (msg.type === "pcm") {
+                // Fallback parent-channel relay (direct port not wired, or
+                // mid-handshake): same auto-map + feed path.
+                this._onPcm(msg);
             } else if (msg.type === "set-input-gain") {
                 if (this._mixer) try { this._mixer.set_channel_input_gain(msg.ch, msg.gainDb); } catch(e) {}
             } else if (msg.type === "set-phase") {
@@ -1136,12 +1159,6 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (this._mixer) try { this._mixer.set_bus_gain(msg.bus, msg.gain); } catch(e) {}
             } else if (msg.type === "set-bus-mute") {
                 if (this._mixer) try { this._mixer.set_bus_mute(msg.bus, msg.muted); } catch(e) {}
-            } else if (msg.type === "pcm") {
-                // External PCM from WebSRT worker (relayed via main thread).
-                // msg.samples is a Float32Array, msg.pid identifies the stream.
-                if (this._mixer) {
-                    try { this._mixer.feed_pcm(msg.pid, msg.samples); } catch(e) {}
-                }
             } else if (msg.type === "pub-start") {
                 // Enable the publish tap for msg.channels outputs (default 2).
                 // 2 taps the master stereo pair exactly as before; 16/32/64/128
@@ -1194,6 +1211,7 @@ class MixerProcessor extends AudioWorkletProcessor {
                     limiterGr: 0,
                     channels: [],
                     buses: [],
+                    droppedPcm: this._droppedPcm,
                 });
             }
             return true;
@@ -1239,6 +1257,7 @@ class MixerProcessor extends AudioWorkletProcessor {
                     limiterGr: this._mixer.limiter_gain_reduction_db(),
                     channels: JSON.parse(this._mixer.channel_meters_json()),
                     buses: JSON.parse(this._mixer.bus_meters_json()),
+                    droppedPcm: this._droppedPcm,
                 };
                 // Elastic playout diagnostics (drift corrections applied by
                 // the wasm FIFOs; nonzero slips/inserts are normal — they
@@ -1280,6 +1299,63 @@ class MixerProcessor extends AudioWorkletProcessor {
             channels: this._pubChannels,
         }, [batch.buffer]);
         this._pubFill = 0;
+    }
+
+    // Direct pcm channel (see the store's connectWebsrt): the store creates
+    // a MessageChannel per connect, transfers one end to the WebSRT worker
+    // (its 'pcm-port' cmd) and this end here — raw pcm then flows
+    // worker→worklet with zero main-thread hops. Passing null closes the
+    // port and resets the auto-mapper (the store has unmapped every PID
+    // already; a reconnect maps from channel 0 again).
+    _attachPcmPort(port) {
+        if (this._pcmPort) { try { this._pcmPort.close(); } catch(e) {} this._pcmPort = null; }
+        if (!port) {
+            this._pidMap = {};
+            this._pidAlloc = 0;
+            return;
+        }
+        this._pcmPort = port;
+        var self = this;
+        port.onmessage = function (e) {
+            var d = e.data;
+            if (d && d.type === "batch") {
+                for (var i = 0; i < d.msgs.length; i++) self._onPcm(d.msgs[i]);
+            }
+        };
+    }
+
+    // One pcm message from either arrival path (direct port or parent
+    // relay). First sight of a PID auto-maps it: channels packed from 0,
+    // capped at 128 total (AGENTS.md "128 input strips max") — the policy
+    // the store used to run main-thread. "pid-mapped" events mirror the
+    // mapping to the store for the UI; drops (wasm not ready, or past the
+    // cap) are counted and posted as "pcm-dropped" (cumulative total).
+    _onPcm(m) {
+        if (!m || m.type !== "pcm") return;
+        if (!this._mixer) { this._droppedPcm++; this._postDropped(); return; }
+        var pid = m.pid;
+        if (!(pid in this._pidMap)) {
+            var cc = m.channelCount || 1;
+            if (this._pidAlloc + cc > 128) {
+                if (!(pid in this._cappedPids)) {
+                    this._cappedPids[pid] = true;
+                    this.port.postMessage({ type: "pid-mapped", pid: pid, chStart: -1, channelCount: cc });
+                }
+                this._droppedPcm++;
+                this._postDropped();
+                return;
+            }
+            var chStart = this._pidAlloc;
+            this._pidAlloc += cc;
+            this._pidMap[pid] = { chStart: chStart, channelCount: cc };
+            try { this._mixer.map_pid(pid, chStart, cc); } catch(e) {}
+            this.port.postMessage({ type: "pid-mapped", pid: pid, chStart: chStart, channelCount: cc });
+        }
+        try { this._mixer.feed_pcm(pid, m.samples); } catch(e) {}
+    }
+
+    _postDropped() {
+        this.port.postMessage({ type: "pcm-dropped", total: this._droppedPcm });
     }
 
     // Configure the mixer's per-channel direct-out tap (n = channel count,
