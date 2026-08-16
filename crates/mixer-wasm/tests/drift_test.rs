@@ -15,8 +15,6 @@ use mixer_wasm::MixerWasm;
 
 const SR: u32 = 48_000;
 const BLOCK: u32 = 128;
-/// Depth statistics window (blocks) — must mirror the binding's constant.
-const WINDOW_BLOCKS: usize = 375;
 
 fn mixer() -> MixerWasm {
     let mut m = MixerWasm::new(SR, BLOCK, 256).expect("ctor");
