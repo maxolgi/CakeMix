@@ -11,8 +11,11 @@
 // (?pubstream= overrides).
 //
 // PCM flow: worklet output tap (pub-start/pub-stop, see
-// web/worklet-template.js) → App.tsx relay → relayPubPcm() →
-// {cmd:'pcm'} transferred into the worker.
+// web/worklet-template.js) → transferred MessagePort (one per connect:
+// port1 here, port2 in the worklet via {type:'pub-port'}) →
+// {type:'pub-pcm'} straight into the worker. The App.tsx relay →
+// relayPubPcm() remains as counted fallback (publishRelayPcm(), 0 in
+// normal operation).
 
 import { createSignal } from "solid-js";
 import { sendToWorklet } from "../stores/mixer";
@@ -33,6 +36,7 @@ const [statusDetail, setStatusDetail] = createSignal("");
 const [stats, setStats] = createSignal<PubStats | null>(null);
 const [target, setTarget] = createSignal("");
 const [channels, setChannels] = createSignal<PublishChannels>(2);
+const [relayPcm, setRelayPcm] = createSignal(0);
 // Publish TSBPD latency — independent of the receive side (each direction
 // has its own SRT peer). ?pubLatency= overrides the 120 ms default.
 const [latencyMs, setLatencyMsSignal] = createSignal(
@@ -54,6 +58,9 @@ export const publishStats = stats;
 export const publishTarget = target;
 /** Output channel count: 2|16|32|64|128, packed as ceil(N/2) stereo s302m PIDs. */
 export const publishChannels = channels;
+/** PCM batches that arrived via the parent-channel fallback instead of the
+ *  direct worklet→worker port — 0 in normal operation. */
+export const publishRelayPcm = relayPcm;
 
 /** Stream name the master mix is published as (?pubstream= overrides). */
 export function publishStreamName(): string {
@@ -103,6 +110,11 @@ export async function connectPublish(): Promise<void> {
       latencyMs: latencyMs(), channels: channels(),
     };
     w.postMessage(cmd);
+    // Direct worklet→worker pcm channel (queued behind init; fresh per
+    // connect because the worker is recreated and ports die with it).
+    const chan = new MessageChannel();
+    w.postMessage({ cmd: "pcm-port", port: chan.port1 } as PubCmd, [chan.port1]);
+    sendToWorklet({ type: "pub-port", port: chan.port2 }, [chan.port2]);
     // Output tap on: the worklet posts {type:'pub-pcm', samples, ptsUs,
     // channels} — the master pair for 2ch, channel direct outs otherwise
     // (silence while the mixer is stopped, so the stream stays continuous).
@@ -116,9 +128,11 @@ export async function connectPublish(): Promise<void> {
   }
 }
 
-/** Disconnect: switch the worklet tap off, stop the worker, reset state. */
+/** Disconnect: switch the worklet tap off, close the direct pcm channel,
+ *  stop the worker, reset state. */
 export function disconnectPublish(): void {
   sendToWorklet({ type: "pub-stop" });
+  sendToWorklet({ type: "pub-port", port: null });
   if (worker) {
     worker.postMessage({ cmd: "stop" });
     terminateWorker();
@@ -137,6 +151,7 @@ export function disconnectPublish(): void {
  *  and it cannot change while connected. */
 export function relayPubPcm(samples: Float32Array, ptsUs: number, msgChannels?: number): void {
   if (!worker) return;
+  setRelayPcm((n) => n + 1);
   worker.postMessage({ cmd: "pcm", samples, ptsUs, channels: msgChannels ?? channels() }, [samples.buffer]);
 }
 
@@ -182,6 +197,7 @@ function onWorkerMsg(msg: PubMsg): void {
     case "wtClosed":
       // Publish session is definitively over — full reset, no auto-reconnect.
       sendToWorklet({ type: "pub-stop" });
+      sendToWorklet({ type: "pub-port", port: null });
       terminateWorker();
       setStats(null);
       setTarget("");

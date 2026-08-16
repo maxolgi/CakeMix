@@ -1046,8 +1046,10 @@ class MixerProcessor extends AudioWorkletProcessor {
         this._pubChannels = 2; // tap width: 2 = master pair, >2 = channel direct outs
         this._tapMissingWarned = false; // log-once guards for the channel tap
         this._tapErrorWarned = false;
-        // Direct pcm path (worker → worklet MessagePort; see _attachPcmPort).
+        // Direct pcm paths (transferred MessagePorts; see _attachPcmPort and
+        // the 'pub-port' message). Null = parent-channel relay fallback.
         this._pcmPort = null;
+        this._pubOutPort = null;
         // Worklet-side PID→mixer-channel auto-mapper (the store's old
         // mapping policy, relocated so the direct port path can map
         // without a main-thread round trip). The store's UI list mirrors
@@ -1107,6 +1109,13 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (Object.keys(this._pidMap).length === 0) this._pidAlloc = 0;
             } else if (msg.type === "pcm-port") {
                 this._attachPcmPort(msg.port || null);
+            } else if (msg.type === "pub-port") {
+                // Publish output channel: completed pub batches flow
+                // worklet → publish worker over this port instead of the
+                // parent relay (publish.ts wires it per connect; null
+                // closes it and reverts to the parent path).
+                if (this._pubOutPort) { try { this._pubOutPort.close(); } catch(e) {} }
+                this._pubOutPort = msg.port || null;
             } else if (msg.type === "pcm") {
                 // Fallback parent-channel relay (direct port not wired, or
                 // mid-handshake): same auto-map + feed path.
@@ -1292,7 +1301,10 @@ class MixerProcessor extends AudioWorkletProcessor {
         if (this._pubFill < this._pubBuf.length) return;
         // Transfer detaches the buffer, so the posted samples array is fresh.
         var batch = new Float32Array(this._pubBuf);
-        this.port.postMessage({
+        // Direct port to the publish worker when wired; parent relay
+        // (App.tsx → publish.ts relayPubPcm) as fallback.
+        var dst = this._pubOutPort || this.port;
+        dst.postMessage({
             type: "pub-pcm",
             samples: batch,
             ptsUs: pubBatchPtsUs(this._pubFrames - PUB_BATCH_FRAMES),

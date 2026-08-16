@@ -420,8 +420,6 @@ body {
     border-bottom: 1px solid #14141c; white-space: nowrap;
 }
 .websrt-pid-table tbody tr:last-child td { border-bottom: none; }
-.websrt-pcm { color: #333; }
-.websrt-pcm.on { color: #4ade80; }
 .websrt-subsection {
     display: flex; flex-direction: column; gap: 6px;
     margin-top: 4px; padding-top: 6px; border-top: 1px solid #1e1e28;

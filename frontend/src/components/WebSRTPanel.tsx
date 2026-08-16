@@ -142,7 +142,6 @@ export function WebSRTPanel(props: { expanded: boolean }) {
                     <th>PID</th>
                     <th>CH</th>
                     <th>MIXER CH</th>
-                    <th>PCM</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -152,10 +151,6 @@ export function WebSRTPanel(props: { expanded: boolean }) {
                         <td>{p.pid}</td>
                         <td>{p.channelCount}</td>
                         <td>{mixerChRange(p.chStart, p.channelCount)}</td>
-                        <td><span
-                          class={`websrt-pcm ${p.seenPcm ? "on" : ""}`}
-                          title={p.seenPcm ? "PCM received" : "No PCM received yet"}
-                        >{p.seenPcm ? "●" : "–"}</span></td>
                       </tr>
                     )}
                   </For>

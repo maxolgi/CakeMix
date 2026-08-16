@@ -47,8 +47,6 @@ export interface WebsrtPidInfo {
   channelCount: number;
   /** First mixer channel for this PID; -1 = not mapped (128-ch cap exceeded). */
   chStart: number;
-  /** True once this PID has been mapped and PCM relayed. */
-  seenPcm: boolean;
 }
 
 /** Mixer input-channel cap (AGENTS.md: 128 input strips max). */
@@ -244,10 +242,7 @@ export function onWorkletPidMapped(msg: {
   channelCount: number;
 }): void {
   if (pids().some((p) => p.pid === msg.pid)) return;
-  setPids([
-    ...pids(),
-    { pid: msg.pid, channelCount: msg.channelCount, chStart: msg.chStart, seenPcm: true },
-  ]);
+  setPids([...pids(), { pid: msg.pid, channelCount: msg.channelCount, chStart: msg.chStart }]);
   if (msg.chStart < 0) {
     setStatusDetail(
       `pid ${msg.pid}: +${msg.channelCount} ch exceeds the ${MAX_MIXER_CHANNELS}-channel cap — dropping`,

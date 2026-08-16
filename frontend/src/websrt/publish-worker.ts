@@ -42,6 +42,7 @@ export interface PubStats {
 export type PubCmd =
   | { cmd: "init"; url: string; certHash: Uint8Array | null; latencyMs: number; channels: number }
   | { cmd: "pcm"; samples: Float32Array; ptsUs: number; channels: number }
+  | { cmd: "pcm-port"; port: MessagePort | null }
   | { cmd: "stop" };
 
 // Subset of stream-worker.ts's PublishMsg set (no credit/encode: there is
@@ -81,6 +82,11 @@ let muxWasmReady = false;
 
 // ─── Message handler ──────────────────────────────────────────────
 
+// Direct pcm channel (see publish.ts connectPublish): the worklet posts
+// completed pub batches {type:'pub-pcm', ...} on this port instead of the
+// parent relay. The parent 'pcm' cmd remains as fallback.
+let pcmPort: MessagePort | null = null;
+
 self.onmessage = async (e: MessageEvent) => {
   const cmd = e.data as PubCmd;
   switch (cmd.cmd) {
@@ -90,6 +96,20 @@ self.onmessage = async (e: MessageEvent) => {
     case "pcm":
       handlePcm(cmd.samples, cmd.ptsUs, cmd.channels);
       break;
+    case "pcm-port": {
+      if (pcmPort) { try { pcmPort.close(); } catch {} }
+      pcmPort = cmd.port ?? null;
+      if (pcmPort) {
+        pcmPort.onmessage = (ev: MessageEvent) => {
+          const m = ev.data;
+          if (m && m.type === "pub-pcm") {
+            handlePcm(m.samples, m.ptsUs, m.channels);
+            flushOutgoing();
+          }
+        };
+      }
+      break;
+    }
     case "stop":
       gen++;
       doStop();
