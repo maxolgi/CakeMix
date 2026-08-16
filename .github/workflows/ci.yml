@@ -17,7 +17,8 @@ jobs:
         with:
           submodules: recursive
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Match rust-toolchain.toml so rustfmt output is reproducible.
+      - uses: dtolnay/rust-toolchain@1.95
 
       - uses: actions/setup-node@v4
         with:
@@ -55,6 +56,12 @@ jobs:
 
       - name: Run WASM tests
         run: cd crates/mixer-wasm && node tests/run_tests.mjs
+
+      # The #[wasm_bindgen_test] suite (bus_parallel, channel_params,
+      # channel_tap, known_answer, pcm_fifo) — compiled by `cargo test` but
+      # only executable under wasm.
+      - name: Run wasm_bindgen_test suite (node)
+        run: cd crates/mixer-wasm && wasm-pack test --node --release
 
       - name: Install frontend dependencies
         working-directory: frontend

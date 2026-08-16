@@ -30,7 +30,10 @@ pub fn spawn(
     srt_port: u16,
     latency_ms: u64,
     shutdown: Arc<Notify>,
-) -> anyhow::Result<(JoinHandle<anyhow::Result<()>>, websrt::gateway::GatewayStatsHandle)> {
+) -> anyhow::Result<(
+    JoinHandle<anyhow::Result<()>>,
+    websrt::gateway::GatewayStatsHandle,
+)> {
     let bind_addr: std::net::SocketAddr = format!("0.0.0.0:{wt_port}").parse()?;
     // Payload size needs no local override: since WebSRT 8da0d38 the
     // builder's `SrtConfig::default()` carries upstream `PAYLOAD_SIZE`
@@ -68,9 +71,7 @@ pub fn spawn(
     });
 
     Ok((
-        tokio::spawn(async move {
-            gateway.run(shutdown.notified()).await
-        }),
+        tokio::spawn(async move { gateway.run(shutdown.notified()).await }),
         stats,
     ))
 }

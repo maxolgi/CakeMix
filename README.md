@@ -4,13 +4,17 @@ Professional WASM audio mixer with WebSRT I/O. Built on the real `oximedia-mixer
 
 ## Status
 
-**M0 complete.** Mixer runs in WASM, DSP proven with 42 native + 9 WASM tests.
+**M1 complete.** PCM audio arrives over WebSRT (SRT/WebTransport), is mixed by
+the WASM engine in the browser's AudioWorklet, and is re-published over
+WebSRT. DSP proven with 57 native + 44 WASM known-answer tests.
 
 | Milestone | Status |
 |-----------|--------|
 | M0 — WASM build + DSP tests | ✅ |
-| M1 — PCM end-to-end via WebSRT | Blocked on WebSRT changes |
-| M4 — Pro DSP (EQ, dynamics, metering) | In progress |
+| M1 — PCM end-to-end via WebSRT | ✅ |
+| M2 — Multi-PID (8 stereo / 16 mono) | ⏳ Needs WebSRT MPTS |
+| M3 — Multi-session sum | ⏳ |
+| M4 — Pro DSP (EQ, dynamics, metering) | 🔨 In progress |
 
 ## Quick start
 
@@ -27,6 +31,19 @@ make test-wasm
 # Run everything
 make test-all
 ```
+
+## Running the server
+
+```bash
+make serve      # builds wasm + UI, serves http://localhost:8200 (no TLS)
+make serve-tls  # same, HTTPS with an auto-generated self-signed cert
+```
+
+The server (`crates/cakemix-server`) embeds the built UI (`web/`) and the
+wasm-pack output (`crates/mixer-wasm/pkg`) **at compile time** — both are
+built by `make serve` first. The reference WebSRT web app is served on its
+own port (`--web-port`, default 8201) after `make build-websrt-web` + a
+server rebuild.
 
 ## Architecture
 
@@ -58,7 +75,6 @@ The engine's `process()` feeds the same input to every channel. We resolve this 
 ### Forks
 
 - **`maxolgi/oximedia`** — rayon optional behind `parallel` feature, `std::time` patched for wasm32, dynamics zero-crossing bug fixed
-- **`vendor/oxifft/`** — oxifft 0.3.2 with `default = ["std"]` (no threading/rayon)
 
 ## DSP modules (M4 progress)
 
@@ -75,4 +91,13 @@ All verified with known-answer honesty tests (per AGENTS.md honesty rule):
 
 ## License
 
-Apache-2.0
+AGPL-3.0 (see `LICENSE`). The repo contains code derived from
+[Eyevinn audio-mixer](https://github.com/Eyevinn/audio-mixer) (AGPL-3.0),
+which sets the license for the combined work. Third-party components:
+
+| Component | License |
+|-----------|---------|
+| `maxolgi/oximedia` (DSP engine fork) | Apache-2.0 |
+| `vendor/WebSRT` (submodule) | MPL-2.0 |
+| `maxolgi/srt-rs` (SRT transport) | Apache-2.0 |
+| `maxolgi/mpeg2ts` (TS demuxer) | MIT |

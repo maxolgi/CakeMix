@@ -19,7 +19,7 @@ use axum::Router;
 use rust_embed::Embed;
 
 #[derive(Embed)]
-#[folder = "/home/flibb/CakeMix/vendor/WebSRT/web/dist"]
+#[folder = "../../vendor/WebSRT/web/dist"]
 struct RefWebAsset;
 
 /// Run the HTTPS server for the reference web UI. Blocks until `shutdown`

@@ -34,7 +34,7 @@ compiled to `wasm32-unknown-unknown`, with audio arriving and departing
 the browser over WebSRT (SRT over WebTransport).
 
 **This is a standalone repo, not a SlopShady feature.** SlopShady
-(`/home/flibb/SlopShady`) is **read-only reference** for the WebSRT I/O
+(a separate local checkout) is **read-only reference** for the WebSRT I/O
 glue — three files (see FINDINGS.md §6). Never modify SlopShady from here.
 
 ### Engine source: port `oximedia-mixer`

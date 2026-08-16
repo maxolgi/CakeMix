@@ -18,14 +18,14 @@ use tokio::sync::Notify;
 use websrt::cert::{Cert, CertSource};
 
 /// Embedded static assets from web/ and the WASM pkg.
-/// Paths are relative to the workspace root.
+/// Paths are relative to this crate's manifest dir (crates/cakemix-server).
 #[derive(Embed)]
-#[folder = "/home/flibb/CakeMix/web"]
+#[folder = "../../web"]
 #[prefix = "web/"]
 struct WebAsset;
 
 #[derive(Embed)]
-#[folder = "/home/flibb/CakeMix/crates/mixer-wasm/pkg"]
+#[folder = "../mixer-wasm/pkg"]
 #[prefix = "pkg/"]
 struct WasmAsset;
 
@@ -70,10 +70,18 @@ struct Cli {
 
     // Reference web UI (vendor/WebSRT/web demo app: viewer, publisher, debug
     // panels) on its own HTTPS port, mirroring websrt-gateway's --web-port.
-    #[arg(long, default_value_t = 8201u16, help = "HTTPS port for the reference WebSRT web UI (0 disables)")]
+    #[arg(
+        long,
+        default_value_t = 8201u16,
+        help = "HTTPS port for the reference WebSRT web UI (0 disables)"
+    )]
     web_port: u16,
 
-    #[arg(long, default_value = "0.0.0.0", help = "Bind address for the reference web UI")]
+    #[arg(
+        long,
+        default_value = "0.0.0.0",
+        help = "Bind address for the reference web UI"
+    )]
     web_bind: String,
 
     #[arg(long, default_value_t = 1000u64, value_parser = clap::value_parser!(u64).range(1..),
@@ -167,43 +175,63 @@ async fn health() -> &'static str {
     "ok"
 }
 
-fn build_router(cert_hash_js: String, stats: std::sync::Arc<websrt::gateway::GatewayStatsHandle>) -> Router {
+fn build_router(
+    cert_hash_js: String,
+    stats: std::sync::Arc<websrt::gateway::GatewayStatsHandle>,
+) -> Router {
     Router::new()
         .route("/", get(serve_index))
         .route("/health", get(health))
         .route("/api/cert-hash", get(api_cert_hash))
-        .route("/api/streams", get(move || {
-            let stats = stats.clone();
-            async move {
-            let s = stats.stats();
-            let streams: Vec<serde_json::Value> = s.per_stream.iter().map(|st| serde_json::json!({
-                "name": st.name,
-                "alive": st.alive,
-                "viewers": st.viewers,
-                "messagesSent": st.messages_sent,
-                "sendFailures": st.send_failures,
-            })).collect();
-            let sessions: Vec<serde_json::Value> = s.per_session.iter().map(|se| serde_json::json!({
-                "id": se.session_id,
-                "peer": se.peer.to_string(),
-                "stream": se.stream_name,
-                "messagesPushed": se.messages_pushed,
-                "publishDropped": se.publish_dropped,
-            })).collect();
-            let body = serde_json::json!({
-                "streams": streams,
-                "aliveStreams": s.alive_streams,
-                "totalViewers": s.total_viewers,
-                "activeSessions": s.active_sessions,
-                "sessions": sessions,
-            });
-            (
-                [(header::CONTENT_TYPE, "application/json"),
-                 (header::CACHE_CONTROL, "no-store")],
-                body.to_string(),
-            )
-            }
-        }))
+        .route(
+            "/api/streams",
+            get(move || {
+                let stats = stats.clone();
+                async move {
+                    let s = stats.stats();
+                    let streams: Vec<serde_json::Value> = s
+                        .per_stream
+                        .iter()
+                        .map(|st| {
+                            serde_json::json!({
+                                "name": st.name,
+                                "alive": st.alive,
+                                "viewers": st.viewers,
+                                "messagesSent": st.messages_sent,
+                                "sendFailures": st.send_failures,
+                            })
+                        })
+                        .collect();
+                    let sessions: Vec<serde_json::Value> = s
+                        .per_session
+                        .iter()
+                        .map(|se| {
+                            serde_json::json!({
+                                "id": se.session_id,
+                                "peer": se.peer.to_string(),
+                                "stream": se.stream_name,
+                                "messagesPushed": se.messages_pushed,
+                                "publishDropped": se.publish_dropped,
+                            })
+                        })
+                        .collect();
+                    let body = serde_json::json!({
+                        "streams": streams,
+                        "aliveStreams": s.alive_streams,
+                        "totalViewers": s.total_viewers,
+                        "activeSessions": s.active_sessions,
+                        "sessions": sessions,
+                    });
+                    (
+                        [
+                            (header::CONTENT_TYPE, "application/json"),
+                            (header::CACHE_CONTROL, "no-store"),
+                        ],
+                        body.to_string(),
+                    )
+                }
+            }),
+        )
         // Served dynamically: the WT cert hash changes whenever the identity
         // is regenerated, so it must never be cached as a static asset.
         .route(
@@ -241,7 +269,9 @@ struct CertHashParams {
     url: String,
 }
 
-async fn api_cert_hash(axum::extract::Query(params): axum::extract::Query<CertHashParams>) -> Response {
+async fn api_cert_hash(
+    axum::extract::Query(params): axum::extract::Query<CertHashParams>,
+) -> Response {
     let parsed = match url::Url::parse(&params.url) {
         Ok(u) => u,
         Err(_) => return cert_hash_json(None, None, Some("invalid gateway url")),
@@ -282,8 +312,10 @@ fn cert_hash_json(hash: Option<String>, wt_port: Option<u16>, error: Option<&str
         "error": error,
     });
     (
-        [(header::CONTENT_TYPE, "application/json"),
-         (header::CACHE_CONTROL, "no-store")],
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
         body.to_string(),
     )
         .into_response()
@@ -514,12 +546,17 @@ async fn main() {
         let _ = open::that(&open_url);
     });
 
-    let axum_task = spawn_web_server(addr, build_router(cert_hash_js, std::sync::Arc::new(gateway_stats)), web_tls.clone(), shutdown.clone())
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
-        });
+    let axum_task = spawn_web_server(
+        addr,
+        build_router(cert_hash_js, std::sync::Arc::new(gateway_stats)),
+        web_tls.clone(),
+        shutdown.clone(),
+    )
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    });
 
     // Reference WebSRT web UI on its own HTTPS port (vendor demo app — the
     // canonical viewer/publisher pages for our gateway). Requires web TLS

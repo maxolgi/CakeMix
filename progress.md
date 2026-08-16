@@ -15,8 +15,9 @@ MPEG2-TS using SMPTE 302M (s302m) encapsulation.
 56 known-answer tests (47 native + 9 WASM). The web demo server runs the
 WASM mixer inside an AudioWorklet with a 4-channel tone generator.
 
-**M1 is unblocked** — WebSRT has implemented all PCM/SMPTE 302M changes (commit a4181b1).
-Integration is browser-only (worker PCM messages → mixer worklet).
+**M1 is complete** — PCM is received and published over direct worker↔worklet
+MessagePorts (zero main-thread hops). WebSRT has all PCM/SMPTE 302M changes
+(commit a4181b1+).
 
 ---
 
@@ -25,7 +26,7 @@ Integration is browser-only (worker PCM messages → mixer worklet).
 | Milestone | Status | Notes |
 |-----------|--------|-------|
 | M0 — WASM build + DSP tests | ✅ Done | 47 native + 9 WASM tests |
-| M1 — PCM end-to-end via WebSRT | ✅ Unblocked | WebSRT has all PCM changes (a4181b1) |
+| M1 — PCM end-to-end via WebSRT | ✅ Done | Direct worker↔worklet MessagePort PCM path |
 | M2 — Multi-PID (8 stereo / 16 mono) | ⏳ Blocked | Needs M1 + WebSRT MPTS |
 | M3 — Multi-session sum | ⏳ Blocked | Needs M1 |
 | M4 — Pro DSP (EQ, dynamics, metering) | 🔨 In Progress | Adapters + honesty tests done |
@@ -235,7 +236,7 @@ The mixer binding is ready: `feed_pcm(pid, data)` implements the
 
 ## Repository
 
-- **Root:** `/home/flibb/CakeMix`
+- **Root:** repo root (this directory)
 - **Commits:** 28 local commits on `master`
 - **Remote:** `git@github.com:maxolgi/CakeMix.git` (not created yet — user creates + pushes)
 - **Fork:** `maxolgi/oximedia` — 4 commits on `master` beyond upstream

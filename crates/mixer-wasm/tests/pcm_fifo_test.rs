@@ -58,7 +58,8 @@ fn pcm_chunk_played_exactly_once_in_order() {
         assert!(
             (out[0] - want).abs() < 0.02 * (1.0 + want.abs()),
             "block {b} first L {:.4} != marker-derived {:.4} — chunk replay/skip",
-            out[0], want
+            out[0],
+            want
         );
     }
 }
@@ -72,7 +73,7 @@ fn pcm_starvation_outputs_silence() {
     m.set_eq_bypass(0, true).expect("eq bypass ch0");
     m.set_eq_bypass(1, true).expect("eq bypass ch1");
     m.map_pid(100, 0, 2).expect("map");
-    let inter: Vec<f32> = (0..BLOCK).flat_map(|f| [0.5, 0.5]).collect();
+    let inter: Vec<f32> = (0..BLOCK).flat_map(|_| [0.5, 0.5]).collect();
     feed_stereo(&mut m, 100, &inter);
     let _ = process(&mut m); // consumes the block
 
@@ -90,9 +91,7 @@ fn pcm_chunks_queue_without_loss() {
     m.set_eq_bypass(0, true).expect("eq bypass ch0");
     m.set_eq_bypass(1, true).expect("eq bypass ch1");
     m.map_pid(100, 0, 2).expect("map");
-    let chunk = |base: f32| -> Vec<f32> {
-        (0..BLOCK).flat_map(|_f| [base, 0.0]).collect()
-    };
+    let chunk = |base: f32| -> Vec<f32> { (0..BLOCK).flat_map(|_f| [base, 0.0]).collect() };
     feed_stereo(&mut m, 100, &chunk(0.10));
     feed_stereo(&mut m, 100, &chunk(0.20)); // distinct base per chunk
 
@@ -103,6 +102,7 @@ fn pcm_chunks_queue_without_loss() {
     assert!(
         (b1[0] - g * 0.20).abs() < 0.02,
         "second chunk lost/replayed: b1[0] {:.4}, want {:.4}",
-        b1[0], g * 0.20
+        b1[0],
+        g * 0.20
     );
 }

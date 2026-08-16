@@ -22,9 +22,11 @@ build-node:
 test-native:
 	cargo test
 
-# WASM tests via node
+# WASM tests via node: the JS known-answer runner + the #[wasm_bindgen_test]
+# suite (bus_parallel, channel_params, channel_tap, known_answer, pcm_fifo).
 test-wasm: build-node
 	node $(CRATE_DIR)/tests/run_tests.mjs
+	cd $(CRATE_DIR) && wasm-pack test --node --release
 
 # Everything
 test-all: test-native test-wasm

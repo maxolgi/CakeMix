@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-AUDIO_DIR="${AUDIO_DIR:-/home/flibb/Downloads/audio/PawelMaciwoda_1OfTheFirst_Full}"
+AUDIO_DIR="${AUDIO_DIR:-$HOME/Downloads/audio/PawelMaciwoda_1OfTheFirst_Full}"
 SRT_URL="${WEBSTRT_SRT_URL:-srt://127.0.0.1:9000?streamid=audio}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BROADCAST_WAV="$ROOT/tmp/broadcast30.wav"

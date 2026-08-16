@@ -133,7 +133,7 @@ cargo itself unaffected).
 
 ## Deferred decisions (not blocking M0)
 
-- **WebSRT canonical path** — `/home/flibb/WebSRT` vs.
+- **WebSRT canonical path** — standalone WebSRT checkout vs.
   `SlopShady/vendor/WebSRT`. Needed at M1.
 - **Channel-count target for v1** — `MixerConfig.max_channels=128`
   default. Real ceiling measured at M4.

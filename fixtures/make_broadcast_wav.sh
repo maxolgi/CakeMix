@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-AUDIO_DIR="${AUDIO_DIR:-/home/flibb/Downloads/audio/PawelMaciwoda_1OfTheFirst_Full}"
+AUDIO_DIR="${AUDIO_DIR:-$HOME/Downloads/audio/PawelMaciwoda_1OfTheFirst_Full}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${OUT:-$ROOT/tmp/broadcast30.wav}"
 

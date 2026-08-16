@@ -137,9 +137,7 @@ fn test_both_channels_present() {
 
     // Now feed ch1 with the same signal (FIFO inputs: re-feed ch0 too —
     // the worklet re-feeds every block).
-    mixer
-        .set_channel_input(0, &fa)
-        .expect("re-feed ch0");
+    mixer.set_channel_input(0, &fa).expect("re-feed ch0");
     mixer
         .set_channel_input(1, &fa)
         .expect("set ch1 with signal");
