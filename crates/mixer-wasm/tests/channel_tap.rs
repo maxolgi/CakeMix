@@ -290,11 +290,15 @@ fn test_tap_eq_in_path() {
 fn test_tap_master_output_unaffected() {
     let mut mixer = make_mixer(4);
     let levels = [0.1f32, 0.2, 0.3, 0.4];
-    for (ch, &level) in levels.iter().enumerate() {
-        feed(&mut mixer, ch as u32, &dc(level, BLOCK_SIZE as usize));
-    }
+    let refill = |m: &mut MixerWasm| {
+        for (ch, &level) in levels.iter().enumerate() {
+            feed(m, ch as u32, &dc(level, BLOCK_SIZE as usize));
+        }
+    };
+    refill(&mut mixer);
 
     let collect = |m: &mut MixerWasm| -> Vec<u32> {
+        refill(m); // FIFO inputs: re-feed each block (worklet re-feeds)
         let out = m.process(BLOCK_SIZE).expect("process");
         let mut buf = vec![0.0f32; out.length() as usize];
         out.copy_to(&mut buf);
@@ -328,6 +332,7 @@ fn test_tap_clamp_and_resize() {
 
     // Resize: 128 → 2 channels.
     mixer.set_channel_tap(2);
+    feed(&mut mixer, 0, &dc(0.1, BLOCK_SIZE as usize)); // FIFO: re-feed
     mixer.process(BLOCK_SIZE).expect("process");
     let tap = drain_tap(&mut mixer);
     assert_eq!(tap.len(), BLOCK_SIZE as usize * 2);

@@ -135,7 +135,11 @@ fn test_both_channels_present() {
     let mut buf_one = vec![0.0f32; out_one.length() as usize];
     out_one.copy_to(&mut buf_one);
 
-    // Now feed ch1 with the same signal.
+    // Now feed ch1 with the same signal (FIFO inputs: re-feed ch0 too —
+    // the worklet re-feeds every block).
+    mixer
+        .set_channel_input(0, &fa)
+        .expect("re-feed ch0");
     mixer
         .set_channel_input(1, &fa)
         .expect("set ch1 with signal");
@@ -198,8 +202,9 @@ fn test_gain_control() {
     let mut buf_unity = vec![0.0f32; out_unity.length() as usize];
     out_unity.copy_to(&mut buf_unity);
 
-    // Half gain.
+    // Half gain. FIFO inputs: re-feed for the second block.
     mixer.set_channel_gain(0, 0.5).expect("set gain");
+    mixer.set_channel_input(0, &fa).expect("re-feed input");
     let out_half = mixer.process(BLOCK_SIZE).expect("process");
     let mut buf_half = vec![0.0f32; out_half.length() as usize];
     out_half.copy_to(&mut buf_half);

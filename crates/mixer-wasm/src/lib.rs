@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use wasm_bindgen::prelude::*;
 
 use oximedia_audio::ChannelLayout;
@@ -13,6 +13,12 @@ use oximedia_mixer::{
 
 pub mod effects;
 use effects::{CompressorEffect, EqEffect, ExpanderEffect, GateEffect};
+
+/// Per-channel input FIFO cap (frames @48 k ≈ 170 ms). Delivery is
+/// TSBPD-paced at ~1× realtime, so the queue hovers near zero; the cap only
+/// bounds latency/memory if a source stalls with the mixer running. Oldest
+/// frames are dropped on overflow.
+const MAX_QUEUE_FRAMES: usize = 8192;
 
 struct ChannelDynamics {
     compressor: Option<CompressorEffect>,
@@ -68,7 +74,14 @@ pub struct MixerWasm {
     engine: oximedia_mixer::AudioMixer,
     buffer_size: usize,
     channel_ids: Vec<Option<ChannelId>>,
-    channel_inputs: HashMap<u32, Vec<f32>>,
+    /// Per-channel input FIFOs. PCM arrives in ~23 ms chunks while
+    /// process() consumes 128 frames every 2.67 ms — buffers must queue,
+    /// not replace (replace = only each chunk's first block ever plays).
+    channel_inputs: HashMap<u32, VecDeque<f32>>,
+    /// Per-block drained snapshot of the input FIFOs: flat
+    /// [channel][frame] (128 channels × buffer_size), zero on starvation.
+    /// Filled at the top of process(); passes 1 and 2 read from it.
+    block_inputs: Vec<f32>,
     pid_map: HashMap<u16, PidMapping>,
     master_meter: Meter,
     // ── Pre-allocated scratch buffers ──
@@ -153,6 +166,7 @@ impl MixerWasm {
             buffer_size: bs,
             channel_ids: vec![None; n],
             channel_inputs: HashMap::new(),
+            block_inputs: vec![0.0; 128 * bs],
             pid_map: HashMap::new(),
             master_meter: Meter::new(2, sample_rate, MeterBallistics::Fast),
             master_left: vec![0.0; bs],
@@ -249,9 +263,12 @@ impl MixerWasm {
         let slot = self
             .channel_inputs
             .entry(ch)
-            .or_insert_with(|| Vec::with_capacity(self.buffer_size));
-        slot.clear();
-        slot.extend_from_slice(&self.raw_input);
+            .or_insert_with(|| VecDeque::with_capacity(self.buffer_size));
+        slot.extend(self.raw_input.iter().copied());
+        let overflow = slot.len().saturating_sub(MAX_QUEUE_FRAMES);
+        if overflow > 0 {
+            slot.drain(0..overflow);
+        }
         Ok(())
     }
 
@@ -292,8 +309,12 @@ impl MixerWasm {
             let slot = self
                 .channel_inputs
                 .entry(ch)
-                .or_insert_with(|| Vec::with_capacity(self.buffer_size));
-            std::mem::swap(slot, &mut self.deinterleave_scratch[c]);
+                .or_insert_with(|| VecDeque::with_capacity(self.buffer_size));
+            slot.extend(self.deinterleave_scratch[c].iter().copied());
+            let overflow = slot.len().saturating_sub(MAX_QUEUE_FRAMES);
+            if overflow > 0 {
+                slot.drain(0..overflow);
+            }
         }
         Ok(())
     }
@@ -824,6 +845,25 @@ impl MixerWasm {
             self.tap_frames = bs;
         }
 
+        // ── Drain input FIFOs into the per-block snapshot ──
+        // bs frames per input channel (0-127); starved channels surface as
+        // zeros (clean dropout). Draining regardless of mute/solo keeps the
+        // FIFOs rate-balanced so nothing accumulates while unheard.
+        self.block_inputs[..128 * bs].fill(0.0);
+        for (&ch_idx, queue) in self.channel_inputs.iter_mut() {
+            if ch_idx >= 128 {
+                continue;
+            }
+            let base = ch_idx as usize * bs;
+            for d in self.block_inputs[base..base + bs].iter_mut() {
+                if let Some(s) = queue.pop_front() {
+                    *d = s;
+                } else {
+                    break;
+                }
+            }
+        }
+
         // Collect channel data upfront (avoid borrow conflicts).
         // Pass 1 covers input channels only (indices 0-127); slot channels
         // (128-255) are handled in pass 2 below.
@@ -840,15 +880,13 @@ impl MixerWasm {
                 continue;
             }
 
-            // Get this channel's input samples
-            let samples = match self.channel_inputs.get(&ch_idx) {
-                Some(s) => s.as_slice(),
-                None => continue,
-            };
+            // This block's drained input (zeros on starvation)
+            let base = ch_idx as usize * bs;
+            let samples = &self.block_inputs[base..base + bs];
 
             // ── Gate → Compressor → EQ (in-place on scratch) ──
             // Copy to pre-allocated scratch (no per-channel Vec alloc)
-            self.eq_scratch[..bs].copy_from_slice(&samples[..bs]);
+            self.eq_scratch[..bs].copy_from_slice(samples);
 
             // Gate
             if let Some(d) = self.dynamics_chains.get_mut(&ch_idx) {
@@ -931,9 +969,9 @@ impl MixerWasm {
                 let Some(src) = self.bus_sources[bus_idx as usize][slot as usize] else {
                     continue;
                 };
-                let Some(samples) = self.channel_inputs.get(&src) else {
-                    continue;
-                };
+                if src >= 128 {
+                    continue; // only input channels (0-127) have drained blocks
+                }
 
                 // Skip muted/missing slot channels (defensive: set_bus_source
                 // lazily creates the engine channel with defaults).
@@ -944,13 +982,10 @@ impl MixerWasm {
                     continue;
                 }
 
-                // Copy the RAW source mono buffer into scratch (zero-pad if
-                // the source block is shorter than bs).
-                let n = samples.len().min(bs);
-                self.eq_scratch[..n].copy_from_slice(&samples[..n]);
-                for v in &mut self.eq_scratch[n..bs] {
-                    *v = 0.0;
-                }
+                // The source's drained block for this process() call — the
+                // same frames pass 1 consumed (zero-padded on starvation).
+                let base = src as usize * bs;
+                self.eq_scratch[..bs].copy_from_slice(&self.block_inputs[base..base + bs]);
 
                 // Slot's own dynamics → EQ (in-place on scratch)
                 if let Some(d) = self.dynamics_chains.get_mut(&slot_idx) {

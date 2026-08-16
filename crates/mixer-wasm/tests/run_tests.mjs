@@ -92,6 +92,8 @@ try {
     let max1 = 0;
     for (let i = 0; i < out1.length; i++) max1 = Math.max(max1, Math.abs(out1[i]));
 
+    // FIFO inputs: re-feed each block (worklet always re-feeds per block).
+    mixer.set_channel_input(0, sineA);
     mixer.set_channel_input(1, sineA);
     let out2 = mixer.process(BLOCK_SIZE);
     let max2 = 0;
@@ -138,6 +140,7 @@ try {
     const outUnity = mixer.process(BLOCK_SIZE);
 
     mixer.set_channel_gain(0, 0.5);
+    mixer.set_channel_input(0, sine); // FIFO: re-feed for the second block
     const outHalf = mixer.process(BLOCK_SIZE);
 
     for (let i = 0; i < BLOCK_SIZE; i++) {
@@ -295,8 +298,10 @@ try {
     for (let i = 0; i < out2.length; i++) max2 = Math.max(max2, Math.abs(out2[i]));
     assert(max2 > 0.01, `Reconfigured PID should produce audio, max2=${max2}`);
 
-    // Old PID feed should be silently ignored (unmapped)
+    // Old PID feed should be silently ignored (unmapped); new PID must be
+    // re-fed (FIFO inputs — the old block was consumed by out2's process).
     mixer.feed_pcm(0x101, stereoData);
+    mixer.feed_pcm(0x102, stereoData);
     let out3 = mixer.process(BLOCK_SIZE);
     let max3 = 0;
     for (let i = 0; i < out3.length; i++) max3 = Math.max(max3, Math.abs(out3[i]));
