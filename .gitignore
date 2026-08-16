@@ -3,6 +3,7 @@
 node_modules/
 pkg/
 dist/
+web/
 cert.pem
 key.pem
 tmp/

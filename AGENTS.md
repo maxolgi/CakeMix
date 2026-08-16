@@ -116,9 +116,11 @@ proves the milestone's claim.
 ### Frontend conventions
 
 - **SolidJS** with TypeScript, built via Vite to static `web/` assets.
-  Source lives in `frontend/`, Vite builds to `web/assets/`. The Rust
-  server (rust-embed) serves the built output — no Vite at runtime.
-  Build: `cd frontend && npx vite build` or `make build-ui`.
+  Source lives in `frontend/` (the AudioWorklet processor + polyfill in
+  `frontend/src/worklet/`). **`web/` is fully generated and gitignored —
+  never commit it.** The Rust server (rust-embed) serves the built output
+  at compile time — no Vite at runtime. Build: `make build-ui` +
+  `make build-worklet`, or just `make serve` (builds everything first).
 - The **reference WebSRT web app** (vendor/WebSRT/web — viewer, publisher,
   debug panels) is served unmodified on its own HTTPS port (`--web-port`,
   default 8201; `--no-tls` disables it). It is embedded at compile time:

@@ -39,11 +39,12 @@ make serve      # builds wasm + UI, serves http://localhost:8200 (no TLS)
 make serve-tls  # same, HTTPS with an auto-generated self-signed cert
 ```
 
-The server (`crates/cakemix-server`) embeds the built UI (`web/`) and the
-wasm-pack output (`crates/mixer-wasm/pkg`) **at compile time** — both are
-built by `make serve` first. The reference WebSRT web app is served on its
-own port (`--web-port`, default 8201) after `make build-websrt-web` + a
-server rebuild.
+`web/` is generated and gitignored (Vite output + worklet bundle). The
+server (`crates/cakemix-server`) embeds `web/`, the wasm-pack output
+(`crates/mixer-wasm/pkg`) and the reference web app
+(`vendor/WebSRT/web/dist`) **at compile time** — `make serve` builds all
+three first. The reference WebSRT web app is served on its own port
+(`--web-port`, default 8201).
 
 ## Architecture
 

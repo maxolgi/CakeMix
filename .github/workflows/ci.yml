@@ -30,6 +30,44 @@ jobs:
       - name: Install wasm-pack
         run: cargo install wasm-pack
 
+      # --- Build all rust-embed inputs BEFORE any cargo step: cakemix-server
+      # embeds web/ (Vite output), crates/mixer-wasm/pkg (wasm-pack) and
+      # vendor/WebSRT/web/dist (submodule Vite output) at COMPILE time, so
+      # cargo build/clippy/test fail if these directories do not exist. ---
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install reference web app dependencies (submodule)
+        working-directory: vendor/WebSRT/web
+        run: npm ci
+
+      # Stages the WebSRT wasm into vendor/WebSRT/web/wasm/ — must run before
+      # the Vite build below, which bundles the submodule's receive worker.
+      - name: Build WebSRT WASM (submodule)
+        run: bash build/build-websrt-wasm.sh
+
+      # Reference WebSRT web app (viewer/publisher) → vendor/WebSRT/web/dist.
+      - name: Build reference web app (submodule)
+        working-directory: vendor/WebSRT/web
+        run: npx vite build
+
+      # Mixer wasm pkg (AudioWorklet glue) → crates/mixer-wasm/pkg.
+      - name: Build WASM (wasm-pack web)
+        run: cd crates/mixer-wasm && wasm-pack build --target web --release
+
+      # SolidJS frontend → web/ (gitignored, generated).
+      - name: Build frontend
+        working-directory: frontend
+        run: npx vite build
+
+      # Worklet bundle (polyfill + wasm glue + processor) → web/.
+      - name: Build mixer worklet
+        run: node build/build-worklet.js
+
+      # --- Rust gates ---
+
       # Scoped to workspace members, not `--all`: rustfmt follows the
       # cakemix-server path dependency into vendor/WebSRT and would flag the
       # pinned submodule (formatted by an older rustfmt — not ours to fix).
@@ -48,9 +86,6 @@ jobs:
       - name: Build WASM
         run: cargo build --target wasm32-unknown-unknown -p mixer-wasm
 
-      - name: Build WASM (wasm-pack web)
-        run: cd crates/mixer-wasm && wasm-pack build --target web --release
-
       - name: Build WASM (wasm-pack nodejs)
         run: cd crates/mixer-wasm && wasm-pack build --target nodejs --release
 
@@ -62,19 +97,3 @@ jobs:
       # only executable under wasm.
       - name: Run wasm_bindgen_test suite (node)
         run: cd crates/mixer-wasm && wasm-pack test --node --release
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      # Stages the WebSRT wasm into vendor/WebSRT/web/wasm/ — must run before
-      # the Vite build below, which bundles the submodule's receive worker.
-      - name: Build WebSRT WASM (submodule)
-        run: bash build/build-websrt-wasm.sh
-
-      # Proves the frontend build works end-to-end. web/assets is committed
-      # build output; bundle hashes may legitimately differ, so this step
-      # deliberately does NOT diff the result against the checkout.
-      - name: Build frontend
-        working-directory: frontend
-        run: npx vite build
