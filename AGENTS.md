@@ -46,23 +46,28 @@ glue — three files (see FINDINGS.md §6). Never modify SlopShady from here.
 - **Do NOT use `oximedia-wasm/src/mixer_wasm.rs`.** It is a ~250-line
   hand-rolled toy (gain + pan + sum) that does not touch the real engine.
   See FINDINGS.md §2. Write the real binding from zero.
-- Source the engine via the cleanest path that compiles on wasm (crates.io
-  dep, git dep, or fork-and-strip into this repo). Decide when wiring
-  `Cargo.toml`.
+- The engine comes from the fork `maxolgi/oximedia` (7 commits past
+  upstream 0.2.1: wasm build fixes + `process_mix_rt`, the real-time
+  per-channel-input mixing API — see ENGINE_API.md §6). **Not yet pushed**:
+  the root Cargo.toml temporarily path-patches `oximedia-{mixer,core,audio}`
+  to `~/oximedia`; after pushing, revert those three entries to
+  `{ git = "https://github.com/maxolgi/oximedia", branch = "master" }`.
 
 ### WASM target: single-threaded, no COOP/COEP
 
 - Target `wasm32-unknown-unknown`. Real-time audio is single-threaded by
   design (every DAW, Web Audio's 128-frame render quantum) — no audio-thread
   parallelism is lost.
-- **`rayon` is cfg-gated behind a `parallel` feature, OFF for wasm.** Only
-  `parallel_mix.rs` and `offline_bounce.rs` use it (offline paths). Never
+- **`rayon` is cfg-gated behind a `parallel` feature, OFF for wasm** (done,
+  fork `24a35975`). Only `parallel_mix.rs` uses it (offline path). Never
   pull in `wasm-bindgen-rayon`.
 - **No `SharedArrayBuffer`, no cross-origin isolation (COOP/COEP).** PCM
   handoff uses transferred `MessagePort`, exactly as SlopShady's
   `stream-audio-worklet.js` does. Host apps must not need special headers.
-- Resolve `scirs2-core` wasm status early (FINDINGS.md §1). Strip or stub
-  non-wasm pieces if it blocks the build.
+- `scirs2-core` was a phantom dep and is removed in the fork — resolved.
+  Per-channel input is native in the fork engine
+  (`ProcessingEngine::process_mix_rt`); the binding stages per-strip audio
+  and drives nine engine instances (1 main + 8 buses) per block.
 
 ### The honesty rule (load-bearing)
 

@@ -6,7 +6,7 @@ Professional WASM audio mixer with WebSRT I/O. Built on the real `oximedia-mixer
 
 **M1 complete.** PCM audio arrives over WebSRT (SRT/WebTransport), is mixed by
 the WASM engine in the browser's AudioWorklet, and is re-published over
-WebSRT. DSP proven with 57 native + 44 WASM known-answer tests.
+WebSRT. DSP proven with 57 native + 35 WASM tests (plus a 13-test JS runner).
 
 | Milestone | Status |
 |-----------|--------|
@@ -15,6 +15,7 @@ WebSRT. DSP proven with 57 native + 44 WASM known-answer tests.
 | M2 — Multi-PID (8 stereo / 16 mono) | ⏳ Needs WebSRT MPTS |
 | M3 — Multi-session sum | ⏳ |
 | M4 — Pro DSP (EQ, dynamics, metering) | 🔨 In progress |
+| M5 — Bus architecture + scenes | 🔨 8 buses shipped; scenes pending |
 
 ## Quick start
 
@@ -54,10 +55,19 @@ WebSRT (SRT over WebTransport)
 mpeg2ts-wasm demuxer (WebSRT repo)
   ↓ Float32 interleaved per PID
 MixerWasm (this crate, in an AudioWorklet or Worker)
-  ↓ per-channel DSP: gain → EQ → dynamics → pan → sum
-  ↓ master bus: limiter → stereo out
-Web Audio / WebSRT publish
+  ↓ elastic FIFOs → staging per strip: gate → expander → comp → EQ (raw source)
+  ↓ 9 engine instances (1 main + 8 buses) — all summing via process_mix_rt
+  ↓ bus tail (gain/mute → publish / feed master) → master gain → limiter
+Web Audio / WebSRT publish (master stereo, Nch direct-out taps, or any bus 1-8)
 ```
+
+### Console
+
+128 input strips + 8 summing buses (16 slots each). Bus slots tap their
+source's **raw** signal — the source's fader/mute/EQ/dynamics never affect
+the bus path. Two routing toggles: **MAIN** per strip (off = the strip
+reaches master only via its bus slots) and **FEEDS MAIN** per bus (off =
+independent bus, still publishable). Live per-strip COMP GR meters.
 
 ### PCM-only
 
@@ -71,11 +81,22 @@ See:
 
 ### Per-channel input architecture
 
-The engine's `process()` feeds the same input to every channel. We resolve this at the binding layer by calling `engine.process_mix()` once per channel with that channel's own input, then summing the master outputs.
+The upstream engine's `process()` feeds the same input to every channel. We
+solved this in the engine fork: `ProcessingEngine::process_mix_rt` takes
+per-channel input slices, sums into caller-provided buffers with zero
+steady-state allocation, and is step-identical to `process_mix` (pinned by
+parity tests in the fork). The binding's staging layer resolves each strip's
+audio and drives nine engine instances (1 main + 8 buses) per block — the
+engine performs all summing.
 
 ### Forks
 
-- **`maxolgi/oximedia`** — rayon optional behind `parallel` feature, `std::time` patched for wasm32, dynamics zero-crossing bug fixed
+- **`maxolgi/oximedia`** — engine fork on top of upstream 0.2.1:
+  `process_mix_rt` (per-channel-input, alloc-free real-time mixing),
+  `ChannelId::nil()`, `Copy` on `ChannelProcessParams`,
+  `Compressor::last_gain_reduction_db()`, rayon optional behind `parallel`
+  (off for wasm), `std::time`/scene fixes for wasm32. Not yet pushed —
+  pinned locally via a temporary path patch.
 
 ## DSP modules (M4 progress)
 
@@ -83,12 +104,12 @@ All verified with known-answer honesty tests (per AGENTS.md honesty rule):
 
 | Module | Real DSP? | Tests | Wired into chain? |
 |--------|-----------|-------|-------------------|
-| Mixer (gain/pan/sum) | ✅ | 9 native + 5 WASM | ✅ |
-| ParametricEq | ✅ (RBJ biquads) | 5 honesty + 3 integration | ✅ |
-| Compressor | ✅ | 16 honesty + 3 integration | ✅ |
-| Expander | ✅ | (in honesty suite) | ⚠️ adapter tested, not yet wired |
-| Gate | ✅ | (in honesty suite) | ✅ |
-| OversampledLimiter | ✅ | 3 | ✅ (in `process()`) |
+| Mixer (gain/pan/sum) | ✅ | parity + alloc pinned in fork; 9 native + 5 WASM here | ✅ engine-driven (`process_mix_rt`, 9 instances/block) |
+| ParametricEq | ✅ (RBJ biquads) | 5 honesty + 3 integration + 4 six-band | ✅ staging layer |
+| Compressor | ✅ | 16 honesty + 3 integration | ✅ staging layer + GR meter |
+| Expander | ✅ | (in honesty suite) | ✅ staging layer |
+| Gate | ✅ | (in honesty suite) | ✅ staging layer |
+| OversampledLimiter | ✅ | 3 | ✅ master bus |
 
 ## License
 

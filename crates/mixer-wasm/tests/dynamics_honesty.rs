@@ -273,7 +273,7 @@ fn test_compressor_sine_compresses_when_no_zero_crossing() {
 /// entire signal. This test asserts the defective behavior so the suite stays
 /// green while documenting the bug.
 #[test]
-fn test_compressor_zero_crossing_poisons_envelope_bug() {
+fn test_compressor_survives_zero_crossing() {
     let cfg = CompressorConfig {
         threshold_db: -20.0,
         ratio: 4.0,
@@ -293,12 +293,13 @@ fn test_compressor_zero_crossing_poisons_envelope_bug() {
         out_peak = out_peak.max(o.abs());
     }
 
-    // BUG: because the envelope is -inf, no compression happens and the output
-    // peak equals the input peak. A correct compressor would reduce this.
+    // FIXED (fork 9717f878): linear_to_db floors at -200 dB, so zero
+    // crossings no longer poison the envelope — a loud sine that starts at
+    // sin(0)=0 IS compressed.
     assert!(
-        (out_peak - amp).abs() < 1e-4,
-        "BUG: zero-crossing poisoned the envelope, expected NO compression \
-         (out_peak={out_peak:.6} == amp={amp}). Fix: floor sample.abs() before linear_to_db."
+        out_peak < amp * 0.75,
+        "zero-crossing poisoned the envelope again: out_peak={out_peak:.6} \
+         (expected compression of the {amp} sine)"
     );
 }
 
@@ -417,7 +418,7 @@ fn test_gate_stays_closed_for_quiet_signal() {
 /// from phase 0 yields `sin(0) == 0.0 -> -inf`, the gate envelope dies, and the
 /// gate never opens despite a loud signal.
 #[test]
-fn test_gate_zero_crossing_never_opens_bug() {
+fn test_gate_opens_despite_zero_crossing() {
     let cfg = GateConfig {
         threshold_db: -40.0,
         hysteresis_db: 6.0,
@@ -434,12 +435,12 @@ fn test_gate_zero_crossing_never_opens_bug() {
         let _ = gate.process_sample(s, SAMPLE_RATE);
     }
 
-    // BUG: envelope poisoned by sin(0)=0, gate never opens.
-    assert_ne!(
+    // FIXED (fork 9717f878): the -200 dB floor keeps the envelope finite,
+    // so the gate opens for the loud sine despite starting at sin(0)=0.
+    assert_eq!(
         gate.state(),
         GateState::Open,
-        "BUG: gate should have opened for the loud sine but the zero-crossing \
-         poisoned the envelope. Fix: floor sample.abs() before linear_to_db."
+        "gate should open for a loud sine; envelope poisoned by zero-crossing again"
     );
 }
 
@@ -522,6 +523,8 @@ fn test_db_conversions() {
     // Round-trip.
     let orig = -12.345_f32;
     assert!((linear_to_db(db_to_linear(orig)) - orig).abs() < 1e-4);
-    // linear_to_db(0) is -inf (the root cause of the envelope bug).
-    assert!(linear_to_db(0.0).is_infinite() && linear_to_db(0.0).is_sign_negative());
+    // linear_to_db floors at -200 dB (fork 9717f878): -inf would permanently
+    // poison the one-pole envelopes on digital silence.
+    assert_eq!(linear_to_db(0.0), -200.0);
+    assert!(linear_to_db(1e-11) <= -200.0);
 }
