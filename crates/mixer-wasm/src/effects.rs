@@ -155,6 +155,14 @@ impl CompressorEffect {
         &self.config
     }
 
+    /// Gain reduction applied by the most recent processed sample, in dB
+    /// (positive = attenuation). 0 before any audio has been processed.
+    /// Readback for gain-reduction meters (`channel_comp_gr_db`).
+    #[must_use]
+    pub fn gain_reduction_db(&self) -> f32 {
+        self.compressor.last_gain_reduction_db()
+    }
+
     pub fn update_config(&mut self, f: impl FnOnce(&mut CompressorConfig)) {
         f(&mut self.config);
         self.compressor = Compressor::new(self.config.clone());

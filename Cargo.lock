@@ -1499,7 +1499,6 @@ dependencies = [
 [[package]]
 name = "oximedia-audio"
 version = "0.2.1"
-source = "git+https://github.com/maxolgi/oximedia?branch=master#aa9e68af6bb7b3bf6fab64fb4ce5a4861f6b5eff"
 dependencies = [
  "bytes",
  "oxifft",
@@ -1510,7 +1509,6 @@ dependencies = [
 [[package]]
 name = "oximedia-core"
 version = "0.2.1"
-source = "git+https://github.com/maxolgi/oximedia?branch=master#aa9e68af6bb7b3bf6fab64fb4ce5a4861f6b5eff"
 dependencies = [
  "bitflags",
  "console_error_panic_hook",
@@ -1523,7 +1521,6 @@ dependencies = [
 [[package]]
 name = "oximedia-mixer"
 version = "0.2.1"
-source = "git+https://github.com/maxolgi/oximedia?branch=master#aa9e68af6bb7b3bf6fab64fb4ce5a4861f6b5eff"
 dependencies = [
  "bytes",
  "oximedia-audio",

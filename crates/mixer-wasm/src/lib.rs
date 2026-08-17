@@ -2,13 +2,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use wasm_bindgen::prelude::*;
 
 use oximedia_audio::ChannelLayout;
-use oximedia_mixer::channel::compute_stereo_pan;
 use oximedia_mixer::effects_chain::AudioEffect;
 use oximedia_mixer::oversampled_limiter::OversampledLimiter;
 use oximedia_mixer::{
-    bus::{BusId, BusType},
     channel::{db_to_linear, ChannelType, PanLaw},
-    ChannelId, MixerConfig,
+    ChannelId, ChannelProcessParams, MixerConfig, PanLawType,
 };
 
 pub mod effects;
@@ -330,16 +328,53 @@ impl ChannelDynamics {
     }
 }
 
+/// Map the channel module's `PanLaw` onto the processing engine's enum.
+fn pan_law_to_engine(law: PanLaw) -> PanLawType {
+    match law {
+        PanLaw::Linear => PanLawType::Linear,
+        PanLaw::Minus3dB => PanLawType::Minus3dB,
+        PanLaw::Minus4Dot5dB => PanLawType::Minus4Dot5dB,
+        PanLaw::Minus6dB => PanLawType::Minus6dB,
+    }
+}
+
+/// Placeholder parameters for the stack-allocated engine call lists in
+/// `process_block` (every slot is overwritten before use; the dummy only
+/// exists so the fixed-size arrays can be initialized).
+const NULL_PROCESS_PARAMS: ChannelProcessParams = ChannelProcessParams {
+    fader_gain: 0.0,
+    pan: 0.0,
+    muted: false,
+    input_gain_db: 0.0,
+    phase_inverted: false,
+    pan_law: PanLawType::Linear,
+};
+
 /// WASM binding for the oximedia-mixer audio engine.
 ///
-/// # DSP chain per channel (all wired, all real):
-/// 1. Input gain + phase inversion (engine)
-/// 2. Gate (if enabled)
-/// 3. Compressor (if enabled)
-/// 4. Parametric EQ (6-band, always present, bypassable)
-/// 5. Fader gain × VCA (engine)
-/// 6. Pan (engine)
-/// → summed to master bus → OversampledLimiter → output
+/// # Architecture per block (staging → 9 engine instances → bus tail)
+///
+/// 1. FIFO drain: elastic per-channel input FIFOs → `block_inputs`
+///    (raw mono rows, 128 × bs; starvation = zeros).
+/// 2. STAGING: every existing strip's raw source signal is copied into
+///    its `staged` row, then the strip's own dynamics
+///    (gate → expander → compressor) and 6-band EQ run in place.
+///    Input strips (0-127) stage their own drained row; bus slots
+///    (128-255) stage the RAW row of their assigned source channel —
+///    a parallel raw tap, so the source strip's mute/fader/EQ/dynamics
+///    have ZERO effect on the bus path (pinned by tests/bus_parallel_test.rs).
+/// 3. Per-channel metering (post-dynamics/EQ, pre-fader) and the
+///    channel direct-out tap (staged × input gain × phase × fader × VCA,
+///    pre-pan; muted/solo-gated strips tap silence).
+/// 4. NINE engine instances perform ALL summing via `process_mix_rt`
+///    (input gain/phase → effects → fader × VCA → pan → PDC → sends →
+///    routing): `main` mixes strips 0-127 that exist, are not
+///    effectively muted, and have `main_assign`; bus engine i mixes its
+///    16 slots under the same rules.
+/// 5. BUS TAIL: each bus's engine output × bus gain (mute → silence) →
+///    `bus_pub` (the bus's own published stereo output); buses with
+///    `feeds_main` && !bus_muted accumulate into master.
+/// 6. Master gain → master limiter (L/R) → interleave → MasterMeter.
 ///
 /// Channel direct-out tap: `set_channel_tap()` captures each input
 /// channel's MONO signal at the pan-stage input (post input gain/phase,
@@ -347,7 +382,14 @@ impl ChannelDynamics {
 /// publishing (WebSRT Nch out).
 #[wasm_bindgen]
 pub struct MixerWasm {
-    engine: oximedia_mixer::AudioMixer,
+    // ── Engine instances: all summing happens here ──
+    // One main console (input strips 0-127, max 128 channels) + 8 bus
+    // consoles (slots 128-255, 16 slots each). Flat slot index
+    // 128 + bus*16 + slot lives in `buses[bus]` under its own
+    // `add_channel` id. Every gain/mute/pan lookup resolves through the
+    // OWNING instance (`owning_engine`).
+    main: oximedia_mixer::AudioMixer,
+    buses: Vec<oximedia_mixer::AudioMixer>,
     buffer_size: usize,
     channel_ids: Vec<Option<ChannelId>>,
     /// Per-channel elastic input FIFOs. PCM arrives in ~23 ms chunks while
@@ -358,8 +400,13 @@ pub struct MixerWasm {
     channel_inputs: HashMap<u32, ChannelFifo>,
     /// Per-block drained snapshot of the input FIFOs: flat
     /// [channel][frame] (128 channels × buffer_size), zero on starvation.
-    /// Filled at the top of process(); passes 1 and 2 read from it.
+    /// Filled at the top of process(); the staging pass reads from it.
     block_inputs: Vec<f32>,
+    /// Staged per-strip working buffer: flat [strip][frame]
+    /// (256 strips × buffer_size). After the STAGING pass each row holds
+    /// the strip's raw source signal processed through its own dynamics
+    /// and EQ; the engine call lists below point into these rows.
+    staged: Vec<f32>,
     pid_map: HashMap<u16, PidMapping>,
     master_meter: MasterMeter,
     /// Monotonic process() call count (drives drift-statistics windows).
@@ -370,11 +417,13 @@ pub struct MixerWasm {
     master_left: Vec<f32>,
     master_right: Vec<f32>,
     stereo_out: Vec<f32>,
-    eq_scratch: Vec<f32>,
     deinterleave_scratch: Vec<Vec<f32>>,
     raw_input: Vec<f32>,
-    /// Reused per-block snapshot of input-channel gain params (pass 1).
-    pass1_params: Vec<(u32, ChannelId, MixParams)>,
+    /// Reused per-block snapshot of every existing strip's gain params
+    /// (indices 0-255, input strips and bus slots alike), read from each
+    /// strip's OWNING engine instance. Drives the direct-out tap and the
+    /// nine engine call lists.
+    strip_params: Vec<(u32, ChannelId, MixParams)>,
     // ── Per-channel state ──
     soloed_channels: HashSet<u32>,
     user_muted: HashSet<u32>,
@@ -391,17 +440,33 @@ pub struct MixerWasm {
     // ── Per-channel metering ──
     channel_peak: HashMap<u32, f32>,
     channel_rms: HashMap<u32, f32>,
-    // ── Bus routing ──
-    bus_map: HashMap<u32, BusId>,
-    bus_counter: u32,
     // ── 8 summing buses: each bus sums its 16 slot channels ──
     // Slot index (u32) = 128 + bus*16 + slot, bus 0-7, slot 0-15.
     bus_sources: Vec<Vec<Option<u32>>>,
     bus_gains: Vec<f32>,
     bus_muted: Vec<bool>,
-    // Bus accumulators: sum of the bus's slot outputs (pre bus-gain)
+    /// Whether each bus accumulates into the master mix (default true).
+    /// Independent of `take_bus_output`, which always publishes bus_pub.
+    feeds_main: Vec<bool>,
+    /// Whether each input strip (0-127) is in the main engine's call
+    /// list (default true). Unassigned strips are still staged, metered,
+    /// tapped, and still feed any bus slots assigned to them.
+    main_assign: Vec<bool>,
+    // Bus engine outputs: what bus i's engine instance summed this block
+    // (pre bus-gain). The bus tail applies gain/mute into bus_pub.
     bus_left: Vec<Vec<f32>>,
     bus_right: Vec<Vec<f32>>,
+    // Bus published stereo output (post bus-gain, mute → silence): the
+    // bus's own output, drained per block by take_bus_output and
+    // accumulated into master when feeds_main.
+    bus_pub_l: Vec<Vec<f32>>,
+    bus_pub_r: Vec<Vec<f32>>,
+    // Interleave scratch for take_bus_output (drain path, not RT).
+    bus_out_buf: Vec<f32>,
+    // Frames valid in the most recent processed block; 0 = nothing new.
+    bus_out_frames: usize,
+    // Per-bus "new block available" flags (drained by take_bus_output).
+    bus_out_ready: [bool; 8],
     bus_peak: HashMap<u32, f32>,
     bus_rms: HashMap<u32, f32>,
     // ── Channel direct-out tap (post-chain, post-fader, pre-pan mono) ──
@@ -434,23 +499,37 @@ impl MixerWasm {
         console_error_panic_hook::set_once();
 
         let bs = buffer_size as usize;
-        // Internally support at least 256 channels: 128 inputs (0-127) +
-        // 128 bus slots (128-255, slot = 128 + bus*16 + slot).
-        let n = (max_channels as usize).max(256);
-        let config = MixerConfig {
+        // The console is a fixed 256 strips: 128 input strips (0-127) +
+        // 128 bus slots (128-255, slot = 128 + bus*16 + slot). The
+        // max_channels argument is advisory — internal arrays are always
+        // full-console (as before, where it was clamped up to 256).
+        let _ = max_channels;
+        let n = 256;
+        let main = oximedia_mixer::AudioMixer::new(MixerConfig {
             sample_rate,
             buffer_size: bs,
-            max_channels: n,
+            max_channels: 128,
             ..Default::default()
-        };
-        let engine = oximedia_mixer::AudioMixer::new(config);
+        });
+        let buses: Vec<oximedia_mixer::AudioMixer> = (0..8)
+            .map(|_| {
+                oximedia_mixer::AudioMixer::new(MixerConfig {
+                    sample_rate,
+                    buffer_size: bs,
+                    max_channels: 16,
+                    ..Default::default()
+                })
+            })
+            .collect();
 
         Ok(MixerWasm {
-            engine,
+            main,
+            buses,
             buffer_size: bs,
             channel_ids: vec![None; n],
             channel_inputs: HashMap::new(),
             block_inputs: vec![0.0; 128 * bs],
+            staged: vec![0.0; 256 * bs],
             pid_map: HashMap::new(),
             master_meter: MasterMeter::new(sample_rate, bs),
             block_counter: 0,
@@ -458,10 +537,9 @@ impl MixerWasm {
             master_left: vec![0.0; bs],
             master_right: vec![0.0; bs],
             stereo_out: vec![0.0; bs * 2],
-            eq_scratch: vec![0.0; bs],
             deinterleave_scratch: Vec::new(),
             raw_input: Vec::new(),
-            pass1_params: Vec::new(),
+            strip_params: Vec::new(),
             soloed_channels: HashSet::new(),
             user_muted: HashSet::new(),
             eq_chains: HashMap::new(),
@@ -474,13 +552,18 @@ impl MixerWasm {
             master_gain: 1.0,
             channel_peak: HashMap::new(),
             channel_rms: HashMap::new(),
-            bus_map: HashMap::new(),
-            bus_counter: 0,
             bus_sources: (0..8).map(|_| vec![None; 16]).collect(),
             bus_gains: vec![1.0; 8],
             bus_muted: vec![false; 8],
+            feeds_main: vec![true; 8],
+            main_assign: vec![true; 128],
             bus_left: (0..8).map(|_| vec![0.0; bs]).collect(),
             bus_right: (0..8).map(|_| vec![0.0; bs]).collect(),
+            bus_pub_l: (0..8).map(|_| vec![0.0; bs]).collect(),
+            bus_pub_r: (0..8).map(|_| vec![0.0; bs]).collect(),
+            bus_out_buf: vec![0.0; bs * 2],
+            bus_out_frames: 0,
+            bus_out_ready: [false; 8],
             bus_peak: HashMap::new(),
             bus_rms: HashMap::new(),
             tap_channels: 0,
@@ -489,6 +572,25 @@ impl MixerWasm {
             unmapped_pid_drops: 0,
             sample_rate,
         })
+    }
+
+    /// The engine instance that OWNS flat strip index `idx`: `main` for
+    /// input strips (0-127), `buses[(idx-128)/16]` for bus slots
+    /// (128-255). `None` beyond the console.
+    fn owning_engine(&self, idx: u32) -> Option<&oximedia_mixer::AudioMixer> {
+        if idx < 128 {
+            Some(&self.main)
+        } else {
+            self.buses.get(((idx - 128) / 16) as usize)
+        }
+    }
+
+    fn owning_engine_mut(&mut self, idx: u32) -> Option<&mut oximedia_mixer::AudioMixer> {
+        if idx < 128 {
+            Some(&mut self.main)
+        } else {
+            self.buses.get_mut(((idx - 128) / 16) as usize)
+        }
     }
 
     fn ensure_channel(&mut self, idx: u32) -> Result<ChannelId, JsValue> {
@@ -500,11 +602,13 @@ impl MixerWasm {
             )));
         }
         if self.channel_ids[i].is_none() {
-            let id = self
-                .engine
+            let engine = self
+                .owning_engine_mut(idx)
+                .expect("idx < channel_ids.len() always has an owning instance");
+            let id = engine
                 .add_channel(format!("ch{idx}"), ChannelType::Mono, ChannelLayout::Mono)
                 .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
-            if let Ok(ch) = self.engine.get_channel_mut(id) {
+            if let Ok(ch) = engine.get_channel_mut(id) {
                 ch.set_pan_law(PanLaw::Linear);
             }
             self.channel_ids[i] = Some(id);
@@ -515,14 +619,15 @@ impl MixerWasm {
         Ok(self.channel_ids[i].unwrap())
     }
 
-    /// Snapshot the gain-stage parameters for a channel index (input or
-    /// slot). Pan-law gains are applied by `process()` directly via
-    /// `compute_stereo_pan` — the engine's `process_mix` is bypassed
-    /// (it allocates several `Vec`s per channel per block, which is not
-    /// survivable on the 2.67 ms real-time budget at high strip counts).
+    /// Snapshot the gain-stage parameters for a strip index (input or
+    /// slot), read from the OWNING engine instance (`main` for 0-127,
+    /// the bus engine for 128-255). The engine instances apply these in
+    /// `process_mix_rt`; the direct-out tap applies the same gain math
+    /// minus pan.
     fn mix_params_for(&self, ch_idx: u32) -> Option<(ChannelId, MixParams)> {
         let id = self.channel_ids.get(ch_idx as usize)?.as_ref().copied()?;
-        let ch = self.engine.get_channel(id).ok()?;
+        let engine = self.owning_engine(ch_idx)?;
+        let ch = engine.get_channel(id).ok()?;
         Some((
             id,
             MixParams {
@@ -667,24 +772,34 @@ impl MixerWasm {
         self.pid_map.get(&pid).map(|m| m.channel_count).unwrap_or(0)
     }
     pub fn subscribe_pid(&mut self, pid: u16) {
-        if let Some(m) = self.pid_map.get_mut(&pid) {
-            m.subscribed = true;
-            for i in 0..m.channel_count {
-                if let Some(&Some(id)) = self.channel_ids.get((m.ch_start + i) as usize) {
-                    if let Ok(ch) = self.engine.get_channel_mut(id) {
-                        ch.set_muted(false);
+        let Some(mut m) = self.pid_map.get(&pid).copied() else {
+            return;
+        };
+        m.subscribed = true;
+        self.pid_map.insert(pid, m);
+        for i in 0..m.channel_count {
+            let ch = m.ch_start + i;
+            if let Some(&Some(id)) = self.channel_ids.get(ch as usize) {
+                if let Some(engine) = self.owning_engine_mut(ch) {
+                    if let Ok(c) = engine.get_channel_mut(id) {
+                        c.set_muted(false);
                     }
                 }
             }
         }
     }
     pub fn unsubscribe_pid(&mut self, pid: u16) {
-        if let Some(m) = self.pid_map.get_mut(&pid) {
-            m.subscribed = false;
-            for i in 0..m.channel_count {
-                if let Some(&Some(id)) = self.channel_ids.get((m.ch_start + i) as usize) {
-                    if let Ok(ch) = self.engine.get_channel_mut(id) {
-                        ch.set_muted(true);
+        let Some(mut m) = self.pid_map.get(&pid).copied() else {
+            return;
+        };
+        m.subscribed = false;
+        self.pid_map.insert(pid, m);
+        for i in 0..m.channel_count {
+            let ch = m.ch_start + i;
+            if let Some(&Some(id)) = self.channel_ids.get(ch as usize) {
+                if let Some(engine) = self.owning_engine_mut(ch) {
+                    if let Ok(c) = engine.get_channel_mut(id) {
+                        c.set_muted(true);
                     }
                 }
             }
@@ -711,13 +826,15 @@ impl MixerWasm {
 
     pub fn set_channel_gain(&mut self, ch: u32, gain: f32) -> Result<(), JsValue> {
         let id = self.ensure_channel(ch)?;
-        self.engine
+        self.owning_engine_mut(ch)
+            .expect("ensured channel has an owning instance")
             .set_channel_gain(id, gain)
             .map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
     pub fn set_channel_pan(&mut self, ch: u32, pan: f32) -> Result<(), JsValue> {
         let id = self.ensure_channel(ch)?;
-        self.engine
+        self.owning_engine_mut(ch)
+            .expect("ensured channel has an owning instance")
             .set_channel_pan(id, pan)
             .map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
@@ -740,18 +857,20 @@ impl MixerWasm {
         } else {
             self.soloed_channels.remove(&ch);
         }
-        // Re-evaluate all channels' effective mute state
-        let ids: Vec<(u32, ChannelId)> = self
-            .channel_ids
-            .iter()
-            .enumerate()
-            .filter_map(|(i, id)| id.map(|id| (i as u32, id)))
-            .collect();
-        for (i, id) in ids {
-            let effective = self.user_muted.contains(&i)
-                || (self.solo_active() && !self.soloed_channels.contains(&i));
-            if let Ok(ch) = self.engine.get_channel_mut(id) {
-                ch.set_muted(effective);
+        // Re-evaluate all strips' effective mute state in their OWNING
+        // instances — solo is global across all nine instances (input
+        // strips and bus slots alike).
+        for i in 0..self.channel_ids.len() {
+            let Some(id) = self.channel_ids[i] else {
+                continue;
+            };
+            let idx = i as u32;
+            let effective = self.user_muted.contains(&idx)
+                || (self.solo_active() && !self.soloed_channels.contains(&idx));
+            if let Some(engine) = self.owning_engine_mut(idx) {
+                if let Ok(c) = engine.get_channel_mut(id) {
+                    c.set_muted(effective);
+                }
             }
         }
         Ok(())
@@ -763,8 +882,10 @@ impl MixerWasm {
 
     fn set_engine_mute(&mut self, ch: u32, muted: bool) {
         if let Some(&Some(id)) = self.channel_ids.get(ch as usize) {
-            if let Ok(channel) = self.engine.get_channel_mut(id) {
-                channel.set_muted(muted);
+            if let Some(engine) = self.owning_engine_mut(ch) {
+                if let Ok(channel) = engine.get_channel_mut(id) {
+                    channel.set_muted(muted);
+                }
             }
         }
     }
@@ -896,16 +1017,20 @@ impl MixerWasm {
 
     pub fn set_channel_input_gain(&mut self, ch: u32, gain_db: f32) -> Result<(), JsValue> {
         let id = self.ensure_channel(ch)?;
-        if let Ok(c) = self.engine.get_channel_mut(id) {
-            c.input_mut().gain_db = gain_db;
+        if let Some(engine) = self.owning_engine_mut(ch) {
+            if let Ok(c) = engine.get_channel_mut(id) {
+                c.input_mut().gain_db = gain_db;
+            }
         }
         Ok(())
     }
 
     pub fn set_channel_phase(&mut self, ch: u32, inverted: bool) -> Result<(), JsValue> {
         let id = self.ensure_channel(ch)?;
-        if let Ok(c) = self.engine.get_channel_mut(id) {
-            c.set_phase_inverted(inverted);
+        if let Some(engine) = self.owning_engine_mut(ch) {
+            if let Ok(c) = engine.get_channel_mut(id) {
+                c.set_phase_inverted(inverted);
+            }
         }
         Ok(())
     }
@@ -919,16 +1044,20 @@ impl MixerWasm {
             3 => PanLaw::Minus6dB,
             _ => return Err(JsValue::from_str("invalid pan law")),
         };
-        if let Ok(c) = self.engine.get_channel_mut(id) {
-            c.set_pan_law(pan_law);
+        if let Some(engine) = self.owning_engine_mut(ch) {
+            if let Ok(c) = engine.get_channel_mut(id) {
+                c.set_pan_law(pan_law);
+            }
         }
         Ok(())
     }
 
     pub fn set_channel_name(&mut self, ch: u32, name: String) -> Result<(), JsValue> {
         let id = self.ensure_channel(ch)?;
-        if let Ok(c) = self.engine.get_channel_mut(id) {
-            c.set_name(name);
+        if let Some(engine) = self.owning_engine_mut(ch) {
+            if let Ok(c) = engine.get_channel_mut(id) {
+                c.set_name(name);
+            }
         }
         Ok(())
     }
@@ -944,6 +1073,16 @@ impl MixerWasm {
     pub fn channel_rms_db(&self, ch: u32) -> f32 {
         self.channel_rms.get(&ch).copied().unwrap_or(-f32::INFINITY)
     }
+    /// The strip's compressor gain reduction (dB, positive = attenuation)
+    /// from the most recent processed block. 0.0 when the strip has no
+    /// compressor.
+    pub fn channel_comp_gr_db(&self, ch: u32) -> f32 {
+        self.dynamics_chains
+            .get(&ch)
+            .and_then(|d| d.compressor.as_ref())
+            .map(|c| c.gain_reduction_db())
+            .unwrap_or(0.0)
+    }
     pub fn channel_meters_json(&self) -> String {
         let mut s = String::from("[");
         let mut first = true;
@@ -953,8 +1092,9 @@ impl MixerWasm {
             }
             first = false;
             let rms = self.channel_rms.get(&ch).copied().unwrap_or(-200.0);
+            let gr = self.channel_comp_gr_db(ch);
             s.push_str(&format!(
-                "{{\"ch\":{ch},\"peak\":{peak:.1},\"rms\":{rms:.1}}}"
+                "{{\"ch\":{ch},\"peak\":{peak:.1},\"rms\":{rms:.1},\"gr\":{gr:.1}}}"
             ));
         }
         s.push(']');
@@ -980,56 +1120,12 @@ impl MixerWasm {
         self.limiter_r = OversampledLimiter::new(self.limiter_ceiling, release_ms, 4, sr);
     }
 
-    // ── Bus routing ────────────────────────────────────
-
-    pub fn add_bus(&mut self, name: String, bus_type: u32) -> Result<u32, JsValue> {
-        let bt = match bus_type {
-            0 => BusType::Group,
-            1 => BusType::Auxiliary,
-            2 => BusType::Matrix,
-            _ => return Err(JsValue::from_str("invalid bus type")),
-        };
-        let bus_id = self
-            .engine
-            .add_bus(name, bt, ChannelLayout::Stereo)
-            .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
-        let js_id = self.bus_counter;
-        self.bus_counter += 1;
-        self.bus_map.insert(js_id, bus_id);
-        Ok(js_id)
-    }
-
-    pub fn set_aux_send(
-        &mut self,
-        ch: u32,
-        _send_idx: u32,
-        bus_id: u32,
-        level: f32,
-        pre_fader: bool,
-    ) -> Result<(), JsValue> {
-        let id = self.ensure_channel(ch)?;
-        let Some(&bid) = self.bus_map.get(&bus_id) else {
-            return Err(JsValue::from_str("unknown bus"));
-        };
-        self.engine
-            .add_aux_send(id, bid, level, pre_fader)
-            .map_err(|e| JsValue::from_str(&format!("{e:?}")))
-    }
-
-    pub fn remove_aux_send(&mut self, ch: u32, send_idx: u32) -> Result<(), JsValue> {
-        let Some(id) = self.channel_ids.get(ch as usize).and_then(|o| *o) else {
-            return Ok(());
-        };
-        if let Some(sends) = self.engine.engine_mut().channel_sends.get_mut(&id) {
-            if (send_idx as usize) < sends.len() {
-                sends.remove(send_idx as usize);
-            }
-        }
-        Ok(())
-    }
-
     // ── Bus mixing (8 buses × 16 full-channel-strip slots) ──
 
+    /// Assign bus `bus` slot `slot` to tap input channel `ch` (a parallel
+    /// RAW tap — `ch`'s own mute/fader/EQ/dynamics never affect the bus
+    /// path). Lazily creates the slot's engine channel / EQ / dynamics
+    /// (flat strip index 128 + bus*16 + slot).
     pub fn set_bus_source(&mut self, bus: u32, slot: u32, ch: u32) -> Result<(), JsValue> {
         if bus >= 8 {
             return Err(JsValue::from_str("bus index out of range (max 8)"));
@@ -1046,6 +1142,26 @@ impl MixerWasm {
     pub fn clear_bus_source(&mut self, bus: u32, slot: u32) {
         if (bus as usize) < 8 && (slot as usize) < 16 {
             self.bus_sources[bus as usize][slot as usize] = None;
+        }
+    }
+
+    /// Include/exclude an input strip from the main-bus mix (strips
+    /// 0-127 only; other indices are ignored). Default true. Purely
+    /// removes the strip from the main engine's call list — the strip is
+    /// still staged, metered, tapped, and still feeds any bus slots
+    /// assigned to it.
+    pub fn set_channel_main_assign(&mut self, ch: u32, on: bool) {
+        if (ch as usize) < self.main_assign.len() {
+            self.main_assign[ch as usize] = on;
+        }
+    }
+
+    /// Whether bus `bus` accumulates into the master mix (default true).
+    /// Independent of the bus's own published output
+    /// (`take_bus_output` still returns signal).
+    pub fn set_bus_feeds_main(&mut self, bus: u32, on: bool) {
+        if (bus as usize) < 8 {
+            self.feeds_main[bus as usize] = on;
         }
     }
 
@@ -1137,6 +1253,35 @@ impl MixerWasm {
         out
     }
 
+    /// Drain bus `bus`'s own stereo output from the most recent
+    /// `process()` call: one block of bs frames, interleaved L/R, post
+    /// bus-gain (a muted bus publishes silence). Per-bus drain contract
+    /// matching `take_channel_tap`:
+    ///
+    /// * Empty Float32Array when the bus index is invalid (≥ 8) or no
+    ///   new block has been processed since the last take of that bus.
+    /// * Taking bus A does not consume bus B's block; if two `process()`
+    ///   calls happen without a take in between, only the LATEST block
+    ///   is kept.
+    pub fn take_bus_output(&mut self, bus: u32) -> js_sys::Float32Array {
+        let b = bus as usize;
+        if b >= 8 || !self.bus_out_ready[b] || self.bus_out_frames == 0 {
+            return js_sys::Float32Array::new_with_length(0);
+        }
+        self.bus_out_ready[b] = false;
+        let n = self.bus_out_frames;
+        // Interleave into the pre-allocated scratch (drain path, not RT)
+        // so the copy into JS is a single memcpy, like take_channel_tap.
+        self.bus_out_buf.clear();
+        for i in 0..n {
+            self.bus_out_buf.push(self.bus_pub_l[b][i]);
+            self.bus_out_buf.push(self.bus_pub_r[b][i]);
+        }
+        let out = js_sys::Float32Array::new_with_length((n * 2) as u32);
+        out.copy_from(&self.bus_out_buf[..n * 2]);
+        out
+    }
+
     // ── Processing ─────────────────────────────────────
 
     /// Process one block and return the interleaved stereo output.
@@ -1158,28 +1303,25 @@ impl MixerWasm {
     /// stereo output slice (`block_size × 2` frames), valid until the
     /// next call.
     ///
-    /// Zero-allocation in the steady state: every buffer is pre-allocated
-    /// and reused (regression-tested in `tests/alloc_test.rs`).
+    /// Flow per block (see the struct docs for the full architecture):
+    /// FIFO drain → STAGING (dynamics + EQ per strip) → metering + tap →
+    /// nine `process_mix_rt` engine calls → bus tail → master gain →
+    /// limiter → interleave → master meter.
+    ///
+    /// Zero-allocation in the steady state: every heap buffer is
+    /// pre-allocated and reused, and the engine call lists live on the
+    /// STACK (a struct field cannot hold `&[f32]` slices into another
+    /// field — self-referential — and raw-pointer tricks are off the
+    /// table; fixed arrays of `Copy` tuples cost no heap).
+    /// Regression-tested in `tests/alloc_test.rs`.
     pub fn process_block(&mut self, block_size: u32) -> Result<&[f32], JsValue> {
         let bs = self.buffer_size.min(block_size as usize).max(1);
-
-        // Clear master bus
-        for i in 0..self.buffer_size {
-            self.master_left[i] = 0.0;
-            self.master_right[i] = 0.0;
-        }
-
-        // Clear bus accumulators
-        for b in 0..8 {
-            for s in 0..self.buffer_size {
-                self.bus_left[b][s] = 0.0;
-                self.bus_right[b][s] = 0.0;
-            }
-        }
+        let buf = self.buffer_size;
 
         // ── Channel direct-out tap: start a fresh block ──
         // Zeroed here so muted / solo-gated / input-less channels surface
-        // as silence; active channels overwrite their slots in pass 1.
+        // as silence; the tap pass below skips muted strips (their slots
+        // stay zeroed).
         if self.tap_channels > 0 {
             self.channel_tap_buf[..bs * self.tap_channels as usize].fill(0.0);
             self.tap_frames = bs;
@@ -1269,53 +1411,63 @@ impl MixerWasm {
             }
         }
 
-        // Snapshot input-channel gain params into the reused scratch vec.
-        // Pass 1 covers input channels only (indices 0-127); slot channels
-        // (128-255) are handled in pass 2 below.
-        self.pass1_params.clear();
-        for &ch_idx in self.channel_inputs.keys() {
-            if ch_idx < 128 {
-                if let Some((id, p)) = self.mix_params_for(ch_idx) {
-                    self.pass1_params.push((ch_idx, id, p));
-                }
-            }
-        }
-
-        // ── Pass 1: input channels ──
-        for &(ch_idx, id, params) in &self.pass1_params {
-            if params.muted {
+        // ── STAGING pass: raw source → dynamics → EQ, per existing strip ──
+        // Every strip 0-255 that exists (has a channel id) stages its raw
+        // source signal into `staged`: input strips their own drained row;
+        // bus slots the RAW row of their assigned source channel (parallel
+        // raw tap — the source's mute/fader/EQ/dynamics never touch the
+        // bus path; pinned by tests/bus_parallel_test.rs). Unassigned
+        // slots and missing sources stage silence; rows are re-zeroed
+        // first so starvation and clear_bus_source can't replay stale
+        // audio. The strip's own dynamics (gate → expander → compressor)
+        // then EQ run in place — same order and math as before the
+        // engine pivot. Unlike the old pass structure this runs for
+        // muted strips too, so meters and compressor GR readback stay
+        // live while muted (muted strips are excluded from the engine
+        // call lists below and contribute to no mix).
+        for idx in 0..self.channel_ids.len() {
+            if self.channel_ids[idx].is_none() {
                 continue;
             }
-
-            // This block's drained input (zeros on starvation)
-            let base = ch_idx as usize * bs;
-            let samples = &self.block_inputs[base..base + bs];
-
-            // ── Gate → Compressor → EQ (in-place on scratch) ──
-            // Copy to pre-allocated scratch (no per-channel Vec alloc)
-            self.eq_scratch[..bs].copy_from_slice(samples);
-
-            // Gate
-            if let Some(d) = self.dynamics_chains.get_mut(&ch_idx) {
-                d.process(&mut self.eq_scratch[..bs]);
+            // Which raw input row does this strip stage?
+            let src = if idx < 128 {
+                Some(idx as u32)
+            } else {
+                let bus = (idx - 128) / 16;
+                let slot = (idx - 128) % 16;
+                // Only input channels (0-127) have drained rows.
+                self.bus_sources[bus][slot].filter(|&s| s < 128)
+            };
+            let base = idx * buf;
+            let row = &mut self.staged[base..base + buf];
+            match src {
+                Some(s) => {
+                    // The drain pass above writes rows at stride `bs`.
+                    let sb = s as usize * bs;
+                    row[..bs].copy_from_slice(&self.block_inputs[sb..sb + bs]);
+                    if bs < buf {
+                        row[bs..].fill(0.0);
+                    }
+                }
+                None => row.fill(0.0),
             }
-
+            let strip = idx as u32;
+            if let Some(d) = self.dynamics_chains.get_mut(&strip) {
+                d.process(&mut row[..bs]);
+            }
             // EQ (always process unless explicitly bypassed)
-            if let Some(eq) = self.eq_chains.get_mut(&ch_idx) {
+            if let Some(eq) = self.eq_chains.get_mut(&strip) {
                 if !eq.is_bypassed() {
-                    eq.process(&mut self.eq_scratch[..bs]);
+                    eq.process(&mut row[..bs]);
                 }
             }
 
             // Per-channel metering (post-dynamics, post-EQ, pre-fader)
-            let peak = self.eq_scratch[..bs]
-                .iter()
-                .map(|s| s.abs())
-                .fold(0.0f32, f32::max);
-            let sq_sum: f32 = self.eq_scratch[..bs].iter().map(|s| s * s).sum();
+            let peak = row[..bs].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            let sq_sum: f32 = row[..bs].iter().map(|s| s * s).sum();
             let rms = (sq_sum / bs as f32).sqrt();
             self.channel_peak.insert(
-                ch_idx,
+                strip,
                 if peak > 1e-10 {
                     20.0 * peak.log10()
                 } else {
@@ -1323,149 +1475,139 @@ impl MixerWasm {
                 },
             );
             self.channel_rms.insert(
-                ch_idx,
+                strip,
                 if rms > 1e-10 {
                     20.0 * rms.log10()
                 } else {
                     -200.0
                 },
             );
+        }
 
-            // ── Direct-out tap: capture the pan-stage input ──
-            // eq_scratch holds the post gate/comp/EQ signal; apply the same
-            // input gain × phase × fader × VCA the engine would apply, but
-            // NOT pan → the classic post-fader mono direct out.
-            // (Muted/solo-gated channels `continue`d above, so their slots
-            // stay zeroed.)
-            let (lg, rg) = compute_stereo_pan(params.pan, &params.pan_law);
-            let phase: f32 = if params.phase_inverted { -1.0 } else { 1.0 };
-            let vca = self.engine.engine().vca_gain_for_channel(id);
-            let g = db_to_linear(params.input_gain_db) * phase * params.fader_gain * vca;
-            if self.tap_channels > ch_idx {
-                let n = self.tap_channels as usize;
-                for i in 0..bs {
-                    self.channel_tap_buf[i * n + ch_idx as usize] = self.eq_scratch[i] * g;
+        // Snapshot every existing strip's gain params into the reused
+        // scratch vec — read from each strip's OWNING instance; covers
+        // input strips 0-127 and bus slots 128-255 alike. Drives the
+        // direct-out tap and the nine engine call lists.
+        self.strip_params.clear();
+        for idx in 0..self.channel_ids.len() as u32 {
+            if self.channel_ids[idx as usize].is_some() {
+                if let Some((id, p)) = self.mix_params_for(idx) {
+                    self.strip_params.push((idx, id, p));
                 }
-            }
-
-            // Gain stage: input gain × phase × fader × VCA, then pan-law
-            // gains, accumulated straight into the master bus. This is the
-            // same math the engine applies in process_mix (compute_stereo_pan
-            // is the engine's own function) minus its per-channel Vec
-            // allocations — the RT budget does not survive those at high
-            // strip counts.
-            //
-            // Direct to master — always, unconditionally. Bus slots tap the
-            // RAW input buffer in parallel (pass 2), so bus assignment never
-            // diverts or silences the direct input path.
-            let gl = g * lg;
-            let gr = g * rg;
-            for i in 0..bs {
-                self.master_left[i] += self.eq_scratch[i] * gl;
-                self.master_right[i] += self.eq_scratch[i] * gr;
             }
         }
 
-        // ── Pass 2: bus slots (indices 128-255) are full channel strips ──
-        // Each slot taps the RAW mono input buffer of its assigned source
-        // channel in parallel with the input's own strip: the input channel's
-        // mute/fader/EQ/dynamics have zero effect on the bus path. The slot
-        // runs its own complete chain (dynamics → EQ → fader/pan via the
-        // engine) and feeds its bus accumulator.
-        for bus_idx in 0..8u32 {
-            for slot in 0..16u32 {
-                let slot_idx = 128 + bus_idx * 16 + slot;
-
-                // Which raw input does this slot tap?
-                let Some(src) = self.bus_sources[bus_idx as usize][slot as usize] else {
-                    continue;
-                };
-                if src >= 128 {
-                    continue; // only input channels (0-127) have drained blocks
-                }
-
-                // Skip muted/missing slot channels (defensive: set_bus_source
-                // lazily creates the engine channel with defaults).
-                let Some((id, params)) = self.mix_params_for(slot_idx) else {
-                    continue;
-                };
-                if params.muted {
+        // ── Direct-out tap: capture the pan-stage input ──
+        // staged holds the post gate/comp/EQ signal; apply the same
+        // input gain × phase × fader × VCA the owning engine applies,
+        // but NOT pan → the classic post-fader mono direct out.
+        // (Muted/solo-gated strips skip; their slots stay zeroed above.)
+        if self.tap_channels > 0 {
+            let n = self.tap_channels as usize;
+            for &(strip, id, params) in &self.strip_params {
+                if strip as usize >= n || params.muted {
                     continue;
                 }
-
-                // The source's drained block for this process() call — the
-                // same frames pass 1 consumed (zero-padded on starvation).
-                let base = src as usize * bs;
-                self.eq_scratch[..bs].copy_from_slice(&self.block_inputs[base..base + bs]);
-
-                // Slot's own dynamics → EQ (in-place on scratch)
-                if let Some(d) = self.dynamics_chains.get_mut(&slot_idx) {
-                    d.process(&mut self.eq_scratch[..bs]);
-                }
-                if let Some(eq) = self.eq_chains.get_mut(&slot_idx) {
-                    if !eq.is_bypassed() {
-                        eq.process(&mut self.eq_scratch[..bs]);
-                    }
-                }
-
-                // Slot metering (post-dynamics, post-EQ, pre-fader)
-                let peak = self.eq_scratch[..bs]
-                    .iter()
-                    .map(|s| s.abs())
-                    .fold(0.0f32, f32::max);
-                let sq_sum: f32 = self.eq_scratch[..bs].iter().map(|s| s * s).sum();
-                let rms = (sq_sum / bs as f32).sqrt();
-                self.channel_peak.insert(
-                    slot_idx,
-                    if peak > 1e-10 {
-                        20.0 * peak.log10()
-                    } else {
-                        -200.0
-                    },
-                );
-                self.channel_rms.insert(
-                    slot_idx,
-                    if rms > 1e-10 {
-                        20.0 * rms.log10()
-                    } else {
-                        -200.0
-                    },
-                );
-
-                // Gain stage on the mono tap → stereo result into the bus
-                // accumulator (same direct math as pass 1 — see note there).
-                let (lg, rg) = compute_stereo_pan(params.pan, &params.pan_law);
+                let vca = self
+                    .owning_engine(strip)
+                    .map(|e| e.engine().vca_gain_for_channel(id))
+                    .unwrap_or(1.0);
                 let phase: f32 = if params.phase_inverted { -1.0 } else { 1.0 };
-                let vca = self.engine.engine().vca_gain_for_channel(id);
                 let g = db_to_linear(params.input_gain_db) * phase * params.fader_gain * vca;
-                let gl = g * lg;
-                let gr = g * rg;
-                let bi = bus_idx as usize;
+                let base = strip as usize * buf;
                 for i in 0..bs {
-                    self.bus_left[bi][i] += self.eq_scratch[i] * gl;
-                    self.bus_right[bi][i] += self.eq_scratch[i] * gr;
+                    self.channel_tap_buf[i * n + strip as usize] = self.staged[base + i] * g;
                 }
             }
         }
 
-        // ── Pass 3: buses to master ──
-        for bus_idx in 0..8u32 {
-            if self.bus_muted[bus_idx as usize] {
+        // ── Build the nine engine call lists ──
+        // Fixed-size STACK arrays of Copy tuples whose input slices point
+        // into `staged` — zero heap allocation (a struct field cannot
+        // hold references into another field of the same struct, so the
+        // reused-Vec pattern used for `strip_params` is not possible
+        // here; the arrays cost ~15 KB of stack per block). Main list:
+        // strips 0-127 that exist, are not effectively muted, and have
+        // main_assign. Bus i list: its 16 slots under the same
+        // existence/mute rules.
+        let dummy: (ChannelId, ChannelProcessParams, &[f32]) =
+            (ChannelId::nil(), NULL_PROCESS_PARAMS, &[]);
+        let mut main_list = [dummy; 128];
+        let mut n_main = 0usize;
+        let mut bus_lists = [[dummy; 16]; 8];
+        let mut bus_counts = [0usize; 8];
+        for &(strip, id, params) in &self.strip_params {
+            if params.muted {
                 continue;
             }
+            let engine_params = ChannelProcessParams {
+                fader_gain: params.fader_gain,
+                pan: params.pan,
+                muted: params.muted,
+                input_gain_db: params.input_gain_db,
+                phase_inverted: params.phase_inverted,
+                pan_law: pan_law_to_engine(params.pan_law),
+            };
+            let base = strip as usize * buf;
+            if strip < 128 {
+                if self.main_assign[strip as usize] {
+                    main_list[n_main] = (id, engine_params, &self.staged[base..base + buf]);
+                    n_main += 1;
+                }
+            } else {
+                let b = ((strip - 128) / 16) as usize;
+                bus_lists[b][bus_counts[b]] = (id, engine_params, &self.staged[base..base + buf]);
+                bus_counts[b] += 1;
+            }
+        }
 
-            // Bus metering on the accumulator (sum of slot outputs, pre-gain)
-            let bl = &self.bus_left[bus_idx as usize];
-            let br = &self.bus_right[bus_idx as usize];
-            let peak = bl[..bs]
+        // ── Nine engine calls: the engines do ALL summing ──
+        // process_mix_rt applies input gain/phase → effects → fader × VCA
+        // → pan → PDC → sends → routing per channel and zeroes its output
+        // buffers first, so an empty call list correctly produces
+        // silence. Main outs → master; bus outs → the per-bus engine
+        // outputs (the bus tail below applies gain/mute and feed master).
+        self.main.engine_mut().process_mix_rt(
+            &main_list[..n_main],
+            &mut self.master_left,
+            &mut self.master_right,
+        );
+        for b in 0..8 {
+            self.buses[b].engine_mut().process_mix_rt(
+                &bus_lists[b][..bus_counts[b]],
+                &mut self.bus_left[b],
+                &mut self.bus_right[b],
+            );
+        }
+
+        // ── Bus tail: publish → meter → feed master ──
+        // bus_pub is the bus's own stereo output (post-gain, mute →
+        // silence): what take_bus_output drains and what feeds_main
+        // accumulates into master. A muted bus contributes nowhere.
+        for b in 0..8usize {
+            let muted = self.bus_muted[b];
+            let bg = self.bus_gains[b];
+            for i in 0..bs {
+                self.bus_pub_l[b][i] = if muted { 0.0 } else { self.bus_left[b][i] * bg };
+                self.bus_pub_r[b][i] = if muted {
+                    0.0
+                } else {
+                    self.bus_right[b][i] * bg
+                };
+            }
+
+            // Bus metering on the published output (post-gain)
+            let pl = &self.bus_pub_l[b];
+            let pr = &self.bus_pub_r[b];
+            let peak = pl[..bs]
                 .iter()
-                .chain(br[..bs].iter())
+                .chain(pr[..bs].iter())
                 .map(|s| s.abs())
                 .fold(0.0f32, f32::max);
-            let sq: f32 = bl[..bs].iter().chain(br[..bs].iter()).map(|s| s * s).sum();
+            let sq: f32 = pl[..bs].iter().chain(pr[..bs].iter()).map(|s| s * s).sum();
             let rms = (sq / (bs as f32 * 2.0)).sqrt();
             self.bus_peak.insert(
-                bus_idx,
+                b as u32,
                 if peak > 1e-10 {
                     20.0 * peak.log10()
                 } else {
@@ -1473,7 +1615,7 @@ impl MixerWasm {
                 },
             );
             self.bus_rms.insert(
-                bus_idx,
+                b as u32,
                 if rms > 1e-10 {
                     20.0 * rms.log10()
                 } else {
@@ -1481,13 +1623,15 @@ impl MixerWasm {
                 },
             );
 
-            // Apply bus gain and sum to master
-            let bg = self.bus_gains[bus_idx as usize];
-            for i in 0..bs {
-                self.master_left[i] += self.bus_left[bus_idx as usize][i] * bg;
-                self.master_right[i] += self.bus_right[bus_idx as usize][i] * bg;
+            if self.feeds_main[b] && !muted {
+                for i in 0..bs {
+                    self.master_left[i] += pl[i];
+                    self.master_right[i] += pr[i];
+                }
             }
         }
+        self.bus_out_frames = bs;
+        self.bus_out_ready = [true; 8];
 
         // ── Master gain ──
         if self.master_gain != 1.0 {
