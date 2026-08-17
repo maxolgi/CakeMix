@@ -2,9 +2,9 @@
 //!
 //! Per AGENTS.md "honesty rule", every DSP path from oximedia-mixer must pass a
 //! known-answer test before being trusted. This module (`dynamics.rs`) is **not
-//! on the real-time path** (ENGINE_API.md §3.3 lists it as dead-to-RT), so it
-//! has never been exercised by the engine. These tests prove whether the DSP is
-//! real or fake.
+//! on the engine's live path** (the engine's `process_mix` never touches it —
+//! the binding drives it directly), so it was never exercised end-to-end.
+//! These tests prove whether the DSP is real or fake.
 //!
 //! # Verdict: the DSP is REAL, with one load-bearing bug
 //!

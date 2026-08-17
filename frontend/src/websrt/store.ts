@@ -3,7 +3,7 @@
 // Owns the single receive worker instance (created via ./client so Vite
 // emits the worker chunk), relays PCM into the mixer AudioWorklet and
 // auto-maps every audio PID to consecutive mixer input channels
-// (INTEGRATION.md "PCM Handoff Contract" / "PID Mapping").
+// (README.md "PCM handoff contract").
 //
 // PCM path: one MessageChannel per connect — port1 transferred to the
 // worker (its 'pcm-port' cmd), port2 to the mixer worklet — so raw pcm
@@ -18,8 +18,7 @@
 // which feed websrtPids()):
 // - A PID is mapped on its FIRST 'pcm' message. The channelCount carried
 //   there is authoritative (auto-detected from the AES3 frame header by the
-//   WebSRT demuxer — INTEGRATION.md "Channel Count Discovery"); the PMT
-//   never triggers mapping.
+//   WebSRT demuxer); the PMT never triggers mapping.
 // - PIDs are packed consecutively from mixer channel 0, capped at 128
 //   channels total. Overflow PIDs report chStart -1 and their PCM is
 //   dropped (counted in websrtDroppedPcm(), as are pre-WASM drops).

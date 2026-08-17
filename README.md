@@ -71,13 +71,23 @@ independent bus, still publishable). Live per-strip COMP GR meters.
 
 ### PCM-only
 
-No codecs anywhere. Raw linear PCM (Float32) end-to-end. Audio is transported inside MPEG2-TS using SMPTE 302M (s302m) encapsulation over WebSRT/SRT.
+No codecs anywhere. Raw linear PCM (Float32) end-to-end. Audio is transported inside MPEG2-TS using SMPTE 302M (s302m) encapsulation over WebSRT/SRT (registration descriptor "BSSD").
 
-See:
-- `audioplan.md` — full PCM transport design and phased plan
-- `WEBSRT_CHANGES.md` — exact edits needed in WebSRT's ts-muxer-wasm
-- `plan.md` — overall milestone roadmap
-- `ENGINE_API.md` — verbatim API map of the oximedia-mixer engine
+### PCM handoff contract (CakeMix ↔ WebSRT)
+
+Browser-only integration — no compile-time dependency; pure `MessagePort` /
+`postMessage`:
+
+- **worker → worklet** (transferred `MessagePort`, zero main-thread hops):
+  `{type:'batch', msgs:[{type:'pcm', pid, channelCount, samples: Float32Array, pts}]}`
+- **worklet → main**: `{type:'pid-mapped', pid, chStart, channelCount}`
+  (chStart −1 = past the cap) and `{type:'pcm-dropped', total}` (cumulative).
+- A PID is mapped on its **first pcm** — the channelCount detected from the
+  AES3 frame header is authoritative, not the PMT. PIDs pack consecutively
+  from mixer channel 0, capped at 128 strips; overflow PCM is dropped+counted.
+- `map_pid` re-anchors the strip's elastic playout FIFOs (a remap = new stream).
+- ffmpeg publisher: `./fixtures/stream_pcm_real.sh` (30 stereo s302m PIDs,
+  looped; `WEBSTRT_SRT_URL=…` overrides the target).
 
 ### Per-channel input architecture
 
@@ -95,8 +105,30 @@ engine performs all summing.
   `process_mix_rt` (per-channel-input, alloc-free real-time mixing),
   `ChannelId::nil()`, `Copy` on `ChannelProcessParams`,
   `Compressor::last_gain_reduction_db()`, rayon optional behind `parallel`
-  (off for wasm), `std::time`/scene fixes for wasm32. Not yet pushed —
-  pinned locally via a temporary path patch.
+  (off for wasm), `std::time`/scene fixes for wasm32, `linear_to_db` −200 dB
+  floor (envelope followers poisoned permanently on digital silence without
+  it). Pinned via `[patch.crates-io]` at the pushed fork master.
+
+## Performance / DSP capacity
+
+Measured driving the real `process_block` (`glitch_sim`, native release).
+Budget: **2667 µs/block** (128 frames @ 48 kHz).
+
+| Load | avg | p99 | headroom |
+|---|---|---|---|
+| Realistic — 60 strips + 2 buses × 4 slots, 4 comps, 16-ch tap | 253 µs | **275 µs** | **9.7×** (CI-enforced) |
+| Full console — 128 strips + 8×16 bus slots, comp+gate on 32 strips | 1074 µs | **1161 µs** | **2.3×** |
+
+- ~3.8 µs/strip/block, scaling ~linearly (staging + 6-band EQ dominates;
+  the nine engine sums add little). 256 strips ≈ 44% of budget — no room
+  for 2× without slimmer staging.
+- Zero starvation, zero NaN/Inf, FIFO depth bounded under 300 ppm clock
+  drift (elastic slip reconciliation).
+- Known: limiter transient inter-sample overshoot up to +0.6 dBFS at
+  full-load sums (steady-state ceiling holds; see `limiter_test`).
+- Repro: `cargo test -p mixer-wasm --release --test glitch_sim`
+  (full load: `-- --ignored --nocapture`). Steady state is alloc-free —
+  pinned by `alloc_test` (counting global allocator, 0 bytes/block).
 
 ## DSP modules (M4 progress)
 

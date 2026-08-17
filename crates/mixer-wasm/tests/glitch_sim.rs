@@ -366,8 +366,9 @@ fn realistic_load_within_budget() {
 
 /// Full-console ceiling measurement (256 strips, dynamics on 32 strips,
 /// every bus slot assigned). This MEASURES, it does not promise — the
-/// printed numbers are the Phase C deliverable (they go into
-/// progress.md); only sanity is asserted (no NaN, bounded FIFO depth).
+/// printed numbers are the deliverable (record them in the PR/commit
+/// description and README's performance section); only sanity is asserted
+/// (no NaN, bounded FIFO depth).
 /// The 300 ppm-fast pass confirms the elastic buffer reconciles drift
 /// under full load instead of climbing toward the cap.
 ///

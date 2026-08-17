@@ -1,8 +1,14 @@
 # AGENTS.md — WASM Audio Mixer
 
 Behavioral guidelines + repo-specific guidance for any agent working on
-this project. Read `IMPLEMENTATION_PLAN.md` for the milestone plan and
-`FINDINGS.md` for the verified technical facts this project is built on.
+this project. `README.md` is the living project reference (status,
+architecture, contracts, performance numbers).
+
+**Tracked docs policy:** the ONLY tracked root docs are `AGENTS.md` and
+`README.md`. Do not create or commit plan/summary/notes `.md` files — put
+milestone state in README's Status table and durable facts in README's
+sections. (Historical planning files exist gitignored, local-only, for the
+user's reference; never re-add them.)
 
 ---
 
@@ -35,23 +41,23 @@ the browser over WebSRT (SRT over WebTransport).
 
 **This is a standalone repo, not a SlopShady feature.** SlopShady
 (a separate local checkout) is **read-only reference** for the WebSRT I/O
-glue — three files (see FINDINGS.md §6). Never modify SlopShady from here.
+glue — three files: `src/js/ui/streaming-input.ts` (decoded-AudioData tap),
+`src/js/features/stream-audio-worklet.js` (960-frame Float32 → transferred
+MessagePort), `src/js/features/stream-worker.js` (Opus→TS→SRT publish
+worker). Never modify SlopShady from here.
 
 ### Engine source: port `oximedia-mixer`
 
 - The engine is `crates/oximedia-mixer/` from
   https://github.com/cool-japan/oximedia. It is real, deep (~45 modules,
-  ~500KB Rust), and worth reusing. See FINDINGS.md §1 for the full module
-  inventory.
+  ~500KB Rust), and worth reusing.
 - **Do NOT use `oximedia-wasm/src/mixer_wasm.rs`.** It is a ~250-line
   hand-rolled toy (gain + pan + sum) that does not touch the real engine.
-  See FINDINGS.md §2. Write the real binding from zero.
+  Write the real binding from zero.
 - The engine comes from the fork `maxolgi/oximedia` (7 commits past
   upstream 0.2.1: wasm build fixes + `process_mix_rt`, the real-time
-  per-channel-input mixing API — see ENGINE_API.md §6). **Not yet pushed**:
-  the root Cargo.toml temporarily path-patches `oximedia-{mixer,core,audio}`
-  to `~/oximedia`; after pushing, revert those three entries to
-  `{ git = "https://github.com/maxolgi/oximedia", branch = "master" }`.
+  per-channel-input mixing API). Pinned via `[patch.crates-io]` at the
+  pushed fork master; the fork source is at `~/oximedia` on this machine.
 
 ### WASM target: single-threaded, no COOP/COEP
 
@@ -72,8 +78,8 @@ glue — three files (see FINDINGS.md §6). Never modify SlopShady from here.
 ### The honesty rule (load-bearing)
 
 oximedia has a documented history of modules that compile and pass tests
-but do not actually perform the DSP (fake decoders were removed — see
-FINDINGS.md §3). Therefore: **every DSP path from `oximedia-mixer` must
+but do not actually perform the DSP (fake decoders were removed upstream).
+Therefore: **every DSP path from `oximedia-mixer` must
 pass an end-to-end known-answer test before being trusted or built upon.**
 M0's known-answer mix test is the project's first gate, not a formality.
 If a ported module's output doesn't match expected DSP math, treat it as
@@ -83,13 +89,14 @@ over it.
 ### WebSRT boundary
 
 The user **owns WebSRT** (https://github.com/maxolgi/WebSRT) and will
-extend it. WebSRT extensions implied by this project (FINDINGS.md §4):
-audio-only mux, MPTS (multi-program), multi-PID-per-program with per-PID
-channel count. **Those edits happen in WebSRT, not in this repo.** This
-repo consumes WebSRT as a submodule (or git dep) and bumps the pin when
-WebSRT lands a needed change. If you conclude a fix must live in WebSRT,
-stop, describe the exact edit (file, lines, diff) for the user to apply
-there, then bump the pin here once it's merged.
+extend it. WebSRT extensions this project needed (audio-only mux, MPTS
+multi-program, multi-PID-per-program with per-PID channel count) have all
+landed; the demux/mux surface is SMPTE 302M PCM ("BSSD") — the handoff
+contract is in README.md. **Any future WebSRT edits happen in WebSRT, not
+in this repo.** This repo consumes WebSRT as a submodule (or git dep) and
+bumps the pin when WebSRT lands a needed change. If you conclude a fix
+must live in WebSRT, stop, describe the exact edit (file, lines, diff)
+for the user to apply there, then bump the pin here once it's merged.
 
 ### Transport architecture (decided)
 
@@ -113,10 +120,11 @@ there, then bump the pin here once it's merged.
 
 ### Verification
 
-There is no CI yet for this repo. Establish one early (at minimum: a
-known-answer DSP test that runs under `wasm-bindgen-test` in node, plus
-`cargo check` on the wasm target). Every milestone ships with a test that
-proves the milestone's claim.
+CI is GitHub Actions (`.github/workflows/ci.yml`): fmt + clippy + native
+tests + the release-mode glitch_sim RT-budget gate + the wasm test suites
++ a 3-OS build matrix that produces release binaries. Every milestone
+ships with a test that proves the milestone's claim; keep the suites
+green locally (`make test-all`) before pushing.
 
 ### Frontend conventions
 

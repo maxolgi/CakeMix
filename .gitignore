@@ -8,3 +8,15 @@ cert.pem
 key.pem
 tmp/
 /logs/
+
+# Historical planning/reference docs — kept as LOCAL reference only.
+# Tracked root docs are exactly AGENTS.md and README.md (AGENTS.md rule);
+# anything genuinely useful from these lives in README.md now.
+/IMPLEMENTATION_PLAN.md
+/plan.md
+/FINDINGS.md
+/WEBSRT_CHANGES.md
+/audioplan.md
+/INTEGRATION.md
+/ENGINE_API.md
+/progress.md
