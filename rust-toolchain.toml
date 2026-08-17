@@ -1,3 +1,7 @@
 [toolchain]
 channel = "1.95"
 targets = ["wasm32-unknown-unknown"]
+# Declared here (not just the CI action) so rustup installs them whenever
+# the toolchain is provisioned from this file — runners that resolve the
+# file to a fresh "1.95-<host>" toolchain otherwise miss cargo-fmt.
+components = ["rustfmt", "clippy"]
