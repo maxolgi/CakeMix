@@ -134,6 +134,13 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
             onClick={() => setPhase(idx, !ch().phaseInverted)}
             title="Phase / polarity invert"
           >Ø</button>
+          {!props.slot && (
+            <button
+              class={`btn-sm btn-main ${ch().mainAssigned ? "active" : ""}`}
+              onClick={() => setMainAssign(idx, !ch().mainAssigned)}
+              title="Main bus assign — off = this strip reaches master only through its bus slots"
+            >MAIN</button>
+          )}
           <label class="detail-select-label">LAW
             <select
               class="detail-select"
@@ -321,13 +328,6 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
           </div>
         </div>
         <div class="detail-controls">
-          {!props.slot && (
-            <button
-              class={`btn-sm btn-main ${ch().mainAssigned ? "active" : ""}`}
-              onClick={() => setMainAssign(idx, !ch().mainAssigned)}
-              title="Main bus assign — off = this strip reaches master only through its bus slots"
-            >MAIN</button>
-          )}
           <button
             class={`btn-sm btn-solo ${ch().soloed ? "active" : ""}`}
             onClick={onSolo}
