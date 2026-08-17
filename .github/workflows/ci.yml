@@ -48,6 +48,12 @@ jobs:
       - name: cargo test
         run: cargo test
 
+      # Timing gate: glitch_sim's budget assertions are release-only
+      # (debug is ~13x slower — see the test file's require_release), so
+      # plain `cargo test` skips them. Enforce the RT budget here instead.
+      - name: cargo test (glitch_sim timing gate, release)
+        run: cargo test -p mixer-wasm --release --test glitch_sim
+
   # ---------------------------------------------------------------------------
   # 2. WASM tests — the known-answer DSP suite under wasm (node).
   # ---------------------------------------------------------------------------

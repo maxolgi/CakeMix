@@ -50,6 +50,22 @@ fn sim_minutes() -> f64 {
         .unwrap_or(1.0)
 }
 
+/// Timing gates are only meaningful in optimized builds: debug is ~13x
+/// slower (CI's plain `cargo test`), which says nothing about the real-time
+/// runtime. CI enforces the budget via a dedicated release-mode step; debug
+/// runs skip the simulation entirely (a 1-min debug sim burns ~95 s of
+/// runner time to produce a meaningless number).
+#[cfg(debug_assertions)]
+fn require_release() -> bool {
+    eprintln!("glitch_sim: debug build — timing gate skipped (run with --release)");
+    false
+}
+
+#[cfg(not(debug_assertions))]
+fn require_release() -> bool {
+    true
+}
+
 /// A configured console plus the metadata the runner reports.
 struct Rig {
     label: &'static str,
@@ -323,6 +339,9 @@ fn run(mut rig: Rig, rate: f64, minutes: f64) -> Report {
 /// time under 2667 µs, no starvation, no NaN.
 #[test]
 fn realistic_load_within_budget() {
+    if !require_release() {
+        return;
+    }
     let minutes = sim_minutes();
     let r = run(realistic_load(), 1.0, minutes);
     r.print();
@@ -359,6 +378,9 @@ fn realistic_load_within_budget() {
 #[test]
 #[ignore]
 fn full_load_256_strips_ceiling() {
+    if !require_release() {
+        return;
+    }
     let minutes = sim_minutes();
 
     let r = run(full_load(), 1.0, minutes);
