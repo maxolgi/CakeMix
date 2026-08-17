@@ -407,7 +407,11 @@ pub struct MixerWasm {
     /// the strip's raw source signal processed through its own dynamics
     /// and EQ; the engine call lists below point into these rows.
     staged: Vec<f32>,
-    pid_map: HashMap<u16, PidMapping>,
+    /// PID → channel mapping, keyed by an opaque u32: the JS side encodes
+    /// `(sessionId << 16) | pid` so multiple WebSRT sessions can reuse
+    /// the same TS PID numbers without colliding. The u16 accessors use
+    /// the bare PID as the key (= session 0).
+    pid_map: HashMap<u32, PidMapping>,
     master_meter: MasterMeter,
     /// Monotonic process() call count (drives drift-statistics windows).
     block_counter: u64,
@@ -732,8 +736,40 @@ impl MixerWasm {
     }
 
     // ── PID mapping ────────────────────────────────────
+    //
+    // Two addressing modes over one map: the legacy u16 accessors key by
+    // the bare PID (= session 0) and simply delegate; the `*_keyed`
+    // variants take the raw map key so multiple WebSRT sessions can
+    // reuse the same TS PID numbers (see the `pid_map` field comment).
 
     pub fn map_pid(&mut self, pid: u16, ch_start: u32, channel_count: u32) -> Result<(), JsValue> {
+        self.map_pid_keyed(pid as u32, ch_start, channel_count)
+    }
+    pub fn unmap_pid(&mut self, pid: u16) {
+        self.unmap_pid_keyed(pid as u32);
+    }
+    pub fn pid_channel(&self, pid: u16) -> i32 {
+        self.pid_channel_keyed(pid as u32)
+    }
+    pub fn pid_channel_count(&self, pid: u16) -> u32 {
+        self.pid_channel_count_keyed(pid as u32)
+    }
+    pub fn subscribe_pid(&mut self, pid: u16) {
+        self.subscribe_pid_keyed(pid as u32);
+    }
+    pub fn unsubscribe_pid(&mut self, pid: u16) {
+        self.unsubscribe_pid_keyed(pid as u32);
+    }
+    pub fn feed_pcm(&mut self, pid: u16, data: &js_sys::Float32Array) -> Result<(), JsValue> {
+        self.feed_pcm_keyed(pid as u32, data)
+    }
+
+    pub fn map_pid_keyed(
+        &mut self,
+        key: u32,
+        ch_start: u32,
+        channel_count: u32,
+    ) -> Result<(), JsValue> {
         for i in 0..channel_count {
             self.ensure_channel(ch_start + i)?;
         }
@@ -750,7 +786,7 @@ impl MixerWasm {
             }
         }
         self.pid_map.insert(
-            pid,
+            key,
             PidMapping {
                 ch_start,
                 channel_count,
@@ -759,24 +795,24 @@ impl MixerWasm {
         );
         Ok(())
     }
-    pub fn unmap_pid(&mut self, pid: u16) {
-        self.pid_map.remove(&pid);
+    pub fn unmap_pid_keyed(&mut self, key: u32) {
+        self.pid_map.remove(&key);
     }
-    pub fn pid_channel(&self, pid: u16) -> i32 {
+    pub fn pid_channel_keyed(&self, key: u32) -> i32 {
         self.pid_map
-            .get(&pid)
+            .get(&key)
             .map(|m| m.ch_start as i32)
             .unwrap_or(-1)
     }
-    pub fn pid_channel_count(&self, pid: u16) -> u32 {
-        self.pid_map.get(&pid).map(|m| m.channel_count).unwrap_or(0)
+    pub fn pid_channel_count_keyed(&self, key: u32) -> u32 {
+        self.pid_map.get(&key).map(|m| m.channel_count).unwrap_or(0)
     }
-    pub fn subscribe_pid(&mut self, pid: u16) {
-        let Some(mut m) = self.pid_map.get(&pid).copied() else {
+    pub fn subscribe_pid_keyed(&mut self, key: u32) {
+        let Some(mut m) = self.pid_map.get(&key).copied() else {
             return;
         };
         m.subscribed = true;
-        self.pid_map.insert(pid, m);
+        self.pid_map.insert(key, m);
         for i in 0..m.channel_count {
             let ch = m.ch_start + i;
             if let Some(&Some(id)) = self.channel_ids.get(ch as usize) {
@@ -788,12 +824,12 @@ impl MixerWasm {
             }
         }
     }
-    pub fn unsubscribe_pid(&mut self, pid: u16) {
-        let Some(mut m) = self.pid_map.get(&pid).copied() else {
+    pub fn unsubscribe_pid_keyed(&mut self, key: u32) {
+        let Some(mut m) = self.pid_map.get(&key).copied() else {
             return;
         };
         m.subscribed = false;
-        self.pid_map.insert(pid, m);
+        self.pid_map.insert(key, m);
         for i in 0..m.channel_count {
             let ch = m.ch_start + i;
             if let Some(&Some(id)) = self.channel_ids.get(ch as usize) {
@@ -806,15 +842,26 @@ impl MixerWasm {
         }
     }
 
-    pub fn feed_pcm(&mut self, pid: u16, data: &js_sys::Float32Array) -> Result<(), JsValue> {
-        let Some(mapping) = self.pid_map.get(&pid).copied() else {
+    /// Keyed twin of `feed_pcm`: unmapped key → counted drop (never an
+    /// error), unsubscribed → silent drop; otherwise the JS buffer is
+    /// copied once and routed through the pure-Rust `feed_interleaved`
+    /// (same copy-then-inner structure as `set_channel_input_interleaved`,
+    /// so native tests can exercise the same path without a JS runtime).
+    pub fn feed_pcm_keyed(&mut self, key: u32, data: &js_sys::Float32Array) -> Result<(), JsValue> {
+        let Some(mapping) = self.pid_map.get(&key).copied() else {
             self.unmapped_pid_drops += 1;
             return Ok(());
         };
         if !mapping.subscribed {
             return Ok(());
         }
-        self.set_channel_input_interleaved(mapping.ch_start, data, mapping.channel_count)
+        let len = data.length() as usize;
+        self.raw_input.resize(len, 0.0);
+        data.copy_to(&mut self.raw_input);
+        let raw = std::mem::take(&mut self.raw_input);
+        let r = self.feed_interleaved(mapping.ch_start, &raw, mapping.channel_count);
+        self.raw_input = raw;
+        r
     }
 
     /// Count of PCM packets dropped due to unmapped PID (for diagnostics).

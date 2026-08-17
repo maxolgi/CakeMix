@@ -488,5 +488,47 @@ try {
 }
 
 
+// Test: keyed PID multi-session — two WebSRT sessions reuse the SAME TS
+// PID (0x101) on separate channels via the keyed API (key = (sessionId
+// << 16) | pid); with a bare-PID map the second mapping would clobber
+// the first. Same ratio-baseline pattern as the multi-PID tests above.
+function multiKeySteadyStateRms(keySpecs, data) {
+    const WARMUP = 32;
+    const MEASURE = 64;
+    const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 8);
+    for (let ch = 0; ch < 8; ch++) mixer.set_eq_bypass(ch, true);
+    for (const [key, ch, count] of keySpecs) mixer.map_pid_keyed(key, ch, count);
+    let sumSq = 0;
+    for (let block = 0; block < WARMUP + MEASURE; block++) {
+        for (const [key] of keySpecs) mixer.feed_pcm_keyed(key, data);
+        const out = mixer.process(BLOCK_SIZE);
+        if (block >= WARMUP) {
+            for (let i = 0; i < BLOCK_SIZE; i++) sumSq += out[i * 2] * out[i * 2];
+        }
+    }
+    return Math.sqrt(sumSq / (MEASURE * BLOCK_SIZE));
+}
+
+try {
+    const sine = sineWave(440, 0.04, BLOCK_SIZE);
+    const KEY1 = (1 << 16) | 0x101;
+    const KEY2 = (2 << 16) | 0x101;
+
+    const baseline = multiKeySteadyStateRms([[KEY1, 0, 1]], sine);
+
+    const summed = multiKeySteadyStateRms([[KEY1, 0, 1], [KEY2, 1, 1]], sine);
+
+    const ratio = summed / baseline;
+    assert(baseline > 1e-4, `baseline level suspiciously low: ${baseline}`);
+    assert(Math.abs(ratio - 2) / 2 < 0.05,
+        `2x keyed multi-session sum: ratio=${ratio.toFixed(3)} (expected 2), baseline=${baseline.toFixed(5)}, summed=${summed.toFixed(5)}`);
+    passed++;
+    console.log('PASS: test_keyed_pid_multi_session');
+} catch (e) {
+    console.error('FAIL: test_keyed_pid_multi_session:', e.message);
+    failed++;
+}
+
+
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 process.exit(failed > 0 ? 1 : 0);
