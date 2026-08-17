@@ -12,7 +12,7 @@ WebSRT. DSP proven with 57 native + 35 WASM tests (plus a 13-test JS runner).
 |-----------|--------|
 | M0 — WASM build + DSP tests | ✅ |
 | M1 — PCM end-to-end via WebSRT | ✅ |
-| M2 — Multi-PID (8 stereo / 16 mono) | ⏳ Needs WebSRT MPTS |
+| M2 — Multi-PID (8 stereo / 16 mono) | ✅ Multi-PID SPTS (MPTS not needed) |
 | M3 — Multi-session sum | ⏳ |
 | M4 — Pro DSP (EQ, dynamics, metering) | 🔨 In progress |
 | M5 — Bus architecture + scenes | 🔨 8 buses shipped; scenes pending |

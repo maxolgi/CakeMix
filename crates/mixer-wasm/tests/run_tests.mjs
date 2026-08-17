@@ -405,5 +405,88 @@ try {
 }
 
 
+// ── Multi-PID sum: N identical unity-gain PIDs → N× master level ──
+// M2 known-answer. The claim is that the mixer sums N input PIDs
+// linearly. Ratio-baseline approach: run the identical feeding scenario
+// twice on separate mixer instances — one baseline PID vs N PIDs, all
+// unity gain, same block count — and assert level_N ≈ N × level_1.
+// Measuring the ratio (not an absolute level) makes the test immune to
+// the pan law and any fixed master gain: they apply to both runs and
+// cancel in the division.
+// The master limiter is ALWAYS on (ceiling −0.3 dBFS ≈ 0.966 linear),
+// so the sine gain is deliberately tiny (0.04): even 8 coherent copies
+// at 0.5 Linear center-pan (8 × 0.04 × 0.5 = 0.16 peak) sit far below
+// the ceiling — the limiter never engages and the sum stays linear.
+
+// Helper: run the feed/process loop to steady state and return the RMS
+// level of the master LEFT channel over the last MEASURE blocks. Every
+// PID is fed `data` (interleaved for that PID's channel count) once per
+// block — the FIFO inputs are consumed by each process(), so the worklet
+// re-feed-every-block pattern applies. WARMUP blocks let the elastic
+// FIFOs settle before measuring.
+function multiPidSteadyStateRms(pidSpecs, data) {
+    const WARMUP = 32;
+    const MEASURE = 64;
+    const mixer = new MixerWasm(SAMPLE_RATE, BLOCK_SIZE, 8);
+    for (let ch = 0; ch < 8; ch++) mixer.set_eq_bypass(ch, true);
+    for (const [pid, ch, count] of pidSpecs) mixer.map_pid(pid, ch, count);
+    let sumSq = 0;
+    for (let block = 0; block < WARMUP + MEASURE; block++) {
+        for (const [pid] of pidSpecs) mixer.feed_pcm(pid, data);
+        const out = mixer.process(BLOCK_SIZE);
+        if (block >= WARMUP) {
+            for (let i = 0; i < BLOCK_SIZE; i++) sumSq += out[i * 2] * out[i * 2];
+        }
+    }
+    return Math.sqrt(sumSq / (MEASURE * BLOCK_SIZE));
+}
+
+// Test: 8 mono PIDs (0x101..0x108 → channels 0..7), each fed the SAME
+// sine buffer at unity gain → 8× the single-PID baseline level.
+try {
+    const sine = sineWave(440, 0.04, BLOCK_SIZE);
+
+    const baseline = multiPidSteadyStateRms([[0x101, 0, 1]], sine);
+
+    const pidSpecs = [];
+    for (let i = 0; i < 8; i++) pidSpecs.push([0x101 + i, i, 1]);
+    const summed = multiPidSteadyStateRms(pidSpecs, sine);
+
+    const ratio = summed / baseline;
+    assert(baseline > 1e-4, `baseline level suspiciously low: ${baseline}`);
+    assert(Math.abs(ratio - 8) / 8 < 0.05,
+        `8x mono sum: ratio=${ratio.toFixed(3)} (expected 8), baseline=${baseline.toFixed(5)}, summed=${summed.toFixed(5)}`);
+    passed++;
+    console.log('PASS: test_multi_pid_sum_8x_mono');
+} catch (e) {
+    console.error('FAIL: test_multi_pid_sum_8x_mono:', e.message);
+    failed++;
+}
+
+// Test: 4 stereo PIDs (0x101..0x104 → channel pairs 0,2,4,6), each fed
+// the SAME interleaved stereo sine (identical L/R) at unity gain → 4×
+// the single-PID baseline level.
+try {
+    const sine = sineWave(440, 0.04, BLOCK_SIZE);
+    const stereo = stereoInterleave(sine, sine); // identical L/R
+
+    const baseline = multiPidSteadyStateRms([[0x101, 0, 2]], stereo);
+
+    const pidSpecs = [];
+    for (let i = 0; i < 4; i++) pidSpecs.push([0x101 + i, i * 2, 2]);
+    const summed = multiPidSteadyStateRms(pidSpecs, stereo);
+
+    const ratio = summed / baseline;
+    assert(baseline > 1e-4, `baseline level suspiciously low: ${baseline}`);
+    assert(Math.abs(ratio - 4) / 4 < 0.05,
+        `4x stereo sum: ratio=${ratio.toFixed(3)} (expected 4), baseline=${baseline.toFixed(5)}, summed=${summed.toFixed(5)}`);
+    passed++;
+    console.log('PASS: test_multi_pid_sum_4x_stereo');
+} catch (e) {
+    console.error('FAIL: test_multi_pid_sum_4x_stereo:', e.message);
+    failed++;
+}
+
+
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 process.exit(failed > 0 ? 1 : 0);
