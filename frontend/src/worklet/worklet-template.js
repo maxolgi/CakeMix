@@ -67,8 +67,12 @@ class MixerProcessor extends AudioWorkletProcessor {
         this._pubFill = 0;     // floats currently in the accumulator
         this._pubFrames = 0;   // frames appended since pub-start (drives pts)
         this._pubChannels = 2; // tap width: 2 = master pair, >2 = channel direct outs
+        this._pubSource = "master"; // "master" | "bus" (bus stereo output via take_bus_output)
+        this._pubBus = 0;      // bus index published when _pubSource === "bus"
         this._tapMissingWarned = false; // log-once guards for the channel tap
         this._tapErrorWarned = false;
+        this._busTapMissingWarned = false; // log-once guards for the bus tap
+        this._busTapErrorWarned = false;
         // Direct pcm paths (transferred MessagePorts; see _attachPcmPort and
         // the 'pub-port' message). Null = parent-channel relay fallback.
         this._pcmPort = null;
@@ -177,12 +181,13 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (this._mixer) try { this._mixer.set_limiter_ceiling(msg.ceilingDb); } catch(e) {}
             } else if (msg.type === "set-limiter-release") {
                 if (this._mixer) try { this._mixer.set_limiter_release(msg.releaseMs); } catch(e) {}
-            } else if (msg.type === "add-bus") {
-                if (this._mixer) try { var busId = this._mixer.add_bus(msg.name, msg.busType); this.port.postMessage({type:"bus-added", busId: busId}); } catch(e) {}
-            } else if (msg.type === "set-aux-send") {
-                if (this._mixer) try { this._mixer.set_aux_send(msg.ch, msg.sendIdx, msg.busId, msg.level, msg.preFader); } catch(e) {}
-            } else if (msg.type === "remove-aux-send") {
-                if (this._mixer) try { this._mixer.remove_aux_send(msg.ch, msg.sendIdx); } catch(e) {}
+            } else if (msg.type === "set-main-assign") {
+                if (this._mixer) try { this._mixer.set_channel_main_assign(msg.ch, msg.on); } catch(e) {}
+            } else if (msg.type === "set-bus-feeds-main") {
+                // Feature-detected: wasm builds without set_bus_feeds_main
+                // keep the bus as an independent mix feeding master (default).
+                if (this._mixer && typeof this._mixer.set_bus_feeds_main === "function")
+                    try { this._mixer.set_bus_feeds_main(msg.bus, msg.on); } catch(e) {}
             } else if (msg.type === "set-bus-source") {
                 if (this._mixer) try { this._mixer.set_bus_source(msg.bus, msg.slot, msg.ch); } catch(e) {}
             } else if (msg.type === "clear-bus-source") {
@@ -192,18 +197,24 @@ class MixerProcessor extends AudioWorkletProcessor {
             } else if (msg.type === "set-bus-mute") {
                 if (this._mixer) try { this._mixer.set_bus_mute(msg.bus, msg.muted); } catch(e) {}
             } else if (msg.type === "pub-start") {
-                // Enable the publish tap for msg.channels outputs (default 2).
-                // 2 taps the master stereo pair exactly as before; 16/32/64/128
-                // switch to the mixer's per-channel direct-out tap (set via
-                // set_channel_tap, feature-detected). Idempotent; does not
-                // affect running state. A start while already started cleanly
-                // restarts the accumulator + sample counter (partial batch
-                // dropped).
+                // Enable the publish tap. Source "master" (default): msg.channels
+                // outputs — 2 taps the master stereo pair, 16/32/64/128 switch
+                // to the mixer's per-channel direct-out tap (set via
+                // set_channel_tap, feature-detected). Source "bus": msg.bus's
+                // stereo output via take_bus_output (feature-detected), channels
+                // forced to 2. Idempotent; does not affect running state. A
+                // start while already started cleanly restarts the accumulator
+                // + sample counter (partial batch dropped).
+                var src = msg.source === "bus" ? "bus" : "master";
                 var ch = msg.channels;
-                if (ch !== 2 && ch !== 16 && ch !== 32 && ch !== 64 && ch !== 128) {
+                if (src === "bus") {
+                    ch = 2; // bus publish is stereo (channels must be/defaults 2)
+                } else if (ch !== 2 && ch !== 16 && ch !== 32 && ch !== 64 && ch !== 128) {
                     if (ch !== undefined) console.warn("[pub] invalid channels " + ch + " — using 2");
                     ch = 2;
                 }
+                this._pubSource = src;
+                this._pubBus = typeof msg.bus === "number" ? msg.bus : 0;
                 this._pubChannels = ch;
                 this._pubBuf = new Float32Array(PUB_BATCH_FRAMES * ch);
                 this._pubFill = 0;
@@ -211,10 +222,12 @@ class MixerProcessor extends AudioWorkletProcessor {
                 this._pubActive = true;
                 this._setChannelTap(ch > 2 ? ch : 0);
             } else if (msg.type === "pub-stop") {
-                // Disable publish tap, drop any partial batch. Idempotent.
+                // Disable publish tap, drop any partial batch, reset the
+                // source to master. Idempotent.
                 this._pubActive = false;
                 this._pubFill = 0;
                 this._pubFrames = 0;
+                this._pubSource = "master";
                 this._setChannelTap(0);
             }
         };
@@ -308,13 +321,21 @@ class MixerProcessor extends AudioWorkletProcessor {
         return true;
     }
 
-    // Publish tap: append this block's audio to the accumulator — in 2ch
-    // mode exactly what was written to the audio output (master pair), in
-    // >2ch mode the channel direct-out tap (silence when silent or the tap
-    // failed). When a full PUB_BATCH_FRAMES batch is ready, post it
-    // transferred with the pts of its first frame.
+    // Publish tap: append this block's audio to the accumulator — in "bus"
+    // mode the selected bus's stereo output (take_bus_output, silence when
+    // nothing new or the tap failed), in 2ch mode exactly what was written
+    // to the audio output (master pair), in >2ch mode the channel direct-out
+    // tap (silence when silent or the tap failed). When a full
+    // PUB_BATCH_FRAMES batch is ready, post it transferred with the pts of
+    // its first frame.
     _pubTap(outL, outR, n, silent) {
-        if (this._pubChannels === 2) {
+        if (this._pubSource === "bus") {
+            // Bus stereo output, one take_bus_output block per process block
+            // (already interleaved L/R — pubInterleaveNch is a defensive
+            // copy: null/short contributes silence).
+            var busTap = silent ? null : this._takeBusOutput(this._pubBus);
+            this._pubFill = pubInterleaveNch(this._pubBuf, this._pubFill, busTap, n, 2);
+        } else if (this._pubChannels === 2) {
             this._pubFill = pubInterleaveBlock(this._pubBuf, this._pubFill, outL, outR, n);
         } else {
             var tap = silent ? null : this._takeChannelTap();
@@ -431,6 +452,29 @@ class MixerProcessor extends AudioWorkletProcessor {
             if (!this._tapErrorWarned) {
                 this._tapErrorWarned = true;
                 console.warn("[pub] take_channel_tap failed: " + e);
+            }
+            return null;
+        }
+    }
+
+    // Drain one block of a bus's post-gain stereo output (interleaved L/R),
+    // or null when unavailable (the caller accumulates silence). Empty when
+    // nothing new per the wasm contract — drains per block. Feature-detected
+    // (typeof) like the channel tap; failures log once only.
+    _takeBusOutput(bus) {
+        if (!this._mixer || typeof this._mixer.take_bus_output !== "function") {
+            if (!this._busTapMissingWarned) {
+                this._busTapMissingWarned = true;
+                console.warn("[pub] wasm mixer has no take_bus_output — publishing silence");
+            }
+            return null;
+        }
+        try {
+            return this._mixer.take_bus_output(bus);
+        } catch (e) {
+            if (!this._busTapErrorWarned) {
+                this._busTapErrorWarned = true;
+                console.warn("[pub] take_bus_output(" + bus + ") failed: " + e);
             }
             return null;
         }

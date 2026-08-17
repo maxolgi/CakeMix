@@ -6,14 +6,14 @@ export const NUM_SLOTS = 128;
 export const SLOT_BASE = 128;
 
 export interface EqBand { gainDb: number; freqHz: number; q: number; }
-export interface AuxSend { levelDb: number; preFader: boolean; busId: number | null; }
-export interface ChannelMeter { ch: number; peak: number; rms: number; }
+export interface ChannelMeter { ch: number; peak: number; rms: number; gr?: number; }
 
 export interface BusState {
   name: string;
   sources: (number | null)[];  // 16 slots
   gain: number;
   muted: boolean;
+  feedsMain: boolean;
   peakDb: number;
   rmsDb: number;
 }
@@ -32,9 +32,9 @@ export interface ChannelState {
   compAttackMs: number; compReleaseMs: number; compMakeupDb: number;
   expanderEnabled: boolean; expanderThresholdDb: number; expanderRatio: number;
   expanderAttackMs: number; expanderReleaseMs: number;
-  sends: AuxSend[];
-  outputBus: number | "master";
+  mainAssigned: boolean;
   peakDb: number; rmsDb: number;
+  compGrDb: number;
 }
 
 export interface MeterData {
@@ -62,9 +62,9 @@ function defaultChannel(index: number): ChannelState {
     gateEnabled: false, gateThresholdDb: -50, gateHysteresisDb: 6, gateAttackMs: 2, gateReleaseMs: 100, gateHoldMs: 10,
     compEnabled: false, compThresholdDb: -12, compRatio: 3, compKneeDb: 3, compAttackMs: 5, compReleaseMs: 100, compMakeupDb: 3,
     expanderEnabled: false, expanderThresholdDb: -40, expanderRatio: 2, expanderAttackMs: 5, expanderReleaseMs: 100,
-    sends: Array.from({ length: 4 }, () => ({ levelDb: -Infinity, preFader: false, busId: null })),
-    outputBus: "master",
+    mainAssigned: true,
     peakDb: -Infinity, rmsDb: -Infinity,
+    compGrDb: 0,
   };
 }
 
@@ -76,7 +76,7 @@ function defaultBus(index: number): BusState {
   return {
     name: `Bus ${index + 1}`,
     sources: Array.from({ length: 16 }, () => null),
-    gain: 1.0, muted: false,
+    gain: 1.0, muted: false, feedsMain: true,
     peakDb: -Infinity, rmsDb: -Infinity,
   };
 }
@@ -126,11 +126,13 @@ export function updateMeterData(msg: MeterData) {
     for (const cm of msg.channels) {
       setChannels(cm.ch, "peakDb", cm.peak);
       setChannels(cm.ch, "rmsDb", cm.rms);
+      setChannels(cm.ch, "compGrDb", cm.gr ?? 0);
     }
   } else {
     for (let i = 0; i < channels.length; i++) {
       setChannels(i, "peakDb", -Infinity);
       setChannels(i, "rmsDb", -Infinity);
+      setChannels(i, "compGrDb", 0);
     }
   }
   if (msg.buses && msg.buses.length) {
@@ -173,10 +175,7 @@ export function setExpanderThreshold(ch: number, v: number) { setChannels(ch, "e
 export function setExpanderRatio(ch: number, v: number) { setChannels(ch, "expanderRatio", v); sendToWorklet({ type: "set-exp-param", ch, param: 1, value: v }); }
 export function setExpanderAttack(ch: number, v: number) { setChannels(ch, "expanderAttackMs", v); sendToWorklet({ type: "set-exp-param", ch, param: 2, value: v }); }
 export function setExpanderRelease(ch: number, v: number) { setChannels(ch, "expanderReleaseMs", v); sendToWorklet({ type: "set-exp-param", ch, param: 3, value: v }); }
-export function setAuxSend(ch: number, sendIdx: number, levelDb: number, preFader: boolean, busId: number | null) {
-  setChannels(ch, "sends", sendIdx, { levelDb, preFader, busId });
-  if (busId !== null) sendToWorklet({ type: "set-aux-send", ch, sendIdx, busId, level: Math.pow(10, levelDb / 20), preFader });
-}
+export function setMainAssign(ch: number, on: boolean) { setChannels(ch, "mainAssigned", on); sendToWorklet({ type: "set-main-assign", ch, on }); }
 export function setMasterGain(gain: number) { setMasterGainState(gain); sendToWorklet({ type: "set-master-gain", gain }); }
 export function setLimiterEnabled(enabled: boolean) { setLimiterEnabledState(enabled); sendToWorklet({ type: "set-limiter", enabled }); }
 export function setLimiterCeiling(ceilingDb: number) { setLimiterCeilingState(ceilingDb); sendToWorklet({ type: "set-limiter-ceiling", ceilingDb }); }
@@ -202,6 +201,12 @@ export function setBusGain(bus: number, gain: number) {
 export function setBusMute(bus: number, muted: boolean) {
   setBusChannels(bus, "muted", muted);
   sendToWorklet({ type: "set-bus-mute", bus, muted });
+}
+
+// Feeds-master toggle: off = independent bus mix (monitor/N-1)
+export function setBusFeedsMain(bus: number, on: boolean) {
+  setBusChannels(bus, "feedsMain", on);
+  sendToWorklet({ type: "set-bus-feeds-main", bus, on });
 }
 
 // Slots are full channel strips at indices 128-255.

@@ -1,5 +1,5 @@
 import {
-  busChannels, setBusGain, setBusMute,
+  busChannels, setBusGain, setBusMute, setBusFeedsMain,
   faderToGain, gainToFader, formatGainDb,
 } from "../stores/mixer";
 import { MeterCanvas } from "./MeterCanvas";
@@ -34,6 +34,11 @@ export function BusMasterStrip(props: { bus: number }) {
           </div>
         </div>
         <div class="detail-controls">
+          <button
+            class={`btn-sm feeds-main ${bus().feedsMain ? "active" : ""}`}
+            onClick={() => setBusFeedsMain(props.bus, !bus().feedsMain)}
+            title="Feeds master — off = independent bus mix (monitor/N-1), still publishable"
+          >FEEDS MAIN</button>
           <button
             class={`btn-sm btn-mute ${bus().muted ? "active" : ""}`}
             onClick={() => setBusMute(props.bus, !bus().muted)}

@@ -17,6 +17,9 @@ import {
   publishTarget,
   publishChannels,
   setPublishChannels,
+  publishSource,
+  setPublishSource,
+  publishBus,
   publishLatencyMs,
   setPublishLatencyMs,
   type PublishChannels,
@@ -196,6 +199,26 @@ export function WebSRTPanel(props: { expanded: boolean }) {
                 </For>
               </select>
             </label>
+            <Show when={publishChannels() === 2}>
+              <label class="detail-select-label">SOURCE
+                <select
+                  class="detail-select"
+                  value={publishSource() === "bus" ? String(publishBus()) : "master"}
+                  onInput={(e) => {
+                    const v = e.currentTarget.value;
+                    if (v === "master") setPublishSource("master");
+                    else setPublishSource("bus", parseInt(v, 10));
+                  }}
+                  disabled={pubActive()}
+                  title="Publish source (stereo only, so available just at channels = 2) — Master: the main stereo mix. Bus 1–8: that bus's stereo output, independent of its feeds-master setting (works for monitor/N-1 mixes). Changeable only while disconnected."
+                >
+                  <option value="master">Master</option>
+                  <For each={Array.from({ length: 8 }, (_, i) => i)}>
+                    {(b) => <option value={String(b)}>Bus {b + 1}</option>}
+                  </For>
+                </select>
+              </label>
+            </Show>
             <span
               class={`websrt-pill ${publishStatus()}`}
               title={`WebSRT publish status: ${publishStatus()}`}
@@ -205,7 +228,9 @@ export function WebSRTPanel(props: { expanded: boolean }) {
           <div
             class="websrt-status-detail"
             title={`Publish stream name and gateway target — same discovery as the receive path (?pubstream / ?host / ?port)`}
-          >{publishTarget() ? `stream ${publishStreamName()} → ${publishTarget()}` : `stream ${publishStreamName()} → not connected`}</div>
+          >{publishTarget()
+              ? `stream ${publishStreamName()}${publishSource() === "bus" ? ` · bus ${publishBus() + 1}` : ""} → ${publishTarget()}`
+              : `stream ${publishStreamName()} → not connected`}</div>
 
           <Show when={publishStats()}>
             {(s) => (

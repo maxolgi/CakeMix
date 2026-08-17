@@ -29,6 +29,11 @@ export type PublishStatus = "disconnected" | "connecting" | "connected" | "error
  *  EQ/fader, pre-pan; muted channels publish silence). */
 export type PublishChannels = 2 | 16 | 32 | 64 | 128;
 
+/** Publish source: "master" = the main stereo mix (default); "bus" = a
+ *  bus's stereo output (independent of its feeds-master setting), forced
+ *  to 2 channels. */
+export type PublishSource = "master" | "bus";
+
 const STREAM_NAME = new URLSearchParams(location.search).get("pubstream") ?? "cakemix";
 
 const [status, setStatus] = createSignal<PublishStatus>("disconnected");
@@ -36,6 +41,8 @@ const [statusDetail, setStatusDetail] = createSignal("");
 const [stats, setStats] = createSignal<PubStats | null>(null);
 const [target, setTarget] = createSignal("");
 const [channels, setChannels] = createSignal<PublishChannels>(2);
+const [source, setSourceSignal] = createSignal<PublishSource>("master");
+const [bus, setBusSignal] = createSignal(0);
 const [relayPcm, setRelayPcm] = createSignal(0);
 // Publish TSBPD latency — independent of the receive side (each direction
 // has its own SRT peer). ?pubLatency= overrides the 120 ms default.
@@ -58,9 +65,18 @@ export const publishStats = stats;
 export const publishTarget = target;
 /** Output channel count: 2|16|32|64|128, packed as ceil(N/2) stereo s302m PIDs. */
 export const publishChannels = channels;
+/** Publish source: "master" (main stereo mix) | "bus" (a bus's stereo output). */
+export const publishSource = source;
+/** 0-based bus index published when publishSource() === "bus". */
+export const publishBus = bus;
 /** PCM batches that arrived via the parent-channel fallback instead of the
  *  direct worklet→worker port — 0 in normal operation. */
 export const publishRelayPcm = relayPcm;
+
+/** Effective channel count: bus publishes are always stereo. */
+function effectiveChannels(): PublishChannels {
+  return source() === "bus" ? 2 : channels();
+}
 
 /** Stream name the master mix is published as (?pubstream= overrides). */
 export function publishStreamName(): string {
@@ -72,6 +88,16 @@ export function publishStreamName(): string {
  *  silently ignored otherwise. */
 export function setPublishChannels(n: PublishChannels): void {
   if (status() === "disconnected") setChannels(n);
+}
+
+/** Change the publish source (and, for "bus", which bus — 0-based).
+ *  Only takes effect while disconnected (applied at next connect);
+ *  silently ignored otherwise. */
+export function setPublishSource(s: PublishSource, bus?: number): void {
+  if (status() === "disconnected") {
+    setSourceSignal(s);
+    if (s === "bus") setBusSignal(typeof bus === "number" ? bus : 0);
+  }
 }
 
 let worker: Worker | null = null;
@@ -107,7 +133,7 @@ export async function connectPublish(): Promise<void> {
       : `connecting to ${url} (mkcert/PKI)`);
     const cmd: PubCmd = {
       cmd: "init", url, certHash,
-      latencyMs: latencyMs(), channels: channels(),
+      latencyMs: latencyMs(), channels: effectiveChannels(),
     };
     w.postMessage(cmd);
     // Direct worklet→worker pcm channel (queued behind init; fresh per
@@ -118,7 +144,13 @@ export async function connectPublish(): Promise<void> {
     // Output tap on: the worklet posts {type:'pub-pcm', samples, ptsUs,
     // channels} — the master pair for 2ch, channel direct outs otherwise
     // (silence while the mixer is stopped, so the stream stays continuous).
-    sendToWorklet({ type: "pub-start", channels: channels() });
+    // Source "bus" taps that bus's stereo output instead (channels forced 2).
+    const pubCh = effectiveChannels();
+    if (source() === "bus") {
+      sendToWorklet({ type: "pub-start", channels: pubCh, source: "bus", bus: bus() });
+    } else {
+      sendToWorklet({ type: "pub-start", channels: pubCh });
+    }
   } catch (e) {
     sendToWorklet({ type: "pub-stop" });
     terminateWorker();
@@ -152,7 +184,7 @@ export function disconnectPublish(): void {
 export function relayPubPcm(samples: Float32Array, ptsUs: number, msgChannels?: number): void {
   if (!worker) return;
   setRelayPcm((n) => n + 1);
-  worker.postMessage({ cmd: "pcm", samples, ptsUs, channels: msgChannels ?? channels() }, [samples.buffer]);
+  worker.postMessage({ cmd: "pcm", samples, ptsUs, channels: msgChannels ?? effectiveChannels() }, [samples.buffer]);
 }
 
 function startWorker(): Worker {
@@ -186,7 +218,7 @@ function onWorkerMsg(msg: PubMsg): void {
       setStatusDetail("WebTransport ready — SRT handshake…");
       break;
     case "handshakeComplete":
-      setStatusDetail("handshake complete — publishing master mix");
+      setStatusDetail(`handshake complete — publishing ${source() === "bus" ? `bus ${bus() + 1} output` : "master mix"}`);
       break;
     case "stats":
       setStats(msg.stats);

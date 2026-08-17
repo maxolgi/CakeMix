@@ -6,7 +6,7 @@ import {
   setCompEnabled, setCompThreshold, setCompRatio, setCompAttack, setCompRelease, setCompKnee, setCompMakeup,
   setGateEnabled, setGateThreshold, setGateHysteresis, setGateAttack, setGateRelease, setGateHold,
   setExpanderEnabled, setExpanderThreshold, setExpanderRatio, setExpanderAttack, setExpanderRelease,
-  setAuxSend,
+  setMainAssign,
   busChannels, setBusSource, clearBusSource, NUM_CHANNELS,
   faderToGain, gainToFader, formatGainDb,
   setChannels, sendToWorklet,
@@ -40,7 +40,7 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
 
   // Section collapse state (default some to collapsed)
   const [collapsed, setCollapsed] = createSignal<Record<string, boolean>>({
-    INPUT: true, EQ: true, SENDS: true,
+    INPUT: true, EQ: true,
   });
   const toggle = (s: string) => setCollapsed(c => ({ ...c, [s]: !c[s] }));
   const isCollapsed = (s: string) => !!collapsed()[s];
@@ -51,7 +51,6 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
     let w = 100; // minimum
     if (!isCollapsed("INPUT")) w = Math.max(w, 360); // 6 comp knobs + labels + GR meter
     if (!isCollapsed("EQ")) w = Math.max(w, 230);
-    if (!isCollapsed("SENDS")) w = Math.max(w, 250);
     return w;
   };
 
@@ -174,7 +173,6 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
             unit="ms" format={fmtMs} size={36}
             onChange={(v) => setGateHold(idx, v)} />
         </div>
-        <GrMeter reduction={0} maxReduction={-20} label="GR" width={240} height={14} />
       </div>
 
       {/* ── COMP ───────────────────────────────────────── */}
@@ -207,7 +205,7 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
             unit="dB" format={fmtDb} size={36}
             onChange={(v) => setCompMakeup(idx, v)} />
         </div>
-        <GrMeter reduction={0} maxReduction={-20} label="GR" width={240} height={14} />
+        <GrMeter reduction={-Math.abs(ch().compGrDb)} maxReduction={-20} label="GR" width={240} height={14} />
       </div>
 
       {/* ── EXPAND ─────────────────────────────────────── */}
@@ -280,60 +278,6 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
         )}
       </div>
 
-      {/* ── SENDS (4 aux) ──────────────────────────────── */}
-      {!props.slot && (
-      <div class="detail-section">
-        <div class="detail-section-divider collapsible" onClick={() => toggle("SENDS")}>
-          <span class="detail-section-label">SENDS</span>
-        </div>
-        {!isCollapsed("SENDS") && (
-        <>
-        {[0, 1, 2, 3].map((si) => {
-          const s = () => ch().sends[si];
-          const level = () => {
-            const l = s().levelDb;
-            return isFinite(l) ? l : -60;
-          };
-          const hasBus = () => s().busId !== null;
-          return (
-            <div class={`send-row ${hasBus() ? "" : "disabled"}`}>
-              <span class="send-num">S{si + 1}</span>
-              <Knob
-                label="LVL"
-                value={level()}
-                min={-60} max={6} defaultValue={-60}
-                unit="dB" format={fmtDb} size={36} log
-                onChange={(v) => { if (hasBus()) setAuxSend(idx, si, v, s().preFader, s().busId); }}
-              />
-              <button
-                class={`send-pre-btn ${s().preFader ? "active" : ""}`}
-                onClick={() => setAuxSend(idx, si, level(), !s().preFader, s().busId)}
-                disabled={!hasBus()}
-                title={s().preFader ? "Pre-fader send (click for post)" : "Post-fader send (click for pre)"}
-              >{s().preFader ? "PRE" : "PST"}</button>
-              <select
-                class="send-bus-select"
-                value={s().busId ?? ""}
-                onInput={(e) => {
-                  const v = e.currentTarget.value;
-                  const busId = v ? parseInt(v) : null;
-                  setAuxSend(idx, si, level(), s().preFader, busId);
-                }}
-                title={hasBus() ? "Send target bus" : "Pick a bus to enable this send"}
-              >
-                <option value="">—</option>
-                {busChannels.map((bus, id) => (
-                  <option value={id}>{bus.name}</option>
-                ))}
-              </select>
-            </div>
-          );
-        })}
-        </>
-        )}
-      </div>
-      )}
-
       {/* ── PAN ───────────────────────────────────────── */}
       <div class="detail-section">
         <div class="detail-section-divider">
@@ -377,6 +321,13 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
           </div>
         </div>
         <div class="detail-controls">
+          {!props.slot && (
+            <button
+              class={`btn-sm btn-main ${ch().mainAssigned ? "active" : ""}`}
+              onClick={() => setMainAssign(idx, !ch().mainAssigned)}
+              title="Main bus assign — off = this strip reaches master only through its bus slots"
+            >MAIN</button>
+          )}
           <button
             class={`btn-sm btn-solo ${ch().soloed ? "active" : ""}`}
             onClick={onSolo}
