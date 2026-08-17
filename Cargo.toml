@@ -22,12 +22,9 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [patch.crates-io]
 # Patch: all three oximedia crates from our fork to keep versions unified.
-# LOCAL DEV: path patch into ~/oximedia (has process_mix_rt, unpushed).
-# When maxolgi/oximedia master is pushed, revert these three to:
-#   { git = "https://github.com/maxolgi/oximedia", branch = "master" }
-oximedia-mixer = { path = "/home/flibb/oximedia/crates/oximedia-mixer" }
-oximedia-core = { path = "/home/flibb/oximedia/crates/oximedia-core" }
-oximedia-audio = { path = "/home/flibb/oximedia/crates/oximedia-audio" }
+oximedia-mixer = { git = "https://github.com/maxolgi/oximedia", branch = "master" }
+oximedia-core = { git = "https://github.com/maxolgi/oximedia", branch = "master" }
+oximedia-audio = { git = "https://github.com/maxolgi/oximedia", branch = "master" }
 # Patch: WebSRT's forked transports (copied from vendor/WebSRT/Cargo.toml —
 # patches do not cross workspaces). Required by the websrt library crate.
 srt-protocol = { git = "https://github.com/maxolgi/srt-rs.git", branch = "main" }
