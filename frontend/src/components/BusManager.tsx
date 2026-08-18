@@ -25,6 +25,12 @@ export function BusManager(props: {
         onClick={() => props.onToggleExpanded()}
         title={props.expanded ? "Collapse settings" : "Expand settings (engine, test tones, WebSRT)"}
       >{props.expanded ? "▾" : "▸"}</button>
+      <SceneBank />
+      <span
+        class={`status-text ${/^(Error|Init failed|WASM load failed)/.test(props.status) ? "err" : ""}`}
+        style={showStatus() ? {} : { display: "none" }}
+        title={props.status}
+      >{props.status}</span>
       <div class="view-selector">
         <button
           class={`mode-toggle ${props.mode === "bus" ? "bus" : ""}`}
@@ -45,16 +51,6 @@ export function BusManager(props: {
           </For>
         </div>
       </div>
-      <SceneBank />
-      <span
-        class={`status-text ${/^(Error|Init failed|WASM load failed)/.test(props.status) ? "err" : ""}`}
-        style={showStatus() ? {} : { display: "none" }}
-        title={props.status}
-      >{props.status}</span>
-      <span
-        class={`websrt-pill ${props.websrtStatus}`}
-        title={`WebSRT connection status: ${props.websrtStatus}`}
-      >{props.websrtStatus}</span>
     </div>
   );
 }
