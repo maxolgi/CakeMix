@@ -4,18 +4,8 @@ Professional WASM audio mixer with WebSRT I/O. Built on the real `oximedia-mixer
 
 ## Status
 
-All milestones through M5 are complete. PCM arrives over WebSRT, is mixed
-by the WASM engine in the browser's AudioWorklet (multiple concurrent
-receive sessions supported), and is re-published over WebSRT.
-
-| Milestone | Status |
-|-----------|--------|
-| M0 — WASM build + DSP tests | ✅ |
-| M1 — PCM end-to-end via WebSRT | ✅ |
-| M2 — Multi-PID (8 stereo / 16 mono) | ✅ multi-PID SPTS (MPTS not needed) |
-| M3 — Multi-session sum | ✅ E2E-verified: same PID in 2 sessions → disjoint strips; drop-one clean |
-| M4 — Pro DSP (EQ, dynamics, metering) | ✅ CPU ceiling per glitch_sim below |
-| M5 — Bus architecture + scenes | ✅ 8 buses + scene save/recall with cross-fade |
+Complete through M5: multi-session WebSRT PCM input, 128-strip console
+(EQ, dynamics, 8 buses, scenes with cross-fade), WebSRT publish.
 
 ## Quick start
 
