@@ -226,16 +226,34 @@ class MixerProcessor extends AudioWorkletProcessor {
                 }
             } else if (msg.type === "scene-recall") {
                 // Timed cross-fade when the wasm has it, instant otherwise;
-                // fadeMs defaults to 0 (instant).
+                // fadeMs defaults to 0 (instant). On success, notify the
+                // main thread a recall happened (no payload — it pulls the
+                // console state back via get-params so the UI reflects the
+                // recalled parameters instead of going stale).
                 if (this._mixer && typeof this._mixer.recall_scene_fade === "function") {
-                    try { this._mixer.recall_scene_fade(msg.id, msg.fadeMs || 0); } catch(e) {}
+                    try {
+                        this._mixer.recall_scene_fade(msg.id, msg.fadeMs || 0);
+                        this.port.postMessage({ type: "scene-recalled" });
+                    } catch(e) {}
                 } else if (this._mixer && typeof this._mixer.recall_scene === "function") {
-                    try { this._mixer.recall_scene(msg.id); } catch(e) {}
+                    try {
+                        this._mixer.recall_scene(msg.id);
+                        this.port.postMessage({ type: "scene-recalled" });
+                    } catch(e) {}
                 }
             } else if (msg.type === "scene-delete") {
                 if (this._mixer && typeof this._mixer.delete_scene === "function") {
                     try { this._mixer.delete_scene(msg.id); } catch(e) {}
                 }
+            } else if (msg.type === "get-params") {
+                // Console-state pull (the reply to scene-recalled):
+                // serialize the mixer's console parameters and hand the
+                // JSON to the main thread, which applies it to the UI
+                // stores. During a fade the wasm already reports the
+                // fade target.
+                if (this._mixer) try {
+                    this.port.postMessage({ type: "console-params", json: this._mixer.console_params_json() });
+                } catch(e) {}
             } else if (msg.type === "pub-start") {
                 // Enable the publish tap. Source "master" (default): msg.channels
                 // outputs — 2 taps the master stereo pair, 16/32/64/128 switch

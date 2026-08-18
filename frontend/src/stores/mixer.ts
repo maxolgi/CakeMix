@@ -215,3 +215,66 @@ export function setBusFeedsMain(bus: number, on: boolean) {
 export function slotChannelIndex(bus: number, slot: number): number {
   return SLOT_BASE + bus * 16 + slot;
 }
+
+// ── Scene recall apply ──────────────────────────────────────────────────────
+
+/** Apply a console-params document (the worklet's `console-params` reply,
+ *  pulled after `scene-recalled`) to the UI stores so every control
+ *  reflects the recalled console. Field names mirror `ChannelState` /
+ *  `BusState` exactly — the wasm serializes them in lockstep.
+ *
+ *  Writes the stores DIRECTLY, never through the sendToWorklet helpers
+ *  above: the mixer already holds these values, and echoing them back
+ *  would cancel an in-progress scene cross-fade (every wasm setter is
+ *  cancel-on-set). Meters are not part of the document and stay
+ *  untouched. Runs at recall rate (user clicks), so a full-console
+ *  parse per call is fine. */
+export function applyConsoleParams(json: string) {
+  const p = JSON.parse(json);
+  for (const s of p.strips) {
+    const ch = s.ch;
+    setChannels(ch, "name", s.name);
+    setChannels(ch, "gain", s.gain);
+    setChannels(ch, "pan", s.pan);
+    setChannels(ch, "inputGainDb", s.inputGainDb);
+    setChannels(ch, "phaseInverted", s.phaseInverted);
+    setChannels(ch, "panLaw", s.panLaw);
+    setChannels(ch, "muted", s.muted);
+    setChannels(ch, "soloed", s.soloed);
+    setChannels(ch, "mainAssigned", s.mainAssigned);
+    setChannels(ch, "eqBypassed", s.eqBypassed);
+    for (let b = 0; b < s.eqBands.length; b++) {
+      setChannels(ch, "eqBands", b, "gainDb", s.eqBands[b].gainDb);
+      setChannels(ch, "eqBands", b, "freqHz", s.eqBands[b].freqHz);
+      setChannels(ch, "eqBands", b, "q", s.eqBands[b].q);
+    }
+    setChannels(ch, "compEnabled", s.compEnabled);
+    setChannels(ch, "compThresholdDb", s.compThresholdDb);
+    setChannels(ch, "compRatio", s.compRatio);
+    setChannels(ch, "compKneeDb", s.compKneeDb);
+    setChannels(ch, "compAttackMs", s.compAttackMs);
+    setChannels(ch, "compReleaseMs", s.compReleaseMs);
+    setChannels(ch, "compMakeupDb", s.compMakeupDb);
+    setChannels(ch, "gateEnabled", s.gateEnabled);
+    setChannels(ch, "gateThresholdDb", s.gateThresholdDb);
+    setChannels(ch, "gateHysteresisDb", s.gateHysteresisDb);
+    setChannels(ch, "gateAttackMs", s.gateAttackMs);
+    setChannels(ch, "gateReleaseMs", s.gateReleaseMs);
+    setChannels(ch, "gateHoldMs", s.gateHoldMs);
+    setChannels(ch, "expanderEnabled", s.expanderEnabled);
+    setChannels(ch, "expanderThresholdDb", s.expanderThresholdDb);
+    setChannels(ch, "expanderRatio", s.expanderRatio);
+    setChannels(ch, "expanderAttackMs", s.expanderAttackMs);
+    setChannels(ch, "expanderReleaseMs", s.expanderReleaseMs);
+  }
+  for (let b = 0; b < p.buses.length; b++) {
+    const bus = p.buses[b];
+    setBusChannels(b, "gain", bus.gain);
+    setBusChannels(b, "muted", bus.muted);
+    setBusChannels(b, "feedsMain", bus.feedsMain);
+    for (let slot = 0; slot < bus.sources.length; slot++) {
+      setBusChannels(b, "sources", slot, bus.sources[slot]);
+    }
+  }
+  setMasterGainState(p.masterGain);
+}

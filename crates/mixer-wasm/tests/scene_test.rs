@@ -14,6 +14,7 @@
 //!
 //! Run: cargo test -p mixer-wasm --test scene_test
 
+use mixer_wasm::effects::{CompressorEffect, ExpanderEffect, GateEffect};
 use mixer_wasm::MixerWasm;
 use oximedia_mixer::channel::PanLaw;
 
@@ -619,4 +620,194 @@ fn fade_unknown_scene_errors() {
     assert_eq!(m.console_snapshot().strips[0].gain, 0.5);
     m.recall_scene_fade(id, 0.0).expect("zero-ms is valid");
     assert_eq!(m.scene_count(), 1);
+}
+
+// ── Console-state JSON (the scene-recall UI loop) ─────────────────────
+
+/// f32 field read: JSON numbers parse as f64, and the shortest-repr
+/// Display round-trip guarantees `f32 → text → f64 → f32` is exact.
+fn num(v: &serde_json::Value, key: &str) -> f32 {
+    v[key].as_f64().expect(key) as f32
+}
+
+/// `console_params_json_inner` (the pure core behind the wasm
+/// `console_params_json`) serializes the console state with the UI
+/// stores' exact field names; a deliberately weird state round-trips
+/// through a real JSON parse. Honesty rule: parse the document — no
+/// substring sniffing.
+#[test]
+fn params_json_round_trips_console_state() {
+    let mut m = mixer();
+    set_weird_state(&mut m);
+
+    let v: serde_json::Value =
+        serde_json::from_str(&m.console_params_json_inner()).expect("valid JSON document");
+
+    // Master.
+    assert_eq!(num(&v, "masterGain"), 0.77);
+
+    // Only EXISTING strips serialize: set_weird_state creates input
+    // strips 0/1/2 plus the two bus-3 slot strips (128+3*16+{0,5}).
+    let strips = v["strips"].as_array().expect("strips array");
+    let chs: Vec<i64> = strips.iter().map(|s| s["ch"].as_i64().unwrap()).collect();
+    assert_eq!(chs, vec![0, 1, 2, 176, 181], "existing strips only");
+
+    // Strip 0: every field the ChannelState store mirrors.
+    let s0 = &strips[0];
+    assert_eq!(s0["name"].as_str().unwrap(), "zero");
+    assert_eq!(num(s0, "gain"), 0.83);
+    assert_eq!(num(s0, "pan"), -0.37);
+    assert_eq!(num(s0, "inputGainDb"), -4.5);
+    assert!(s0["phaseInverted"].as_bool().unwrap());
+    assert_eq!(s0["panLaw"].as_i64().unwrap(), 2); // Minus4Dot5dB wire u32
+    assert!(!s0["muted"].as_bool().unwrap());
+    assert!(!s0["soloed"].as_bool().unwrap());
+    assert!(s0["mainAssigned"].as_bool().unwrap());
+    assert!(!s0["eqBypassed"].as_bool().unwrap());
+    // 6 EQ bands: untouched ones keep the six_band defaults, set ones
+    // round-trip exactly.
+    let bands = s0["eqBands"].as_array().expect("eqBands");
+    assert_eq!(bands.len(), 6);
+    assert_eq!(num(&bands[0], "gainDb"), 0.0);
+    assert_eq!(num(&bands[0], "freqHz"), 80.0);
+    assert_eq!(num(&bands[0], "q"), 0.707);
+    assert_eq!(num(&bands[1], "gainDb"), 3.25);
+    assert_eq!(num(&bands[1], "freqHz"), 95.5);
+    assert_eq!(num(&bands[1], "q"), 0.8);
+    assert_eq!(num(&bands[3], "gainDb"), -2.75);
+    assert_eq!(num(&bands[3], "freqHz"), 1777.7);
+    assert_eq!(num(&bands[3], "q"), 2.9);
+    // Comp enabled with the set params; gate/expander disabled report
+    // the enable-constructor defaults (what a later enable creates).
+    assert!(s0["compEnabled"].as_bool().unwrap());
+    assert_eq!(num(s0, "compThresholdDb"), -23.5);
+    assert_eq!(num(s0, "compRatio"), 5.5);
+    assert_eq!(num(s0, "compKneeDb"), 7.25);
+    assert_eq!(num(s0, "compAttackMs"), 1.25);
+    assert_eq!(num(s0, "compReleaseMs"), 234.0);
+    assert_eq!(num(s0, "compMakeupDb"), 1.5);
+    assert!(!s0["gateEnabled"].as_bool().unwrap());
+    let g_def = GateEffect::denoise(SR).config().clone();
+    assert_eq!(num(s0, "gateThresholdDb"), g_def.threshold_db);
+    assert_eq!(num(s0, "gateHysteresisDb"), g_def.hysteresis_db);
+    assert_eq!(num(s0, "gateAttackMs"), g_def.attack_ms);
+    assert_eq!(num(s0, "gateReleaseMs"), g_def.release_ms);
+    assert_eq!(num(s0, "gateHoldMs"), g_def.hold_ms);
+    assert!(!s0["expanderEnabled"].as_bool().unwrap());
+    let e_def = ExpanderEffect::gentle(SR).config().clone();
+    assert_eq!(num(s0, "expanderThresholdDb"), e_def.threshold_db);
+    assert_eq!(num(s0, "expanderRatio"), e_def.ratio);
+    assert_eq!(num(s0, "expanderAttackMs"), e_def.attack_ms);
+    assert_eq!(num(s0, "expanderReleaseMs"), e_def.release_ms);
+
+    // Strip 1: mute/main-assign/EQ bypass/pan law/gate params.
+    let s1 = &strips[1];
+    assert_eq!(s1["name"].as_str().unwrap(), "one");
+    assert!(s1["muted"].as_bool().unwrap());
+    assert!(!s1["soloed"].as_bool().unwrap());
+    assert!(!s1["mainAssigned"].as_bool().unwrap());
+    assert!(s1["eqBypassed"].as_bool().unwrap());
+    assert_eq!(s1["panLaw"].as_i64().unwrap(), 3); // Minus6dB
+    assert_eq!(num(s1, "inputGainDb"), 2.25);
+    assert!(!s1["phaseInverted"].as_bool().unwrap());
+    assert!(s1["gateEnabled"].as_bool().unwrap());
+    assert_eq!(num(s1, "gateThresholdDb"), -42.5);
+    assert_eq!(num(s1, "gateHysteresisDb"), 8.5);
+    assert_eq!(num(s1, "gateAttackMs"), 0.25);
+    assert_eq!(num(s1, "gateReleaseMs"), 77.0);
+    assert_eq!(num(s1, "gateHoldMs"), 12.5);
+    // Comp disabled → broadcast defaults.
+    let c_def = CompressorEffect::broadcast(SR).config().clone();
+    assert_eq!(num(s1, "compThresholdDb"), c_def.threshold_db);
+    assert_eq!(num(s1, "compRatio"), c_def.ratio);
+
+    // Strip 2: solo + expander params.
+    let s2 = &strips[2];
+    assert!(s2["soloed"].as_bool().unwrap());
+    assert_eq!(s2["panLaw"].as_i64().unwrap(), 1); // Minus3dB
+    assert_eq!(num(s2, "expanderThresholdDb"), -35.5);
+    assert_eq!(num(s2, "expanderRatio"), 3.5);
+    assert_eq!(num(s2, "expanderAttackMs"), 2.5);
+    assert_eq!(num(s2, "expanderReleaseMs"), 120.0);
+
+    // All 8 buses always; bus 3 carries the set tail + routing, bus 0
+    // the defaults.
+    let buses = v["buses"].as_array().expect("buses array");
+    assert_eq!(buses.len(), 8);
+    let b3 = &buses[3];
+    assert_eq!(num(b3, "gain"), 0.61);
+    assert!(b3["muted"].as_bool().unwrap());
+    assert!(!b3["feedsMain"].as_bool().unwrap());
+    let srcs = b3["sources"].as_array().expect("sources");
+    assert_eq!(srcs.len(), 16);
+    assert_eq!(srcs[0].as_i64(), Some(2));
+    assert_eq!(srcs[5].as_i64(), Some(0));
+    assert!(srcs[1].is_null() && srcs[15].is_null());
+    let b0 = &buses[0];
+    assert_eq!(num(b0, "gain"), 1.0);
+    assert!(!b0["muted"].as_bool().unwrap());
+    assert!(b0["feedsMain"].as_bool().unwrap());
+    assert!(b0["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|s| s.is_null()));
+}
+
+/// Recall → params: after an instant recall the JSON reflects the
+/// recalled scene, and at FADE START it already shows the fade TARGET
+/// (the UI must not wait out the cross-fade); after the fade runs out
+/// it still matches.
+#[test]
+fn params_json_reflects_recalled_scene() {
+    let mut m = mixer();
+    set_weird_state(&mut m);
+    let id = m.save_scene();
+
+    // Pre-recall: mutated values serialize (current state, no fade).
+    set_mutated_state(&mut m);
+    let v: serde_json::Value = serde_json::from_str(&m.console_params_json_inner()).expect("json");
+    let s0 = &v["strips"].as_array().unwrap()[0];
+    assert_eq!(num(s0, "gain"), 0.12);
+    assert_eq!(s0["name"].as_str().unwrap(), "zero-mut");
+    assert_eq!(num(&v, "masterGain"), 1.42);
+
+    // Instant recall → scene A's values.
+    m.recall_scene(id).expect("recall");
+    let v: serde_json::Value = serde_json::from_str(&m.console_params_json_inner()).expect("json");
+    let s0 = &v["strips"].as_array().unwrap()[0];
+    assert_eq!(num(s0, "gain"), 0.83);
+    assert_eq!(s0["name"].as_str().unwrap(), "zero");
+    assert_eq!(num(&v, "masterGain"), 0.77);
+    let s2 = &v["strips"].as_array().unwrap()[2];
+    assert!(s2["soloed"].as_bool().unwrap(), "scene A's solo restored");
+
+    // Fade recall: the TARGET serializes the moment the fade starts —
+    // not the still-current from-state.
+    set_mutated_state(&mut m);
+    m.recall_scene_fade(id, 500.0).expect("fade recall");
+    let v: serde_json::Value = serde_json::from_str(&m.console_params_json_inner()).expect("json");
+    let s0 = &v["strips"].as_array().unwrap()[0];
+    assert_eq!(
+        num(s0, "gain"),
+        0.83,
+        "fade start must show the target gain, not the from-state 0.12"
+    );
+    assert_eq!(s0["name"].as_str().unwrap(), "zero");
+    assert_eq!(num(&v, "masterGain"), 0.77);
+
+    // Run the fade out (500 ms ≈ 188 blocks @ 128/48 k): the console
+    // lands on the target and the JSON still matches.
+    for _ in 0..200 {
+        m.process_block(BLOCK).expect("process");
+    }
+    let v: serde_json::Value = serde_json::from_str(&m.console_params_json_inner()).expect("json");
+    let s0 = &v["strips"].as_array().unwrap()[0];
+    assert_eq!(num(s0, "gain"), 0.83);
+    assert_eq!(num(&v, "masterGain"), 0.77);
+    assert_eq!(
+        m.console_snapshot().strips[0].gain,
+        0.83,
+        "fade end state must be the target verbatim"
+    );
 }

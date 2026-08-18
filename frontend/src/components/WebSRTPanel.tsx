@@ -25,6 +25,7 @@ import {
   disconnectPublish,
 } from "../websrt/publish";
 import { wasmReady, isRunning, setIsRunning, sendToWorklet } from "../stores/mixer";
+import { userGestureUnlock } from "../audio/unlock";
 
 const LATENCY_OPTIONS = [120, 250, 500, 1000, 2000];
 const CHANNEL_OPTIONS: { value: PublishChannels; label: string }[] = [
@@ -73,6 +74,10 @@ export function WebSRTPanel(props: { expanded: boolean }) {
 
   const startEngine = () => {
     if (!isRunning()) {
+      // The click is the only user gesture we get without a WebSRT/publish
+      // connect — resume the AudioContext here or the worklet never renders
+      // (frozen meters, silence, scene fades never advance).
+      userGestureUnlock();
       sendToWorklet({ type: "start" });
       setIsRunning(true);
     }
@@ -88,6 +93,7 @@ export function WebSRTPanel(props: { expanded: boolean }) {
   };
 
   const toggleTones = () => {
+    userGestureUnlock(); // tones are pointless on a suspended context
     const on = !tonesOn();
     setTonesOn(on);
     sendToWorklet({ type: "tones", on });

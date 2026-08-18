@@ -598,6 +598,97 @@ fn scene_err(msg: String) -> JsValue {
     }
 }
 
+// ── Console-state JSON (scene-recall UI loop) ─────────────────────────
+//
+// Recall changes parameters the SolidJS stores mirror; unless the UI is
+// told, controls show stale values and the next interaction writes them
+// back over the recalled scene. After a recall the worklet pulls this
+// serialization (get-params → console-params) and the stores apply it.
+// Field names mirror `ChannelState`/`BusState` in
+// frontend/src/stores/mixer.ts EXACTLY — keep the two in lockstep.
+
+/// JSON string escape for user-typed names (quote, backslash, control
+/// characters). The other manual-JSON builders here only emit numbers
+/// and booleans; names are the one place user text reaches the wire.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Compressor params an `enable_compressor` would create — the knob
+/// values the UI reports for a strip whose comp is disabled (the stores
+/// keep knob state while a module is off, so a later enable matches).
+fn comp_enable_defaults(sample_rate: u32) -> CompScene {
+    let fx = CompressorEffect::broadcast(sample_rate);
+    let c = fx.config();
+    CompScene {
+        threshold_db: c.threshold_db,
+        ratio: c.ratio,
+        attack_ms: c.attack_ms,
+        release_ms: c.release_ms,
+        makeup_gain_db: c.makeup_gain_db,
+        knee_db: c.knee_db,
+    }
+}
+
+/// Gate params an `enable_gate` would create (see `comp_enable_defaults`).
+fn gate_enable_defaults(sample_rate: u32) -> GateScene {
+    let fx = GateEffect::denoise(sample_rate);
+    let g = fx.config();
+    GateScene {
+        threshold_db: g.threshold_db,
+        hysteresis_db: g.hysteresis_db,
+        attack_ms: g.attack_ms,
+        release_ms: g.release_ms,
+        hold_ms: g.hold_ms,
+    }
+}
+
+/// Expander params an `enable_expander` would create (see
+/// `comp_enable_defaults`).
+fn expander_enable_defaults(sample_rate: u32) -> ExpanderScene {
+    let fx = ExpanderEffect::gentle(sample_rate);
+    let e = fx.config();
+    ExpanderScene {
+        threshold_db: e.threshold_db,
+        ratio: e.ratio,
+        attack_ms: e.attack_ms,
+        release_ms: e.release_ms,
+    }
+}
+
+/// One bus's JSON object: tail controls + all 16 slot source
+/// assignments (`null` = unassigned). All 8 buses always serialize —
+/// the UI shows all 8.
+fn bus_params_json(b: &BusScene) -> String {
+    let mut j = format!(
+        "{{\"gain\":{},\"muted\":{},\"feedsMain\":{},\"sources\":[",
+        b.gain, b.muted, b.feeds_main
+    );
+    for (slot, src) in b.sources.iter().enumerate() {
+        if slot > 0 {
+            j.push(',');
+        }
+        match src {
+            Some(ch) => j.push_str(&ch.to_string()),
+            None => j.push_str("null"),
+        }
+    }
+    j.push_str("]}");
+    j
+}
+
 /// Placeholder parameters for the stack-allocated engine call lists in
 /// `process_block` (every slot is overwritten before use; the dummy only
 /// exists so the fixed-size arrays can be initialized).
@@ -1623,6 +1714,16 @@ impl MixerWasm {
         self.scenes.len() as u32
     }
 
+    /// Serialize the console state for the UI as JSON — the reply to
+    /// the worklet's `get-params` pull after a `scene-recalled`
+    /// notification. Field names mirror the SolidJS stores exactly
+    /// (see `console_params_json_inner`, the pure-Rust core). During a
+    /// timed cross-fade the fade target serializes, so the UI shows the
+    /// recalled state the moment a fade starts.
+    pub fn console_params_json(&self) -> String {
+        self.console_params_json_inner()
+    }
+
     // ── Bus metering ───────────────────────────────────
 
     pub fn bus_peak_db(&self, bus: u32) -> f32 {
@@ -1834,6 +1935,111 @@ impl MixerWasm {
         }
         scene.master_gain = self.master_gain;
         scene
+    }
+
+    /// Serialize the console state for the UI as JSON (the wasm half of
+    /// the scene-recall loop — see the Console-state JSON block above).
+    ///
+    /// While a timed cross-fade is running the fade TARGET is
+    /// serialized, not the transient interpolation: the UI must show
+    /// where the console lands the moment a recall starts (recall posts
+    /// `scene-recalled` before the first interpolated block). Strips
+    /// that don't exist are skipped; all 8 buses are always included.
+    ///
+    /// Control-plane only (recall-rate, user clicks — allocation fine);
+    /// the RT path never calls this. Pure Rust inner fn behind the
+    /// `console_params_json` wasm wrapper so native tests exercise the
+    /// same serialization (`process`/`process_block` pattern).
+    pub fn console_params_json_inner(&self) -> String {
+        match &self.fade {
+            Some(fade) => self.scene_params_json(&fade.to),
+            None => self.scene_params_json(&self.console_snapshot()),
+        }
+    }
+
+    /// Render a full console snapshot as the UI-store JSON document.
+    fn scene_params_json(&self, scene: &ConsoleScene) -> String {
+        let mut j = String::from("{\"masterGain\":");
+        j.push_str(&scene.master_gain.to_string());
+        j.push_str(",\"strips\":[");
+        let mut first = true;
+        for (i, s) in scene.strips.iter().enumerate() {
+            if !s.exists {
+                continue;
+            }
+            if !first {
+                j.push(',');
+            }
+            first = false;
+            j.push_str(&self.strip_params_json(i as u32, s));
+        }
+        j.push_str("],\"buses\":[");
+        for (b, bus) in scene.buses.iter().enumerate() {
+            if b > 0 {
+                j.push(',');
+            }
+            j.push_str(&bus_params_json(bus));
+        }
+        j.push_str("]}");
+        j
+    }
+
+    /// One strip's JSON object, fields mirroring `ChannelState` in the
+    /// UI store (gain/pan are LINEAR, panLaw the wire u32 0-3, EQ the
+    /// 6 bands' {gainDb,freqHz,q}). Dynamics params serialize even when
+    /// the module is disabled — the enable-constructor defaults, i.e.
+    /// exactly what a later enable would create.
+    fn strip_params_json(&self, ch: u32, s: &StripScene) -> String {
+        let (comp_on, comp) = match &s.comp {
+            Some(c) => (true, c.clone()),
+            None => (false, comp_enable_defaults(self.sample_rate)),
+        };
+        let (gate_on, gate) = match &s.gate {
+            Some(g) => (true, g.clone()),
+            None => (false, gate_enable_defaults(self.sample_rate)),
+        };
+        let (exp_on, exp) = match &s.expander {
+            Some(e) => (true, e.clone()),
+            None => (false, expander_enable_defaults(self.sample_rate)),
+        };
+        let mut j = format!(
+            "{{\"ch\":{ch},\"name\":\"{}\",\"gain\":{},\"pan\":{},\"inputGainDb\":{},\"phaseInverted\":{},\"panLaw\":{}",
+            json_escape(&s.name),
+            s.gain,
+            s.pan,
+            s.input_gain_db,
+            s.phase_inverted,
+            pan_law_to_wire(s.pan_law),
+        );
+        j.push_str(&format!(
+            ",\"muted\":{},\"soloed\":{},\"mainAssigned\":{},\"eqBypassed\":{}",
+            s.mute, s.solo, s.main_assign, s.eq_bypass
+        ));
+        j.push_str(",\"eqBands\":[");
+        for (b, band) in s.eq_bands.iter().enumerate() {
+            if b > 0 {
+                j.push(',');
+            }
+            j.push_str(&format!(
+                "{{\"gainDb\":{},\"freqHz\":{},\"q\":{}}}",
+                band.gain_db, band.freq_hz, band.q
+            ));
+        }
+        j.push(']');
+        j.push_str(&format!(
+            ",\"compEnabled\":{comp_on},\"compThresholdDb\":{},\"compRatio\":{},\"compKneeDb\":{},\"compAttackMs\":{},\"compReleaseMs\":{},\"compMakeupDb\":{}",
+            comp.threshold_db, comp.ratio, comp.knee_db, comp.attack_ms, comp.release_ms, comp.makeup_gain_db
+        ));
+        j.push_str(&format!(
+            ",\"gateEnabled\":{gate_on},\"gateThresholdDb\":{},\"gateHysteresisDb\":{},\"gateAttackMs\":{},\"gateReleaseMs\":{},\"gateHoldMs\":{}",
+            gate.threshold_db, gate.hysteresis_db, gate.attack_ms, gate.release_ms, gate.hold_ms
+        ));
+        j.push_str(&format!(
+            ",\"expanderEnabled\":{exp_on},\"expanderThresholdDb\":{},\"expanderRatio\":{},\"expanderAttackMs\":{},\"expanderReleaseMs\":{}",
+            exp.threshold_db, exp.ratio, exp.attack_ms, exp.release_ms
+        ));
+        j.push('}');
+        j
     }
 
     /// Cancel-on-set policy for timed cross-fades: any scene-affecting

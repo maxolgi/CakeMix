@@ -11,7 +11,7 @@ import { BusMasterStrip } from "./components/BusMasterStrip";
 import { BusManager } from "./components/BusManager";
 import { WebSRTPanel } from "./components/WebSRTPanel";
 import {
-  updateMeterData,
+  updateMeterData, applyConsoleParams,
   wasmReady, setWasmReady, isRunning, setIsRunning,
   status, setStatus, setMixerNode, sendToWorklet,
   selectedBus, setSelectedBus, slotChannelIndex,
@@ -64,6 +64,11 @@ export default function App() {
         }
         else if (msg.type === "pid-mapped") { websrtStore.onWorkletPidMapped(msg); }
         else if (msg.type === "scene-saved") { scenesStore.addScene(msg.id); }
+        // Scene-recall UI loop: a recall happened in the mixer — pull the
+        // console state back so sliders/knobs reflect it (otherwise the
+        // next interaction writes stale values over the recalled scene).
+        else if (msg.type === "scene-recalled") { sendToWorklet({ type: "get-params" }); }
+        else if (msg.type === "console-params") { applyConsoleParams(msg.json); }
         else if (msg.type === "pcm-dropped") { websrtStore.onWorkletPcmDropped(msg.total); }
         else if (msg.type === "pub-pcm") { relayPubPcm(msg.samples, msg.ptsUs, msg.channels); }
       };

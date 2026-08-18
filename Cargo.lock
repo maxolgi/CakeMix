@@ -1329,6 +1329,7 @@ dependencies = [
  "oximedia-audio",
  "oximedia-core",
  "oximedia-mixer",
+ "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-test",
 ]
