@@ -214,6 +214,28 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (this._mixer) try { this._mixer.set_bus_gain(msg.bus, msg.gain); } catch(e) {}
             } else if (msg.type === "set-bus-mute") {
                 if (this._mixer) try { this._mixer.set_bus_mute(msg.bus, msg.muted); } catch(e) {}
+            } else if (msg.type === "scene-save") {
+                // Feature-detected: wasm builds without the scene API stay
+                // inert (no scene-saved event comes back, so no chip appears).
+                // The new scene id is posted back like pid-mapped events.
+                if (this._mixer && typeof this._mixer.save_scene === "function") {
+                    try {
+                        var sceneId = this._mixer.save_scene();
+                        this.port.postMessage({ type: "scene-saved", id: sceneId });
+                    } catch(e) {}
+                }
+            } else if (msg.type === "scene-recall") {
+                // Timed cross-fade when the wasm has it, instant otherwise;
+                // fadeMs defaults to 0 (instant).
+                if (this._mixer && typeof this._mixer.recall_scene_fade === "function") {
+                    try { this._mixer.recall_scene_fade(msg.id, msg.fadeMs || 0); } catch(e) {}
+                } else if (this._mixer && typeof this._mixer.recall_scene === "function") {
+                    try { this._mixer.recall_scene(msg.id); } catch(e) {}
+                }
+            } else if (msg.type === "scene-delete") {
+                if (this._mixer && typeof this._mixer.delete_scene === "function") {
+                    try { this._mixer.delete_scene(msg.id); } catch(e) {}
+                }
             } else if (msg.type === "pub-start") {
                 // Enable the publish tap. Source "master" (default): msg.channels
                 // outputs — 2 taps the master stereo pair, 16/32/64/128 switch

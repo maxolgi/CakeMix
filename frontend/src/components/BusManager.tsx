@@ -1,4 +1,5 @@
 import { For } from "solid-js";
+import { SceneBank } from "./SceneBank";
 
 export function BusManager(props: {
   running: boolean;
@@ -39,6 +40,7 @@ export function BusManager(props: {
           </For>
         </div>
       </div>
+      <SceneBank />
       <span
         class={`status-text ${/^(Error|Init failed|WASM load failed)/.test(props.status) ? "err" : ""}`}
         style={showStatus() ? {} : { display: "none" }}

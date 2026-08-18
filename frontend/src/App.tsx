@@ -1,6 +1,7 @@
 import { onMount, onCleanup, createSignal, createEffect, For } from "solid-js";
 import * as websrt from "./websrt/client";
 import * as websrtStore from "./websrt/store";
+import * as scenesStore from "./stores/scenes";
 import { websrtStatus } from "./websrt/store";
 import { publishStatus, relayPubPcm } from "./websrt/publish";
 import { registerAudioUnlock } from "./audio/unlock";
@@ -62,6 +63,7 @@ export default function App() {
           if (typeof msg.droppedPcm === "number") websrtStore.onWorkletPcmDropped(msg.droppedPcm);
         }
         else if (msg.type === "pid-mapped") { websrtStore.onWorkletPidMapped(msg); }
+        else if (msg.type === "scene-saved") { scenesStore.addScene(msg.id); }
         else if (msg.type === "pcm-dropped") { websrtStore.onWorkletPcmDropped(msg.total); }
         else if (msg.type === "pub-pcm") { relayPubPcm(msg.samples, msg.ptsUs, msg.channels); }
       };
