@@ -4,18 +4,20 @@ Professional WASM audio mixer with WebSRT I/O. Built on the real `oximedia-mixer
 
 ## Status
 
-**M1 complete.** PCM audio arrives over WebSRT (SRT/WebTransport), is mixed by
+**M3 complete.** PCM audio arrives over WebSRT (SRT/WebTransport), is mixed by
 the WASM engine in the browser's AudioWorklet, and is re-published over
-WebSRT. DSP proven with 57 native + 35 WASM tests (plus a 13-test JS runner).
+WebSRT. Multiple concurrent receive sessions sum at master (per-session
+workers + keyed PID mapping, so sessions may share PID numbers). DSP proven
+with 65 native + 37 WASM tests (plus a 16-test JS runner).
 
 | Milestone | Status |
 |-----------|--------|
 | M0 — WASM build + DSP tests | ✅ |
 | M1 — PCM end-to-end via WebSRT | ✅ |
 | M2 — Multi-PID (8 stereo / 16 mono) | ✅ Multi-PID SPTS (MPTS not needed) |
-| M3 — Multi-session sum | ⏳ |
-| M4 — Pro DSP (EQ, dynamics, metering) | 🔨 In progress |
-| M5 — Bus architecture + scenes | 🔨 8 buses shipped; scenes pending |
+| M3 — Multi-session sum | ✅ E2E-verified: 2 sessions, same PID, disjoint strips; drop-one clean |
+| M4 — Pro DSP (EQ, dynamics, metering) | ✅ (CPU ceiling per glitch_sim below) |
+| M5 — Bus architecture + scenes | ✅ 8 buses + scene save/recall with cross-fade |
 
 ## Quick start
 
@@ -68,6 +70,11 @@ source's **raw** signal — the source's fader/mute/EQ/dynamics never affect
 the bus path. Two routing toggles: **MAIN** per strip (off = the strip
 reaches master only via its bus slots) and **FEEDS MAIN** per bus (off =
 independent bus, still publishable). Live per-strip COMP GR meters.
+**Scenes** capture the entire console (strips, buses, master); recall is
+instant or cross-faded (dB-domain gains, audio-rate fade inside the mixer
+block — any user set cancels the fade). Multiple WebSRT receive sessions
+run concurrently — PIDs are namespaced per session (keyed mapping), so
+different gateways/streams may reuse PID numbers.
 
 ### PCM-only
 
