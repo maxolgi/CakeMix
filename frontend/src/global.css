@@ -343,7 +343,7 @@ body {
 .fader::-moz-range-thumb { width: 36px; height: 6px; background: linear-gradient(180deg, #444, #2a2a2a); border: 1px solid #1a1a1a; border-radius: 2px; }
 
 /* ── Bank Selector ───────────────────── */
-.view-selector { display: flex; align-items: center; gap: 8px; margin-left: auto; margin-right: 4px; }
+.view-selector { display: flex; align-items: center; gap: 8px; margin-left: 0; }
 .bank-selector { display: flex; gap: 2px; }
 .bank-btn { width: 24px; height: 22px; font-size: 0.7em; font-weight: 600; border: 1px solid #2a2a30; border-radius: 2px; background: #16161e; color: #666; cursor: pointer; transition: all 0.1s; }
 .bank-btn:hover { border-color: #444; color: #aaa; }
@@ -418,7 +418,7 @@ body {
     border: 1px solid #2a2a30; border-radius: 2px; background: #16161e; color: #666;
     cursor: pointer; transition: all 0.1s;
 }
-.bus-manager .websrt-chevron { margin-left: 8px; }
+.bus-manager .websrt-chevron { margin-left: 0; margin-right: 2px; }
 .websrt-chevron:hover { border-color: #444; color: #aaa; }
 .settings-body { display: flex; flex-direction: column; gap: 6px; padding: 2px 12px 8px; }
 .websrt-controls { display: flex; align-items: center; gap: 10px; }

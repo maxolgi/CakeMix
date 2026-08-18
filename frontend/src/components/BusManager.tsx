@@ -20,6 +20,11 @@ export function BusManager(props: {
 
   return (
     <div class="bus-manager" title="Buses">
+      <button
+        class="websrt-chevron"
+        onClick={() => props.onToggleExpanded()}
+        title={props.expanded ? "Collapse settings" : "Expand settings (engine, test tones, WebSRT)"}
+      >{props.expanded ? "▾" : "▸"}</button>
       <div class="view-selector">
         <button
           class={`mode-toggle ${props.mode === "bus" ? "bus" : ""}`}
@@ -50,11 +55,6 @@ export function BusManager(props: {
         class={`websrt-pill ${props.websrtStatus}`}
         title={`WebSRT connection status: ${props.websrtStatus}`}
       >{props.websrtStatus}</span>
-      <button
-        class="websrt-chevron"
-        onClick={() => props.onToggleExpanded()}
-        title={props.expanded ? "Collapse settings" : "Expand settings (engine, test tones, WebSRT)"}
-      >{props.expanded ? "▾" : "▸"}</button>
     </div>
   );
 }
