@@ -4,19 +4,17 @@ Professional WASM audio mixer with WebSRT I/O. Built on the real `oximedia-mixer
 
 ## Status
 
-**M3 complete.** PCM audio arrives over WebSRT (SRT/WebTransport), is mixed by
-the WASM engine in the browser's AudioWorklet, and is re-published over
-WebSRT. Multiple concurrent receive sessions sum at master (per-session
-workers + keyed PID mapping, so sessions may share PID numbers). DSP proven
-with 65 native + 37 WASM tests (plus a 16-test JS runner).
+All milestones through M5 are complete. PCM arrives over WebSRT, is mixed
+by the WASM engine in the browser's AudioWorklet (multiple concurrent
+receive sessions supported), and is re-published over WebSRT.
 
 | Milestone | Status |
 |-----------|--------|
 | M0 — WASM build + DSP tests | ✅ |
 | M1 — PCM end-to-end via WebSRT | ✅ |
-| M2 — Multi-PID (8 stereo / 16 mono) | ✅ Multi-PID SPTS (MPTS not needed) |
-| M3 — Multi-session sum | ✅ E2E-verified: 2 sessions, same PID, disjoint strips; drop-one clean |
-| M4 — Pro DSP (EQ, dynamics, metering) | ✅ (CPU ceiling per glitch_sim below) |
+| M2 — Multi-PID (8 stereo / 16 mono) | ✅ multi-PID SPTS (MPTS not needed) |
+| M3 — Multi-session sum | ✅ E2E-verified: same PID in 2 sessions → disjoint strips; drop-one clean |
+| M4 — Pro DSP (EQ, dynamics, metering) | ✅ CPU ceiling per glitch_sim below |
 | M5 — Bus architecture + scenes | ✅ 8 buses + scene save/recall with cross-fade |
 
 ## Quick start
@@ -137,7 +135,7 @@ Budget: **2667 µs/block** (128 frames @ 48 kHz).
   (full load: `-- --ignored --nocapture`). Steady state is alloc-free —
   pinned by `alloc_test` (counting global allocator, 0 bytes/block).
 
-## DSP modules (M4 progress)
+## DSP modules
 
 All verified with known-answer honesty tests (per AGENTS.md honesty rule):
 
