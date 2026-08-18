@@ -73,18 +73,28 @@ class MixerProcessor extends AudioWorkletProcessor {
         this._tapErrorWarned = false;
         this._busTapMissingWarned = false; // log-once guards for the bus tap
         this._busTapErrorWarned = false;
-        // Direct pcm paths (transferred MessagePorts; see _attachPcmPort and
-        // the 'pub-port' message). Null = parent-channel relay fallback.
-        this._pcmPort = null;
+        // Direct pcm paths (transferred MessagePorts; see _attachPcmPort
+        // and the 'pub-port' message). sessionId → port so multiple
+        // WebSRT receive sessions can carry pcm concurrently; no entry
+        // = parent-channel relay fallback for that session.
+        this._pcmPorts = new Map();
         this._pubOutPort = null;
-        // Worklet-side PID→mixer-channel auto-mapper (the store's old
-        // mapping policy, relocated so the direct port path can map
-        // without a main-thread round trip). The store's UI list mirrors
-        // the "pid-mapped" events posted here.
+        // Worklet-side (session, PID)→mixer-channel auto-mapper (the
+        // store's old mapping policy, relocated so the direct port path
+        // can map without a main-thread round trip). Keyed "sid:pid"
+        // (string) so sessions may reuse TS PID numbers; entries carry
+        // {sid, pid, chStart, channelCount}. The store's UI list
+        // mirrors the "pid-mapped" events posted here.
         this._pidMap = {};
         this._pidAlloc = 0;
+        // PIDs already sent their capped-out (chStart:-1) notice;
+        // keyed "sid:pid", value = owning sid so a session teardown
+        // can drop just its own entries.
         this._cappedPids = {};
         this._droppedPcm = 0;
+        // Log-once guard: non-zero-session pcm against a wasm build
+        // without the keyed pid API (see _mapPidSid).
+        this._keyedMissingWarned = false;
 
         this.port.onmessage = (e) => {
             var msg = e.data;
@@ -125,17 +135,24 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (this._mixer) try { this._mixer.set_eq_bypass(msg.ch, msg.bypassed); } catch(e) {}
             } else if (msg.type === "map-pid") {
                 if (this._mixer) try {
-                    this._mixer.map_pid(msg.pid, msg.chStart, msg.channelCount);
+                    var mapSid = msg.sessionId || 0;
+                    this._mapPidSid(mapSid, msg.pid, msg.chStart, msg.channelCount);
                     // Explicit mapping registers without allocating (the
                     // auto-mapper skips it from then on).
-                    this._pidMap[msg.pid] = { chStart: msg.chStart, channelCount: msg.channelCount };
+                    this._pidMap[mapSid + ":" + msg.pid] = { sid: mapSid, pid: msg.pid, chStart: msg.chStart, channelCount: msg.channelCount };
                 } catch(e) {}
             } else if (msg.type === "unmap-pid") {
-                if (this._mixer) try { this._mixer.unmap_pid(msg.pid); } catch(e) {}
-                delete this._pidMap[msg.pid];
+                var unmapSid = msg.sessionId || 0;
+                if (this._mixer) this._unmapPidSid(unmapSid, msg.pid);
+                delete this._pidMap[unmapSid + ":" + msg.pid];
                 if (Object.keys(this._pidMap).length === 0) this._pidAlloc = 0;
             } else if (msg.type === "pcm-port") {
-                this._attachPcmPort(msg.port || null);
+                // Session-scoped direct pcm port (see _attachPcmPort):
+                // a port with no sessionId defaults to session 0 (exact
+                // legacy single-session behavior); a null port with no
+                // sessionId is the legacy full reset; a null port WITH
+                // a sessionId tears down just that session.
+                this._attachPcmPort(msg.port || null, msg.port ? (msg.sessionId || 0) : msg.sessionId);
             } else if (msg.type === "pub-port") {
                 // Publish output channel: completed pub batches flow
                 // worklet → publish worker over this port instead of the
@@ -145,8 +162,9 @@ class MixerProcessor extends AudioWorkletProcessor {
                 this._pubOutPort = msg.port || null;
             } else if (msg.type === "pcm") {
                 // Fallback parent-channel relay (direct port not wired, or
-                // mid-handshake): same auto-map + feed path.
-                this._onPcm(msg);
+                // mid-handshake): same auto-map + feed path. Optional
+                // sessionId (default 0 in _onPcm).
+                this._onPcm(msg, msg.sessionId);
             } else if (msg.type === "set-input-gain") {
                 if (this._mixer) try { this._mixer.set_channel_input_gain(msg.ch, msg.gainDb); } catch(e) {}
             } else if (msg.type === "set-phase") {
@@ -357,45 +375,84 @@ class MixerProcessor extends AudioWorkletProcessor {
         this._pubFill = 0;
     }
 
-    // Direct pcm channel (see the store's connectWebsrt): the store creates
-    // a MessageChannel per connect, transfers one end to the WebSRT worker
-    // (its 'pcm-port' cmd) and this end here — raw pcm then flows
-    // worker→worklet with zero main-thread hops. Passing null closes the
-    // port and resets the auto-mapper (the store has unmapped every PID
-    // already; a reconnect maps from channel 0 again).
-    _attachPcmPort(port) {
-        if (this._pcmPort) { try { this._pcmPort.close(); } catch(e) {} this._pcmPort = null; }
-        if (!port) {
+    // Direct pcm channel (see the store's connectWebsrt): the store
+    // creates a MessageChannel per connect, per session, transfers one
+    // end to the WebSRT worker (its 'pcm-port' cmd) and this end here —
+    // raw pcm then flows worker→worklet with zero main-thread hops.
+    // Ports are scoped by sessionId: attaching replaces (closes) any
+    // existing port for that session. port null WITH a sessionId closes
+    // that session's port and forgets only its mappings — its strips go
+    // silent as their FIFOs starve. The global _pidAlloc cursor NEVER
+    // rewinds on a per-session disconnect: gaps in channel numbering are
+    // acceptable (strips are scarce but reconnect cycles are rare, and a
+    // rewind could hand a still-live session's channels to a newcomer).
+    // Exceptions, both legacy rules: a null port WITHOUT a sessionId is
+    // the full reset (close every port, wipe all mapping state, rewind
+    // the allocator), and when _pidMap empties entirely the allocator
+    // also rewinds — nothing is mapped either way, so fresh mappings
+    // pack from channel 0 again.
+    _attachPcmPort(port, sessionId) {
+        if (sessionId === undefined) {
+            // Full reset (legacy semantics for single-session stores).
+            this._pcmPorts.forEach(function(p) { try { p.close(); } catch(e) {} });
+            this._pcmPorts.clear();
             this._pidMap = {};
+            this._cappedPids = {};
             this._pidAlloc = 0;
             return;
         }
-        this._pcmPort = port;
+        var old = this._pcmPorts.get(sessionId);
+        if (old) { try { old.close(); } catch(e) {} this._pcmPorts.delete(sessionId); }
+        if (!port) {
+            this._forgetSessionMappings(sessionId);
+            if (Object.keys(this._pidMap).length === 0) this._pidAlloc = 0;
+            return;
+        }
+        this._pcmPorts.set(sessionId, port);
         var self = this;
         port.onmessage = function (e) {
             var d = e.data;
             if (d && d.type === "batch") {
-                for (var i = 0; i < d.msgs.length; i++) self._onPcm(d.msgs[i]);
+                for (var i = 0; i < d.msgs.length; i++) self._onPcm(d.msgs[i], sessionId);
             }
         };
     }
 
+    // Delete one session's entries from the pid maps (its port just
+    // closed). The maps are tiny (≤ 128 channels / a handful of PIDs),
+    // so a full key scan is fine.
+    _forgetSessionMappings(sid) {
+        var keys = Object.keys(this._pidMap);
+        for (var i = 0; i < keys.length; i++) {
+            if (this._pidMap[keys[i]].sid === sid) delete this._pidMap[keys[i]];
+        }
+        var capped = Object.keys(this._cappedPids);
+        for (var j = 0; j < capped.length; j++) {
+            if (this._cappedPids[capped[j]] === sid) delete this._cappedPids[capped[j]];
+        }
+    }
+
     // One pcm message from either arrival path (direct port or parent
-    // relay). First sight of a PID auto-maps it: channels packed from 0,
-    // capped at 128 total (AGENTS.md "128 input strips max") — the policy
-    // the store used to run main-thread. "pid-mapped" events mirror the
-    // mapping to the store for the UI; drops (wasm not ready, or past the
-    // cap) are counted and posted as "pcm-dropped" (cumulative total).
-    _onPcm(m) {
+    // relay), scoped to session sid (default 0 for the parent relay).
+    // First sight of a (session, PID) auto-maps it: channels packed
+    // from the global cursor, capped at 128 total (AGENTS.md "128 input
+    // strips max") — the policy the store used to run main-thread.
+    // "pid-mapped" events (now carrying the sessionId) mirror the
+    // mapping to the store for the UI; drops (wasm not ready, or past
+    // the cap) are counted and posted as "pcm-dropped" (one cumulative
+    // global total — the worklet is the single counting authority).
+    _onPcm(m, sid) {
+        if (sid === undefined || sid === null) sid = 0;
         if (!m || m.type !== "pcm") return;
         if (!this._mixer) { this._droppedPcm++; this._postDropped(); return; }
         var pid = m.pid;
-        if (!(pid in this._pidMap)) {
+        var key = sid + ":" + pid;
+        if (!(key in this._pidMap)) {
             var cc = m.channelCount || 1;
             if (this._pidAlloc + cc > 128) {
-                if (!(pid in this._cappedPids)) {
-                    this._cappedPids[pid] = true;
-                    this.port.postMessage({ type: "pid-mapped", pid: pid, chStart: -1, channelCount: cc });
+                if (!(key in this._cappedPids)) {
+                    this._cappedPids[key] = sid;
+                    this.port.postMessage({ type: "pid-mapped", pid: pid, sessionId: sid, chStart: -1, channelCount: cc });
                 }
                 this._droppedPcm++;
                 this._postDropped();
@@ -403,11 +460,55 @@ class MixerProcessor extends AudioWorkletProcessor {
             }
             var chStart = this._pidAlloc;
             this._pidAlloc += cc;
-            this._pidMap[pid] = { chStart: chStart, channelCount: cc };
-            try { this._mixer.map_pid(pid, chStart, cc); } catch(e) {}
-            this.port.postMessage({ type: "pid-mapped", pid: pid, chStart: chStart, channelCount: cc });
+            this._pidMap[key] = { sid: sid, pid: pid, chStart: chStart, channelCount: cc };
+            this._mapPidSid(sid, pid, chStart, cc);
+            this.port.postMessage({ type: "pid-mapped", pid: pid, sessionId: sid, chStart: chStart, channelCount: cc });
         }
-        try { this._mixer.feed_pcm(pid, m.samples); } catch(e) {}
+        this._feedPcmSid(sid, pid, m.samples);
+    }
+
+    // Session-scoped wasm pid-map access: key = (sid << 16) | pid lets
+    // multiple WebSRT sessions reuse TS PID numbers in the mixer's map.
+    // Feature-detected (typeof) like _setChannelTap: wasm builds
+    // predating the keyed API only expose the legacy u16 calls, which
+    // are exactly the keyed ones under session 0 — so the fallback is
+    // valid for sid 0 only; a non-zero sid against such a build logs
+    // once and drops (a legacy call would alias onto session 0's
+    // mapping). Callers must have checked this._mixer.
+    _mapPidSid(sid, pid, chStart, cc) {
+        if (typeof this._mixer.map_pid_keyed === "function") {
+            try { this._mixer.map_pid_keyed((sid << 16) | pid, chStart, cc); } catch(e) {}
+        } else if (sid === 0) {
+            try { this._mixer.map_pid(pid, chStart, cc); } catch(e) {}
+        } else {
+            this._warnKeyedMissing();
+        }
+    }
+
+    _unmapPidSid(sid, pid) {
+        if (typeof this._mixer.unmap_pid_keyed === "function") {
+            try { this._mixer.unmap_pid_keyed((sid << 16) | pid); } catch(e) {}
+        } else if (sid === 0) {
+            try { this._mixer.unmap_pid(pid); } catch(e) {}
+        }
+        // No fallback for sid !== 0 (legacy unmap would remove session
+        // 0's mapping) — nothing to do against an old build.
+    }
+
+    _feedPcmSid(sid, pid, samples) {
+        if (typeof this._mixer.feed_pcm_keyed === "function") {
+            try { this._mixer.feed_pcm_keyed((sid << 16) | pid, samples); } catch(e) {}
+        } else if (sid === 0) {
+            try { this._mixer.feed_pcm(pid, samples); } catch(e) {}
+        } else {
+            this._warnKeyedMissing();
+        }
+    }
+
+    _warnKeyedMissing() {
+        if (this._keyedMissingWarned) return;
+        this._keyedMissingWarned = true;
+        console.warn("[pcm] wasm mixer has no keyed pid API — pcm from non-zero sessions is dropped");
     }
 
     _postDropped() {
