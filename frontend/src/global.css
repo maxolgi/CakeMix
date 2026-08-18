@@ -427,3 +427,23 @@ body {
 .websrt-section-controls .websrt-input-url { flex: 2 1 320px; min-width: 240px; }
 .websrt-section-controls .btn.btn-engine { margin-left: auto; }
 .websrt-section-controls .detail-select-label { white-space: nowrap; }
+
+/* WebSRT receive sessions (N concurrent) */
+.websrt-input-latency { width: 64px; text-align: right; }
+.websrt-session {
+    display: flex; flex-direction: column; gap: 4px;
+    padding: 4px 8px; border: 1px solid #1a1a25; border-radius: 3px; background: #101018;
+}
+.websrt-session-controls { display: flex; align-items: center; gap: 8px; }
+.websrt-session-controls .btn { padding: 3px 10px; font-size: 0.65em; }
+.websrt-session-controls .detail-select-label { white-space: nowrap; }
+.websrt-session-tag {
+    font-family: 'SF Mono', monospace; font-size: 0.7em; font-weight: 700;
+    color: #8ab4f8; white-space: nowrap;
+}
+.websrt-session-url {
+    flex: 1 1 auto; min-width: 120px;
+    font-family: 'SF Mono', monospace; font-size: 0.6em; color: #777;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.websrt-session .websrt-pid-scroll { max-height: 110px; }
