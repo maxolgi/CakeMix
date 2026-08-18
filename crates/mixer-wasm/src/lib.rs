@@ -485,6 +485,92 @@ impl Default for ConsoleScene {
     }
 }
 
+/// An in-progress timed scene cross-fade (see `recall_scene_fade`).
+/// Allocated once at recall start on the control plane; `process_block`
+/// advances and applies it at block granularity. Moving the state out
+/// of `self` and back per block (`Option::take`) is plain memcpy work —
+/// no heap operations — which is how the per-block interpolation keeps
+/// the RT path allocation-free.
+struct FadeState {
+    from: ConsoleScene,
+    to: ConsoleScene,
+    /// Elapsed fade time (ms). Block k after recall applies
+    /// t = clamp(pos / dur, 0, 1) AFTER advancing — zero-order hold at
+    /// each block's end position, so a fade of N × block duration spans
+    /// exactly N blocks.
+    pos_ms: f64,
+    dur_ms: f64,
+}
+
+// ── Scene interpolation helpers ────────────────────────────────────────
+//
+// Domains for `apply_scene_interp`: endpoints short-circuit so an exact
+// apply (t = 1.0) writes the target's stored values verbatim (instant
+// recall stays bit-exact through the same code path).
+
+/// Linear gain → dB with the binding's meter floor (−200 dB, matching
+/// the channel/bus meter inserts; 0 linear is digital silence).
+fn lin_to_db_floor(x: f32) -> f32 {
+    if x > 1e-10 {
+        20.0 * x.log10()
+    } else {
+        -200.0
+    }
+}
+
+/// dB-domain interpolation of a LINEAR gain (strip fader, bus gain,
+/// master gain): equal-dB steps sound equal-loud, so fades ramp
+/// perceptually linearly. 0 linear maps to the −200 dB floor.
+fn lerp_gain_db(a: f32, b: f32, t: f32) -> f32 {
+    if t <= 0.0 {
+        return a;
+    }
+    if t >= 1.0 {
+        return b;
+    }
+    let da = lin_to_db_floor(a);
+    let db = lin_to_db_floor(b);
+    db_to_linear(da + t * (db - da))
+}
+
+/// Plain linear interpolation (pan, dB-denominated params, ratios,
+/// times — params already stored in their perceptual domain).
+fn lerp_lin(a: f32, b: f32, t: f32) -> f32 {
+    if t <= 0.0 {
+        a
+    } else if t >= 1.0 {
+        b
+    } else {
+        a + t * (b - a)
+    }
+}
+
+/// Log2-domain interpolation (EQ frequency, Q) — geometric mean at the
+/// midpoint, matching how those controls are swept by hand.
+fn lerp_log2(a: f32, b: f32, t: f32) -> f32 {
+    if t <= 0.0 {
+        return a;
+    }
+    if t >= 1.0 {
+        return b;
+    }
+    // Scenes shouldn't hold ≤0 values; the clamp keeps log2 finite.
+    let la = a.max(1e-10).log2();
+    let lb = b.max(1e-10).log2();
+    (la + t * (lb - la)).exp2()
+}
+
+/// Booleans (mute/solo/phase/bypass/enables/feeds_main/main_assign)
+/// snap to the target at t >= 0.5 — the engine mix_scene lerp
+/// convention (ChannelSceneState::lerp).
+fn lerp_bool(a: bool, b: bool, t: f32) -> bool {
+    if t >= 0.5 {
+        b
+    } else {
+        a
+    }
+}
+
 /// Inverse of the pan-law wire mapping in `set_channel_pan_law`
 /// (scene recall converts a stored `PanLaw` back to the wire u32).
 fn pan_law_to_wire(law: PanLaw) -> u32 {
@@ -637,6 +723,14 @@ pub struct MixerWasm {
     /// Next scene id `save_scene` hands out (starts at 1: 0 stays free
     /// as a JS-friendly "no scene" sentinel).
     next_scene_id: u32,
+    /// In-progress timed cross-fade (`recall_scene_fade`), advanced per
+    /// block inside `process_block`. None = no fade (the steady state).
+    fade: Option<FadeState>,
+    /// True while `process_block`'s fade driver reapplies parameters
+    /// through the public setters — their cancel-on-set must not fire
+    /// against the fade's own writes. The single boolean behind the
+    /// cancel policy; see `cancel_fade`.
+    fade_applying: bool,
     // Bus engine outputs: what bus i's engine instance summed this block
     // (pre bus-gain). The bus tail applies gain/mute into bus_pub.
     bus_left: Vec<Vec<f32>>,
@@ -744,6 +838,8 @@ impl MixerWasm {
             main_assign: vec![true; 128],
             scenes: HashMap::new(),
             next_scene_id: 1,
+            fade: None,
+            fade_applying: false,
             bus_left: (0..8).map(|_| vec![0.0; bs]).collect(),
             bus_right: (0..8).map(|_| vec![0.0; bs]).collect(),
             bus_pub_l: (0..8).map(|_| vec![0.0; bs]).collect(),
@@ -1055,6 +1151,7 @@ impl MixerWasm {
     // ── Channel controls ───────────────────────────────
 
     pub fn set_channel_gain(&mut self, ch: u32, gain: f32) -> Result<(), JsValue> {
+        self.cancel_fade();
         let id = self.ensure_channel(ch)?;
         self.owning_engine_mut(ch)
             .expect("ensured channel has an owning instance")
@@ -1062,6 +1159,7 @@ impl MixerWasm {
             .map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
     pub fn set_channel_pan(&mut self, ch: u32, pan: f32) -> Result<(), JsValue> {
+        self.cancel_fade();
         let id = self.ensure_channel(ch)?;
         self.owning_engine_mut(ch)
             .expect("ensured channel has an owning instance")
@@ -1069,6 +1167,7 @@ impl MixerWasm {
             .map_err(|e| JsValue::from_str(&format!("{e:?}")))
     }
     pub fn set_channel_mute(&mut self, ch: u32, muted: bool) -> Result<(), JsValue> {
+        self.cancel_fade();
         let _ = self.ensure_channel(ch)?;
         if muted {
             self.user_muted.insert(ch);
@@ -1081,6 +1180,7 @@ impl MixerWasm {
         Ok(())
     }
     pub fn set_channel_solo(&mut self, ch: u32, soloed: bool) -> Result<(), JsValue> {
+        self.cancel_fade();
         let _ = self.ensure_channel(ch)?;
         if soloed {
             self.soloed_channels.insert(ch);
@@ -1123,6 +1223,7 @@ impl MixerWasm {
     // ── EQ controls ────────────────────────────────────
 
     pub fn set_eq_band_gain(&mut self, ch: u32, band: usize, gain_db: f32) -> Result<(), JsValue> {
+        self.cancel_fade();
         if let Some(eq) = self.eq_chains.get_mut(&ch) {
             if band < eq.inner().bands.len() {
                 eq.inner_mut().bands[band].set_gain_db(gain_db as f64);
@@ -1132,6 +1233,7 @@ impl MixerWasm {
         Ok(())
     }
     pub fn set_eq_band_freq(&mut self, ch: u32, band: usize, freq_hz: f32) -> Result<(), JsValue> {
+        self.cancel_fade();
         if let Some(eq) = self.eq_chains.get_mut(&ch) {
             if band < eq.inner().bands.len() {
                 eq.inner_mut().bands[band].set_frequency(freq_hz as f64);
@@ -1141,6 +1243,7 @@ impl MixerWasm {
         Ok(())
     }
     pub fn set_eq_band_q(&mut self, ch: u32, band: usize, q: f32) -> Result<(), JsValue> {
+        self.cancel_fade();
         if let Some(eq) = self.eq_chains.get_mut(&ch) {
             if band < eq.inner().bands.len() {
                 eq.inner_mut().bands[band].set_q(q as f64);
@@ -1150,6 +1253,7 @@ impl MixerWasm {
         Ok(())
     }
     pub fn set_eq_bypass(&mut self, ch: u32, bypassed: bool) -> Result<(), JsValue> {
+        self.cancel_fade();
         self.ensure_channel(ch)?;
         if let Some(eq) = self.eq_chains.get_mut(&ch) {
             eq.set_bypassed(bypassed);
@@ -1161,41 +1265,48 @@ impl MixerWasm {
 
     /// Enable compressor on a channel with broadcast defaults (-12 dB threshold, 3:1 ratio).
     pub fn enable_compressor(&mut self, ch: u32) -> Result<(), JsValue> {
+        self.cancel_fade();
         let _ = self.ensure_channel(ch)?;
         self.dynamics_chains.entry(ch).or_default().compressor =
             Some(CompressorEffect::broadcast(self.sample_rate));
         Ok(())
     }
     pub fn disable_compressor(&mut self, ch: u32) {
+        self.cancel_fade();
         if let Some(d) = self.dynamics_chains.get_mut(&ch) {
             d.compressor = None;
         }
     }
     pub fn enable_gate(&mut self, ch: u32) -> Result<(), JsValue> {
+        self.cancel_fade();
         let _ = self.ensure_channel(ch)?;
         self.dynamics_chains.entry(ch).or_default().gate =
             Some(GateEffect::denoise(self.sample_rate));
         Ok(())
     }
     pub fn disable_gate(&mut self, ch: u32) {
+        self.cancel_fade();
         if let Some(d) = self.dynamics_chains.get_mut(&ch) {
             d.gate = None;
         }
     }
 
     pub fn enable_expander(&mut self, ch: u32) -> Result<(), JsValue> {
+        self.cancel_fade();
         let _ = self.ensure_channel(ch)?;
         self.dynamics_chains.entry(ch).or_default().expander =
             Some(ExpanderEffect::gentle(self.sample_rate));
         Ok(())
     }
     pub fn disable_expander(&mut self, ch: u32) {
+        self.cancel_fade();
         if let Some(d) = self.dynamics_chains.get_mut(&ch) {
             d.expander = None;
         }
     }
 
     pub fn set_comp_param(&mut self, ch: u32, param: u32, value: f32) -> Result<(), JsValue> {
+        self.cancel_fade();
         if let Some(d) = self.dynamics_chains.get_mut(&ch) {
             if let Some(c) = &mut d.compressor {
                 c.update_config(|cfg| match param {
@@ -1213,6 +1324,7 @@ impl MixerWasm {
     }
 
     pub fn set_gate_param(&mut self, ch: u32, param: u32, value: f32) -> Result<(), JsValue> {
+        self.cancel_fade();
         if let Some(d) = self.dynamics_chains.get_mut(&ch) {
             if let Some(g) = &mut d.gate {
                 g.update_config(|cfg| match param {
@@ -1229,6 +1341,7 @@ impl MixerWasm {
     }
 
     pub fn set_expander_param(&mut self, ch: u32, param: u32, value: f32) -> Result<(), JsValue> {
+        self.cancel_fade();
         if let Some(d) = self.dynamics_chains.get_mut(&ch) {
             if let Some(e) = &mut d.expander {
                 e.update_config(|cfg| match param {
@@ -1246,6 +1359,7 @@ impl MixerWasm {
     // ── Channel-level controls ─────────────────────────
 
     pub fn set_channel_input_gain(&mut self, ch: u32, gain_db: f32) -> Result<(), JsValue> {
+        self.cancel_fade();
         let id = self.ensure_channel(ch)?;
         if let Some(engine) = self.owning_engine_mut(ch) {
             if let Ok(c) = engine.get_channel_mut(id) {
@@ -1256,6 +1370,7 @@ impl MixerWasm {
     }
 
     pub fn set_channel_phase(&mut self, ch: u32, inverted: bool) -> Result<(), JsValue> {
+        self.cancel_fade();
         let id = self.ensure_channel(ch)?;
         if let Some(engine) = self.owning_engine_mut(ch) {
             if let Ok(c) = engine.get_channel_mut(id) {
@@ -1266,6 +1381,7 @@ impl MixerWasm {
     }
 
     pub fn set_channel_pan_law(&mut self, ch: u32, law: u32) -> Result<(), JsValue> {
+        self.cancel_fade();
         let id = self.ensure_channel(ch)?;
         let pan_law = match law {
             0 => PanLaw::Linear,
@@ -1283,6 +1399,7 @@ impl MixerWasm {
     }
 
     pub fn set_channel_name(&mut self, ch: u32, name: String) -> Result<(), JsValue> {
+        self.cancel_fade();
         let id = self.ensure_channel(ch)?;
         if let Some(engine) = self.owning_engine_mut(ch) {
             if let Ok(c) = engine.get_channel_mut(id) {
@@ -1334,6 +1451,7 @@ impl MixerWasm {
     // ── Master controls ────────────────────────────────
 
     pub fn set_master_gain(&mut self, gain: f32) {
+        self.cancel_fade();
         self.master_gain = gain.clamp(0.0, 2.0);
     }
 
@@ -1357,6 +1475,7 @@ impl MixerWasm {
     /// path). Lazily creates the slot's engine channel / EQ / dynamics
     /// (flat strip index 128 + bus*16 + slot).
     pub fn set_bus_source(&mut self, bus: u32, slot: u32, ch: u32) -> Result<(), JsValue> {
+        self.cancel_fade();
         if bus >= 8 {
             return Err(JsValue::from_str("bus index out of range (max 8)"));
         }
@@ -1370,6 +1489,7 @@ impl MixerWasm {
     }
 
     pub fn clear_bus_source(&mut self, bus: u32, slot: u32) {
+        self.cancel_fade();
         if (bus as usize) < 8 && (slot as usize) < 16 {
             self.bus_sources[bus as usize][slot as usize] = None;
         }
@@ -1381,6 +1501,7 @@ impl MixerWasm {
     /// still staged, metered, tapped, and still feeds any bus slots
     /// assigned to it.
     pub fn set_channel_main_assign(&mut self, ch: u32, on: bool) {
+        self.cancel_fade();
         if (ch as usize) < self.main_assign.len() {
             self.main_assign[ch as usize] = on;
         }
@@ -1390,17 +1511,20 @@ impl MixerWasm {
     /// Independent of the bus's own published output
     /// (`take_bus_output` still returns signal).
     pub fn set_bus_feeds_main(&mut self, bus: u32, on: bool) {
+        self.cancel_fade();
         if (bus as usize) < 8 {
             self.feeds_main[bus as usize] = on;
         }
     }
 
     pub fn set_bus_gain(&mut self, bus: u32, gain: f32) {
+        self.cancel_fade();
         if (bus as usize) < 8 {
             self.bus_gains[bus as usize] = gain.clamp(0.0, 2.0);
         }
     }
     pub fn set_bus_mute(&mut self, bus: u32, muted: bool) {
+        self.cancel_fade();
         if (bus as usize) < 8 {
             self.bus_muted[bus as usize] = muted;
         }
@@ -1421,14 +1545,71 @@ impl MixerWasm {
     /// Instantly recall scene `id`: every captured parameter is
     /// reapplied through the SAME setter paths the JS surface uses, so
     /// engine state, staged EQ/dynamics params and the derived mute/solo
-    /// state all stay consistent. (A later change will add cross-faded
-    /// recall on top.) Unknown id → Err.
+    /// state all stay consistent. Any in-progress cross-fade is dropped
+    /// (an instant recall is itself a scene change — the user takes
+    /// over). Unknown id → Err.
     pub fn recall_scene(&mut self, id: u32) -> Result<(), JsValue> {
         let Some(scene) = self.scenes.get(&id) else {
             return Err(scene_err(format!("unknown scene id {id}")));
         };
         let scene = scene.clone();
+        self.fade = None;
         self.apply_scene(&scene);
+        Ok(())
+    }
+
+    /// Recall scene `id` as a timed cross-fade over `fade_ms`: the
+    /// current console (snapshotted at call time) is the "from" state,
+    /// the stored scene the "to" state, and `process_block` interpolates
+    /// between them at block granularity (audio-rate, no timers or
+    /// threads — see `apply_scene_interp` for the per-parameter domains;
+    /// booleans snap at the half-way point).
+    ///
+    /// * Unknown id → Err (same as instant recall). `fade_ms < 0` (or
+    ///   NaN) → Err. `fade_ms == 0` delegates to instant `recall_scene`.
+    /// * Cancel-on-set: any scene-affecting setter called while the fade
+    ///   is running drops it immediately — the user takes over from the
+    ///   already-applied interpolation (nothing further is applied).
+    ///   Stream-state operations (PID mapping, PCM feeds, subscribe,
+    ///   limiter, tap) do NOT cancel: they aren't console state.
+    /// * Control-plane allocations happen HERE only (the two scene
+    ///   snapshots, plus HashSets pre-reserved so boolean snaps can
+    ///   never grow them on the audio thread); the per-block
+    ///   interpolation is allocation-free (pinned by alloc_test).
+    /// * Non-audio state snaps immediately: strip NAMES (String clones
+    ///   are control-plane-only work; the RT path never touches them).
+    /// * Replaces any fade already in progress (from-state = whatever
+    ///   the console holds at call time).
+    pub fn recall_scene_fade(&mut self, id: u32, fade_ms: f64) -> Result<(), JsValue> {
+        let Some(scene) = self.scenes.get(&id) else {
+            return Err(scene_err(format!("unknown scene id {id}")));
+        };
+        if fade_ms.is_nan() || fade_ms < 0.0 {
+            return Err(scene_err(format!("fade_ms must be >= 0 (got {fade_ms})")));
+        }
+        if fade_ms == 0.0 {
+            return self.recall_scene(id);
+        }
+        let to = scene.clone();
+        let from = self.console_snapshot();
+        // Snap the target's labels now: names are inert String state and
+        // the interpolation path must stay allocation-free.
+        for (i, s) in to.strips.iter().enumerate() {
+            if s.exists {
+                let _ = self.set_channel_name(i as u32, s.name.clone());
+            }
+        }
+        // The mute/solo boolean snap (t >= 0.5) can INSERT keys on the
+        // audio thread. Reserving the full console up front means those
+        // inserts can never grow (allocate) the sets mid-fade.
+        self.user_muted.reserve(256);
+        self.soloed_channels.reserve(256);
+        self.fade = Some(FadeState {
+            from,
+            to,
+            pos_ms: 0.0,
+            dur_ms: fade_ms,
+        });
         Ok(())
     }
 
@@ -1655,101 +1836,193 @@ impl MixerWasm {
         scene
     }
 
-    /// Reapply a scene through the SAME code paths the per-parameter
-    /// setters use (never bypassing their side effects: engine state,
-    /// staged EQ/dynamics params, lazily-created strips, derived
-    /// mute/solo). Control-plane only — allocation here is fine; the
-    /// RT path's allocation profile is untouched.
+    /// Cancel-on-set policy for timed cross-fades: any scene-affecting
+    /// setter called while a fade is in progress drops it — the user
+    /// takes over from the already-applied interpolation. No-op when no
+    /// fade is live, and while the fade driver itself reapplies through
+    /// the public setters (`fade_applying`) — the single boolean that
+    /// distinguishes the fade's own writes from user writes.
+    fn cancel_fade(&mut self) {
+        if !self.fade_applying {
+            self.fade = None;
+        }
+    }
+
+    /// Reapply a scene exactly — the instant-recall path. Names are
+    /// String clones (control-plane-only work), so they are applied
+    /// here and NOT in `apply_scene_interp`; `recall_scene_fade` snaps
+    /// them at fade start instead.
     fn apply_scene(&mut self, scene: &ConsoleScene) {
-        // Strip parameters, only for strips that existed at save time.
-        // Strips are never destroyed, so these all still exist and the
-        // setters below never lazily create anything. Strips created
-        // after the save are left alone (a scene has no opinion about
-        // strips it never saw — existence is stream state, not console
-        // state). Every setter can only fail on out-of-range indices,
-        // which the fixed 256-strip console excludes — ignore results.
         for (i, s) in scene.strips.iter().enumerate() {
-            if !s.exists {
+            if s.exists {
+                let _ = self.set_channel_name(i as u32, s.name.clone());
+            }
+        }
+        self.apply_scene_interp(scene, scene, 1.0);
+    }
+
+    /// Reapply scene state through the SAME code paths the per-parameter
+    /// setters use (never bypassing their side effects: engine state,
+    /// staged EQ/dynamics params, derived mute/solo) — either exactly
+    /// (`t = 1.0`: apply `to` verbatim; the instant-recall path) or as
+    /// the interpolation of two scenes at `t` (the timed-fade path,
+    /// driven per block by `process_block`).
+    ///
+    /// Interpolation domains (endpoint lerps short-circuit, so an exact
+    /// apply writes stored values verbatim):
+    /// - linear gains (strip fader, bus gain, master gain): dB domain,
+    ///   0 linear = the −200 dB meter floor
+    /// - pan: linear; EQ frequency and Q: log2 domain
+    /// - every other numeric param (dB-denominated gains, ratios,
+    ///   times): linear in the stored value
+    /// - booleans, pan laws and bus slot sources snap to `to` at
+    ///   t >= 0.5 (the engine mix_scene lerp convention); a dynamics
+    ///   module enabled on only one side applies that side's params
+    ///   verbatim while it is the active side
+    ///
+    /// Mute/solo stay LAST, as USER intent, behind the foreign-solo
+    /// guard — their setters recompute the derived engine mute (user
+    /// mute OR solo-gate); a live solo on a strip `to` doesn't cover
+    /// would leak into every covered strip's derived mute.
+    ///
+    /// Allocation-free by construction (this runs on the audio thread
+    /// during fades): no String clones, no collects, and the mute/solo
+    /// HashSets are pre-reserved at fade start so boolean snaps can't
+    /// grow them. Mute/solo no-op writes are skipped: at fade start the
+    /// console equals `from` (a snapshot), and any later user change
+    /// cancels the fade, so an unchanged value is already in place.
+    /// Mid-fade (t < 1.0) strips/buses identical in both scenes are
+    /// skipped entirely for the same reason.
+    fn apply_scene_interp(&mut self, from: &ConsoleScene, to: &ConsoleScene, t: f32) {
+        let mid_fade = t < 1.0;
+        // Strip parameters, only for strips that existed at save time
+        // (strips are never destroyed, so the setters below never lazily
+        // create anything; strips created after the save are left alone —
+        // a scene has no opinion about strips it never saw). Every
+        // setter can only fail on out-of-range indices, which the fixed
+        // 256-strip console excludes — ignore results.
+        for i in 0..to.strips.len() {
+            let ts = &to.strips[i];
+            if !ts.exists {
+                continue;
+            }
+            let fs = &from.strips[i];
+            if mid_fade && fs == ts {
                 continue;
             }
             let idx = i as u32;
-            let _ = self.set_channel_gain(idx, s.gain);
-            let _ = self.set_channel_pan(idx, s.pan);
-            let _ = self.set_channel_input_gain(idx, s.input_gain_db);
-            let _ = self.set_channel_phase(idx, s.phase_inverted);
-            let _ = self.set_channel_pan_law(idx, pan_law_to_wire(s.pan_law));
-            let _ = self.set_channel_name(idx, s.name.clone());
+            let _ = self.set_channel_gain(idx, lerp_gain_db(fs.gain, ts.gain, t));
+            let _ = self.set_channel_pan(idx, lerp_lin(fs.pan, ts.pan, t));
+            let _ =
+                self.set_channel_input_gain(idx, lerp_lin(fs.input_gain_db, ts.input_gain_db, t));
+            let _ = self.set_channel_phase(idx, lerp_bool(fs.phase_inverted, ts.phase_inverted, t));
+            let law = if t >= 0.5 { ts.pan_law } else { fs.pan_law };
+            let _ = self.set_channel_pan_law(idx, pan_law_to_wire(law));
             if idx < 128 {
-                self.set_channel_main_assign(idx, s.main_assign);
+                self.set_channel_main_assign(idx, lerp_bool(fs.main_assign, ts.main_assign, t));
             }
-            let _ = self.set_eq_bypass(idx, s.eq_bypass);
-            for (b, band) in s.eq_bands.iter().enumerate() {
-                let _ = self.set_eq_band_gain(idx, b, band.gain_db);
-                let _ = self.set_eq_band_freq(idx, b, band.freq_hz);
-                let _ = self.set_eq_band_q(idx, b, band.q);
+            let _ = self.set_eq_bypass(idx, lerp_bool(fs.eq_bypass, ts.eq_bypass, t));
+            for b in 0..ts.eq_bands.len() {
+                let fb = &fs.eq_bands[b];
+                let tb = &ts.eq_bands[b];
+                let _ = self.set_eq_band_gain(idx, b, lerp_lin(fb.gain_db, tb.gain_db, t));
+                let _ = self.set_eq_band_freq(idx, b, lerp_log2(fb.freq_hz, tb.freq_hz, t));
+                let _ = self.set_eq_band_q(idx, b, lerp_log2(fb.q, tb.q, t));
             }
-            match &s.comp {
-                Some(c) => {
-                    let _ = self.enable_compressor(idx);
-                    let _ = self.set_comp_param(idx, 0, c.threshold_db);
-                    let _ = self.set_comp_param(idx, 1, c.ratio);
-                    let _ = self.set_comp_param(idx, 2, c.attack_ms);
-                    let _ = self.set_comp_param(idx, 3, c.release_ms);
-                    let _ = self.set_comp_param(idx, 4, c.makeup_gain_db);
-                    let _ = self.set_comp_param(idx, 5, c.knee_db);
-                }
-                None => self.disable_compressor(idx),
+            // Dynamics: enable snaps at t >= 0.5; when both sides are
+            // enabled the params interpolate (a disabled side
+            // contributes nothing — the enabled side's params apply
+            // verbatim).
+            if lerp_bool(fs.comp.is_some(), ts.comp.is_some(), t) {
+                let f = fs
+                    .comp
+                    .as_ref()
+                    .or(ts.comp.as_ref())
+                    .expect("one side enabled");
+                let e = ts.comp.as_ref().unwrap_or(f);
+                let _ = self.enable_compressor(idx);
+                let _ = self.set_comp_param(idx, 0, lerp_lin(f.threshold_db, e.threshold_db, t));
+                let _ = self.set_comp_param(idx, 1, lerp_lin(f.ratio, e.ratio, t));
+                let _ = self.set_comp_param(idx, 2, lerp_lin(f.attack_ms, e.attack_ms, t));
+                let _ = self.set_comp_param(idx, 3, lerp_lin(f.release_ms, e.release_ms, t));
+                let _ =
+                    self.set_comp_param(idx, 4, lerp_lin(f.makeup_gain_db, e.makeup_gain_db, t));
+                let _ = self.set_comp_param(idx, 5, lerp_lin(f.knee_db, e.knee_db, t));
+            } else {
+                self.disable_compressor(idx);
             }
-            match &s.gate {
-                Some(g) => {
-                    let _ = self.enable_gate(idx);
-                    let _ = self.set_gate_param(idx, 0, g.threshold_db);
-                    let _ = self.set_gate_param(idx, 1, g.hysteresis_db);
-                    let _ = self.set_gate_param(idx, 2, g.attack_ms);
-                    let _ = self.set_gate_param(idx, 3, g.release_ms);
-                    let _ = self.set_gate_param(idx, 4, g.hold_ms);
-                }
-                None => self.disable_gate(idx),
+            if lerp_bool(fs.gate.is_some(), ts.gate.is_some(), t) {
+                let f = fs
+                    .gate
+                    .as_ref()
+                    .or(ts.gate.as_ref())
+                    .expect("one side enabled");
+                let e = ts.gate.as_ref().unwrap_or(f);
+                let _ = self.enable_gate(idx);
+                let _ = self.set_gate_param(idx, 0, lerp_lin(f.threshold_db, e.threshold_db, t));
+                let _ = self.set_gate_param(idx, 1, lerp_lin(f.hysteresis_db, e.hysteresis_db, t));
+                let _ = self.set_gate_param(idx, 2, lerp_lin(f.attack_ms, e.attack_ms, t));
+                let _ = self.set_gate_param(idx, 3, lerp_lin(f.release_ms, e.release_ms, t));
+                let _ = self.set_gate_param(idx, 4, lerp_lin(f.hold_ms, e.hold_ms, t));
+            } else {
+                self.disable_gate(idx);
             }
-            match &s.expander {
-                Some(e) => {
-                    let _ = self.enable_expander(idx);
-                    let _ = self.set_expander_param(idx, 0, e.threshold_db);
-                    let _ = self.set_expander_param(idx, 1, e.ratio);
-                    let _ = self.set_expander_param(idx, 2, e.attack_ms);
-                    let _ = self.set_expander_param(idx, 3, e.release_ms);
-                }
-                None => self.disable_expander(idx),
+            if lerp_bool(fs.expander.is_some(), ts.expander.is_some(), t) {
+                let f = fs
+                    .expander
+                    .as_ref()
+                    .or(ts.expander.as_ref())
+                    .expect("one side enabled");
+                let e = ts.expander.as_ref().unwrap_or(f);
+                let _ = self.enable_expander(idx);
+                let _ =
+                    self.set_expander_param(idx, 0, lerp_lin(f.threshold_db, e.threshold_db, t));
+                let _ = self.set_expander_param(idx, 1, lerp_lin(f.ratio, e.ratio, t));
+                let _ = self.set_expander_param(idx, 2, lerp_lin(f.attack_ms, e.attack_ms, t));
+                let _ = self.set_expander_param(idx, 3, lerp_lin(f.release_ms, e.release_ms, t));
+            } else {
+                self.disable_expander(idx);
             }
         }
-        // Mute/solo LAST, as USER intent: their setters recompute the
-        // derived engine mute (user mute OR solo-gate). A live solo on
-        // a strip the scene doesn't cover (created after the save)
-        // would leak into every scene strip's derived mute — clear
-        // those first, then apply the scene's own flags.
-        let foreign_solos: Vec<u32> = self
-            .soloed_channels
-            .iter()
-            .copied()
-            .filter(|&ch| !scene.strips.get(ch as usize).is_some_and(|s| s.exists))
-            .collect();
-        for ch in foreign_solos {
-            let _ = self.set_channel_solo(ch, false);
-        }
-        for (i, s) in scene.strips.iter().enumerate() {
-            if s.exists {
-                let _ = self.set_channel_mute(i as u32, s.mute);
+        // Foreign-solo guard FIRST (allocation-free fixed-console scan —
+        // no collect): a live solo on a strip the scene doesn't cover
+        // would leak into every covered strip's derived mute.
+        for ch in 0..self.channel_ids.len() as u32 {
+            if self.soloed_channels.contains(&ch)
+                && !to.strips.get(ch as usize).is_some_and(|s| s.exists)
+            {
+                let _ = self.set_channel_solo(ch, false);
             }
         }
-        for (i, s) in scene.strips.iter().enumerate() {
-            if s.exists {
-                let _ = self.set_channel_solo(i as u32, s.solo);
+        // Mutes, then solos (solos last: the solo setter recomputes
+        // every strip's derived engine mute). No-op writes are skipped —
+        // the value in the set already equals the target.
+        for (i, s) in to.strips.iter().enumerate() {
+            if s.exists && self.user_muted.contains(&(i as u32)) != s.mute {
+                let _ = self.set_channel_mute(i as u32, lerp_bool(from.strips[i].mute, s.mute, t));
+            }
+        }
+        for (i, s) in to.strips.iter().enumerate() {
+            if s.exists && self.soloed_channels.contains(&(i as u32)) != s.solo {
+                let _ = self.set_channel_solo(i as u32, lerp_bool(from.strips[i].solo, s.solo, t));
             }
         }
         // Bus routing + tail controls: the scene fully owns all 8×16
-        // slot assignments (a slot assigned after the save is cleared).
-        for (b, bus) in scene.buses.iter().enumerate() {
-            for (slot, &src) in bus.sources.iter().enumerate() {
+        // slot assignments (a slot assigned after the save is cleared);
+        // slot sources snap at the half-way point, tail params
+        // interpolate.
+        for b in 0..to.buses.len() {
+            let fb = &from.buses[b];
+            let tb = &to.buses[b];
+            if mid_fade && fb == tb {
+                continue;
+            }
+            for slot in 0..tb.sources.len() {
+                let src = if t >= 0.5 {
+                    tb.sources[slot]
+                } else {
+                    fb.sources[slot]
+                };
                 match src {
                     Some(ch) => {
                         let _ = self.set_bus_source(b as u32, slot as u32, ch);
@@ -1757,11 +2030,11 @@ impl MixerWasm {
                     None => self.clear_bus_source(b as u32, slot as u32),
                 }
             }
-            self.set_bus_gain(b as u32, bus.gain);
-            self.set_bus_mute(b as u32, bus.muted);
-            self.set_bus_feeds_main(b as u32, bus.feeds_main);
+            self.set_bus_gain(b as u32, lerp_gain_db(fb.gain, tb.gain, t));
+            self.set_bus_mute(b as u32, lerp_bool(fb.muted, tb.muted, t));
+            self.set_bus_feeds_main(b as u32, lerp_bool(fb.feeds_main, tb.feeds_main, t));
         }
-        self.set_master_gain(scene.master_gain);
+        self.set_master_gain(lerp_gain_db(from.master_gain, to.master_gain, t));
     }
 
     /// Process one block through the full console (pure Rust, no JS
@@ -1783,6 +2056,31 @@ impl MixerWasm {
     pub fn process_block(&mut self, block_size: u32) -> Result<&[f32], JsValue> {
         let bs = self.buffer_size.min(block_size as usize).max(1);
         let buf = self.buffer_size;
+
+        // ── Timed scene cross-fade: advance one block, apply ──
+        // Audio-rate, block-granular (no timers/threads): t is the fade
+        // position at THIS block's end (zero-order hold), so the fade
+        // drives the gain stages the block below actually renders.
+        // Allocation-free: the fade state is moved out and back (plain
+        // memcpys of fixed-size scenes, no heap ops); the two snapshots
+        // were allocated once at recall start. Completing the fade drops
+        // them (one-time teardown). `fade_applying` lets the
+        // interpolation reuse the public setters without tripping their
+        // cancel-on-set.
+        if let Some(mut fade) = self.fade.take() {
+            fade.pos_ms += bs as f64 * 1000.0 / self.sample_rate as f64;
+            let t = (fade.pos_ms / fade.dur_ms).clamp(0.0, 1.0) as f32;
+            self.fade_applying = true;
+            if t >= 1.0 {
+                // Complete: apply the target exactly (lerp endpoints
+                // short-circuit to the stored values verbatim).
+                self.apply_scene_interp(&fade.to, &fade.to, 1.0);
+            } else {
+                self.apply_scene_interp(&fade.from, &fade.to, t);
+                self.fade = Some(fade);
+            }
+            self.fade_applying = false;
+        }
 
         // ── Channel direct-out tap: start a fresh block ──
         // Zeroed here so muted / solo-gated / input-less channels surface

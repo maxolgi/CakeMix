@@ -14,6 +14,15 @@
 //! active (60 input channels of EQ, limiter, metering, 2 buses × 4 slots,
 //! 16-channel direct-out tap armed).
 //!
+//! A timed scene cross-fade (`recall_scene_fade`) also runs ACROSS the
+//! measured window: the two scene snapshots are allocated once at recall
+//! start (control plane, outside the measurement), and the per-block
+//! interpolation must be just as allocation-free as the rest of the
+//! block. The fade is sized so t crosses 0.5 inside the window — the
+//! boolean snaps (mute, dynamics enable) then exercise the HashSet
+//! insert and lazily-constructed-module paths mid-measurement, which is
+//! exactly why recall_scene_fade pre-reserves the mute/solo sets.
+//!
 //! Run: cargo test -p mixer-wasm --test alloc_test -- --nocapture
 
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -85,6 +94,23 @@ fn process_block_is_alloc_free_steady_state() {
         let out = m.process_block(BLOCK).expect("process");
         assert!(out.len() == BLOCK as usize * 2);
     }
+
+    // Scene cross-fade across the measured window (see the module docs):
+    // target scene = pre-mutation state (ch 3 muted, comp on ch 5, gain
+    // 1.0, default EQ/master); from-state = mutated. 150 blocks of fade:
+    // blocks 1-150 interpolate (t crosses 0.5 at block 75 — mute snap on,
+    // comp snap on), blocks 151-200 return to fade-free steady state.
+    m.set_channel_mute(3, true).expect("mute");
+    m.enable_compressor(5).expect("comp on");
+    let scene_id = m.save_scene();
+    m.set_channel_mute(3, false).expect("unmute");
+    m.disable_compressor(5);
+    m.set_channel_gain(0, 0.5).expect("gain");
+    m.set_eq_band_freq(0, 2, 250.0).expect("eq freq");
+    m.set_bus_gain(0, 0.7);
+    m.set_master_gain(0.8);
+    m.recall_scene_fade(scene_id, 150.0 * BLOCK as f64 * 1000.0 / SR as f64)
+        .expect("fade recall");
 
     let mut blocks_measured = 0u32;
     let mut total_allocs = 0u64;

@@ -409,3 +409,214 @@ fn recall_leaves_post_save_strips_alone_except_foreign_solos() {
         "post-save solo must be cleared (it would leak into every strip's derived mute)"
     );
 }
+
+// ── Timed cross-fade recall (recall_scene_fade) ──────────────────────────
+//
+// Fade timing model: block k after recall advances the fade clock by
+// one block duration and THEN applies t = clamp(k·bd / fade_ms, 0, 1)
+// (zero-order hold at each block's end position), so a fade of N block
+// durations spans exactly N blocks. Per-block gain output below feeds
+// DC through an EQ-bypassed strip: amplitude is then exactly
+// input × fader × 0.5 (Linear pan law at center), no other stage moves.
+
+/// Duration of one processing block in ms (128 frames @ 48 kHz).
+const BLOCK_MS: f64 = BLOCK as f64 * 1000.0 / SR as f64;
+/// DC test tone amplitude.
+const DC: f32 = 0.5;
+/// Center-pan Linear-law per-side gain (known_answer pins 0.5).
+const PAN_GAIN: f32 = 0.5;
+
+fn db_to_lin(db: f32) -> f32 {
+    10.0f32.powf(db / 20.0)
+}
+
+/// Timed recall ramps a strip fader in the dB domain: from-gain 1.0 →
+/// to-gain 0.25 (0 dB → −12.04 dB) over exactly 4 blocks; later blocks
+/// settle at the target. Honesty rule: the ramp is asserted on the
+/// AUDIBLE master output, not on internal state.
+#[test]
+fn fade_recall_ramps_gain() {
+    let mut m = mixer();
+    m.set_limiter_enabled(false); // level-exact assertions
+    m.set_eq_bypass(0, true).unwrap(); // DC must not hit the HPF
+    m.set_channel_gain(0, 1.0).unwrap();
+
+    // Target scene: gain 0.25. Save it, then return to 1.0 (the
+    // from-state at fade time).
+    m.set_channel_gain(0, 0.25).unwrap();
+    let id = m.save_scene();
+    m.set_channel_gain(0, 1.0).unwrap();
+
+    let fade_blocks = 4.0f64;
+    m.recall_scene_fade(id, fade_blocks * BLOCK_MS)
+        .expect("fade recall");
+
+    let from_db = 0.0f32;
+    let to_db = 20.0 * 0.25f32.log10(); // −12.04 dB
+    let dc = vec![DC; BLOCK as usize];
+    for k in 1..=8i32 {
+        let out = run_block(&mut m, 0, &dc);
+        assert!(out.iter().all(|s| s.is_finite()), "no NaN/Inf at block {k}");
+        let peak = max_abs(&out);
+        let t = (k as f64 / fade_blocks).clamp(0.0, 1.0) as f32;
+
+        // The applied position is the block's END (ZOH): sharp check
+        // against the dB-lerp at t.
+        let zoh_db = from_db + t * (to_db - from_db);
+        let expected = db_to_lin(zoh_db) * DC * PAN_GAIN;
+        assert!(
+            (peak - expected).abs() < 1e-4,
+            "block {k}: amplitude {peak:.6} vs dB-ramp {expected:.6} (t={t})"
+        );
+
+        // Spec tolerance vs the block-MIDPOINT ramp value: ZOH at the
+        // block end sits at most half a fade step (|to_db|/8 ≈ 1.51 dB)
+        // from the midpoint.
+        let mid_t = ((k as f64 - 0.5) / fade_blocks).clamp(0.0, 1.0) as f32;
+        let mid_db = from_db + mid_t * (to_db - from_db);
+        let measured_db = 20.0 * (peak / (DC * PAN_GAIN)).log10();
+        let half_step_db = (to_db - from_db).abs() / fade_blocks as f32 / 2.0;
+        assert!(
+            (measured_db - mid_db).abs() <= half_step_db + 0.05,
+            "block {k}: {measured_db:.3} dB vs midpoint {mid_db:.3} dB"
+        );
+
+        if k as f64 >= fade_blocks {
+            // Fade done (block 4 applies t = 1 exactly): target settles
+            // bit-exactly and stays.
+            let target = 0.25 * DC * PAN_GAIN;
+            assert!(
+                (peak - target).abs() < 1e-6,
+                "block {k}: must settle exactly at target ({peak:.6} vs {target:.6})"
+            );
+        }
+    }
+    assert_eq!(
+        m.console_snapshot().strips[0].gain,
+        0.25,
+        "fade end state must be the target verbatim"
+    );
+}
+
+/// fade_ms == 0 delegates to instant recall: state and audible output
+/// are identical to calling recall_scene on a twin console.
+#[test]
+fn fade_recall_zero_ms_instant() {
+    let mut a = mixer();
+    let mut b = mixer();
+    for m in [&mut a, &mut b] {
+        m.set_limiter_enabled(false);
+        m.set_eq_bypass(0, true).unwrap();
+        m.set_channel_gain(0, 0.8).unwrap();
+        m.set_channel_pan(0, 0.25).unwrap();
+        m.set_eq_band_gain(0, 2, 3.0).unwrap();
+        m.set_bus_source(0, 0, 0).unwrap();
+        m.set_master_gain(0.6);
+    }
+    let id_a = a.save_scene();
+    let id_b = b.save_scene();
+    for m in [&mut a, &mut b] {
+        m.set_channel_gain(0, 0.2).unwrap();
+        m.set_channel_pan(0, -0.5).unwrap();
+        m.set_eq_band_gain(0, 2, -2.0).unwrap();
+        m.set_bus_source(0, 0, 1).unwrap();
+        m.set_master_gain(1.3);
+    }
+
+    a.recall_scene(id_a).expect("instant recall");
+    b.recall_scene_fade(id_b, 0.0).expect("zero-ms fade recall");
+
+    assert_eq!(
+        b.console_snapshot(),
+        a.console_snapshot(),
+        "fade(0) must produce instant-recall state"
+    );
+
+    // Identical inputs → identical audible output, block for block (a
+    // lingering fade in b would diverge immediately).
+    let dc = vec![DC; BLOCK as usize];
+    let mut last_peak = 0.0f32;
+    for k in 0..4 {
+        let oa = run_block(&mut a, 0, &dc);
+        let ob = run_block(&mut b, 0, &dc);
+        assert_eq!(oa, ob, "outputs diverged at block {k}");
+        last_peak = max_abs(&oa);
+    }
+    assert!(last_peak > 0.01, "honesty: output must be audible");
+    assert_eq!(a.console_snapshot().strips[0].gain, 0.8);
+}
+
+/// Cancel-on-set: a user setter call mid-fade drops the fade — later
+/// blocks hold the user's value, nothing NaNs, and the fade never
+/// resumes.
+#[test]
+fn fade_cancelled_by_user_set() {
+    let mut m = mixer();
+    m.set_limiter_enabled(false);
+    m.set_eq_bypass(0, true).unwrap();
+    m.set_channel_gain(0, 1.0).unwrap();
+    m.set_channel_gain(0, 0.25).unwrap();
+    let id = m.save_scene();
+    m.set_channel_gain(0, 1.0).unwrap();
+    m.recall_scene_fade(id, 4.0 * BLOCK_MS).expect("fade");
+
+    let dc = vec![DC; BLOCK as usize];
+
+    // Block 1 is mid-ramp (t = 0.25 → −3.01 dB): proves the fade really
+    // drove the block (and survived its own setter pass).
+    let out1 = run_block(&mut m, 0, &dc);
+    let ramp1 = db_to_lin(0.25 * 20.0 * 0.25f32.log10()) * DC * PAN_GAIN;
+    assert!(
+        (max_abs(&out1) - ramp1).abs() < 1e-4,
+        "block 1 must be mid-fade ({:.6} vs {:.6})",
+        max_abs(&out1),
+        ramp1
+    );
+
+    // User takes over mid-fade.
+    m.set_channel_gain(0, 0.9).unwrap();
+
+    let user = 0.9 * DC * PAN_GAIN;
+    for k in 0..4 {
+        let out = run_block(&mut m, 0, &dc);
+        assert!(
+            out.iter().all(|s| s.is_finite()),
+            "no NaN/Inf after cancel at block {k}"
+        );
+        assert!(
+            (max_abs(&out) - user).abs() < 1e-6,
+            "block {k} after cancel: user gain must hold ({:.6} vs {user:.6})",
+            max_abs(&out)
+        );
+    }
+    assert_eq!(m.console_snapshot().strips[0].gain, 0.9);
+}
+
+/// Validation: unknown (or never-issued) scene ids error, as do
+/// negative and NaN fade times; zero is valid (instant delegation).
+#[test]
+fn fade_unknown_scene_errors() {
+    let mut m = mixer();
+    m.set_channel_gain(0, 0.5).unwrap();
+    assert!(
+        m.recall_scene_fade(9999, 100.0).is_err(),
+        "unknown id must error"
+    );
+    assert!(
+        m.recall_scene_fade(0, 100.0).is_err(),
+        "id 0 is never issued"
+    );
+    let id = m.save_scene();
+    assert!(
+        m.recall_scene_fade(id, -1.0).is_err(),
+        "negative fade_ms must error"
+    );
+    assert!(
+        m.recall_scene_fade(id, f64::NAN).is_err(),
+        "NaN fade_ms must error"
+    );
+    // Errors left the console untouched (no fade started).
+    assert_eq!(m.console_snapshot().strips[0].gain, 0.5);
+    m.recall_scene_fade(id, 0.0).expect("zero-ms is valid");
+    assert_eq!(m.scene_count(), 1);
+}
