@@ -338,6 +338,180 @@ fn pan_law_to_engine(law: PanLaw) -> PanLawType {
     }
 }
 
+// ── Scenes ─────────────────────────────────────────────────────────────
+//
+// DESIGN: scenes live HERE in the binding, not in the engine's
+// mix_scene/scene_recall modules — those are unwired data containers
+// that know nothing about the binding-owned console (staged EQ/dynamics
+// params, bus slot assignments, routing toggles, master gain). A scene
+// must snapshot and restore state the binding itself owns or stages, so
+// capture/recall walk the binding's own fields and reapply through the
+// binding's own setters. Strip existence, input FIFOs and PID mappings
+// are LIVE stream state, not console state — scenes never capture or
+// touch them.
+
+/// One EQ band's scene state: the {gain, freq, q} surface the wire API
+/// exposes (`set_eq_band_*`). The binding's chains are always the fixed
+/// 6-band Fairlight layout, so scenes store exactly 6 bands per strip.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct EqBandScene {
+    pub gain_db: f32,
+    pub freq_hz: f32,
+    pub q: f32,
+}
+
+/// Compressor params as the scene captures them (None = disabled).
+/// Mirrors the `set_comp_param` surface (params 0-5).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CompScene {
+    pub threshold_db: f32,
+    pub ratio: f32,
+    pub attack_ms: f32,
+    pub release_ms: f32,
+    pub makeup_gain_db: f32,
+    pub knee_db: f32,
+}
+
+/// Gate params as the scene captures them (None = disabled).
+/// Mirrors the `set_gate_param` surface (params 0-4).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct GateScene {
+    pub threshold_db: f32,
+    pub hysteresis_db: f32,
+    pub attack_ms: f32,
+    pub release_ms: f32,
+    pub hold_ms: f32,
+}
+
+/// Expander params as the scene captures them (None = disabled).
+/// Mirrors the `set_expander_param` surface (params 0-3).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ExpanderScene {
+    pub threshold_db: f32,
+    pub ratio: f32,
+    pub attack_ms: f32,
+    pub release_ms: f32,
+}
+
+/// One strip's scene state — everything the per-strip setters touch,
+/// for input strips (0-127) and bus slots (128-255) alike. `mute` and
+/// `solo` are USER intent; the derived engine mute (user mute OR
+/// solo-gate) is recomputed on recall by the mute/solo setters.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StripScene {
+    /// Whether the strip existed at save time. Strips are never
+    /// destroyed, so a saved strip always still exists at recall;
+    /// strips created AFTER the save are skipped (a scene has no
+    /// opinion about strips it never saw).
+    pub exists: bool,
+    pub name: String,
+    pub gain: f32,
+    pub pan: f32,
+    pub mute: bool,
+    pub solo: bool,
+    pub input_gain_db: f32,
+    pub phase_inverted: bool,
+    pub pan_law: PanLaw,
+    /// Input strips only (meaningless for bus slots).
+    pub main_assign: bool,
+    pub eq_bypass: bool,
+    pub eq_bands: [EqBandScene; 6],
+    pub comp: Option<CompScene>,
+    pub gate: Option<GateScene>,
+    pub expander: Option<ExpanderScene>,
+}
+
+impl Default for StripScene {
+    fn default() -> Self {
+        Self {
+            exists: false,
+            name: String::new(),
+            gain: 1.0,
+            pan: 0.0,
+            mute: false,
+            solo: false,
+            input_gain_db: 0.0,
+            phase_inverted: false,
+            pan_law: PanLaw::Linear,
+            main_assign: true,
+            eq_bypass: false,
+            eq_bands: std::array::from_fn(|_| EqBandScene::default()),
+            comp: None,
+            gate: None,
+            expander: None,
+        }
+    }
+}
+
+/// One bus's scene state: all 16 slot source assignments plus the bus
+/// tail controls.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BusScene {
+    pub sources: [Option<u32>; 16],
+    pub gain: f32,
+    pub muted: bool,
+    pub feeds_main: bool,
+}
+
+impl Default for BusScene {
+    fn default() -> Self {
+        Self {
+            sources: [None; 16],
+            gain: 1.0,
+            muted: false,
+            feeds_main: true,
+        }
+    }
+}
+
+/// A full console snapshot: all 256 strips, all 8 buses, master gain.
+/// Plain Rust (not wasm-exported) — the JS surface is
+/// save_scene/recall_scene; the struct is public so native tests can
+/// verify scene round-trips field by field.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConsoleScene {
+    pub strips: [StripScene; 256],
+    pub buses: [BusScene; 8],
+    pub master_gain: f32,
+}
+
+impl Default for ConsoleScene {
+    fn default() -> Self {
+        Self {
+            strips: std::array::from_fn(|_| StripScene::default()),
+            buses: std::array::from_fn(|_| BusScene::default()),
+            master_gain: 1.0,
+        }
+    }
+}
+
+/// Inverse of the pan-law wire mapping in `set_channel_pan_law`
+/// (scene recall converts a stored `PanLaw` back to the wire u32).
+fn pan_law_to_wire(law: PanLaw) -> u32 {
+    match law {
+        PanLaw::Linear => 0,
+        PanLaw::Minus3dB => 1,
+        PanLaw::Minus4Dot5dB => 2,
+        PanLaw::Minus6dB => 3,
+    }
+}
+
+/// Scene-recall error. `JsValue::from_str` is a wasm-only intrinsic
+/// (it panics "function not implemented on non-wasm32 targets" on
+/// native builds), and native tests DO exercise the Err path — so on
+/// native targets return a bare NULL (callers only observe Ok/Err).
+fn scene_err(msg: String) -> JsValue {
+    #[cfg(target_arch = "wasm32")]
+    {
+        JsValue::from_str(&msg)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = msg;
+        JsValue::NULL
+    }
+}
+
 /// Placeholder parameters for the stack-allocated engine call lists in
 /// `process_block` (every slot is overwritten before use; the dummy only
 /// exists so the fixed-size arrays can be initialized).
@@ -456,6 +630,13 @@ pub struct MixerWasm {
     /// list (default true). Unassigned strips are still staged, metered,
     /// tapped, and still feed any bus slots assigned to them.
     main_assign: Vec<bool>,
+    // ── Scenes (control-plane only; never touched by process_block) ──
+    /// Stored console snapshots (`save_scene`/`recall_scene`). Binding-
+    /// owned by design — see the Scenes block near the top of this file.
+    scenes: HashMap<u32, ConsoleScene>,
+    /// Next scene id `save_scene` hands out (starts at 1: 0 stays free
+    /// as a JS-friendly "no scene" sentinel).
+    next_scene_id: u32,
     // Bus engine outputs: what bus i's engine instance summed this block
     // (pre bus-gain). The bus tail applies gain/mute into bus_pub.
     bus_left: Vec<Vec<f32>>,
@@ -561,6 +742,8 @@ impl MixerWasm {
             bus_muted: vec![false; 8],
             feeds_main: vec![true; 8],
             main_assign: vec![true; 128],
+            scenes: HashMap::new(),
+            next_scene_id: 1,
             bus_left: (0..8).map(|_| vec![0.0; bs]).collect(),
             bus_right: (0..8).map(|_| vec![0.0; bs]).collect(),
             bus_pub_l: (0..8).map(|_| vec![0.0; bs]).collect(),
@@ -1223,6 +1406,42 @@ impl MixerWasm {
         }
     }
 
+    // ── Scenes ─────────────────────────────────────────
+
+    /// Capture the current console state and store it under a fresh
+    /// scene id. Saving is read-only — it never disturbs audio or
+    /// control state. Returns the new id (ids start at 1).
+    pub fn save_scene(&mut self) -> u32 {
+        let id = self.next_scene_id;
+        self.next_scene_id += 1;
+        self.scenes.insert(id, self.console_snapshot());
+        id
+    }
+
+    /// Instantly recall scene `id`: every captured parameter is
+    /// reapplied through the SAME setter paths the JS surface uses, so
+    /// engine state, staged EQ/dynamics params and the derived mute/solo
+    /// state all stay consistent. (A later change will add cross-faded
+    /// recall on top.) Unknown id → Err.
+    pub fn recall_scene(&mut self, id: u32) -> Result<(), JsValue> {
+        let Some(scene) = self.scenes.get(&id) else {
+            return Err(scene_err(format!("unknown scene id {id}")));
+        };
+        let scene = scene.clone();
+        self.apply_scene(&scene);
+        Ok(())
+    }
+
+    /// Drop scene `id` (unknown ids are a no-op).
+    pub fn delete_scene(&mut self, id: u32) {
+        self.scenes.remove(&id);
+    }
+
+    /// Number of stored scenes.
+    pub fn scene_count(&self) -> u32 {
+        self.scenes.len() as u32
+    }
+
     // ── Bus metering ───────────────────────────────────
 
     pub fn bus_peak_db(&self, bus: u32) -> f32 {
@@ -1345,6 +1564,206 @@ impl MixerWasm {
 }
 
 impl MixerWasm {
+    /// Capture the entire binding console state as a [`ConsoleScene`].
+    ///
+    /// The same read primitive `save_scene` uses — public plain Rust
+    /// (not wasm-exported) so native tests can verify scene round-trips
+    /// field by field, and so future control-plane code (e.g. cross-fade
+    /// recall) can diff current state against a target scene.
+    ///
+    /// Control-plane only: reads the owning engines' channel state and
+    /// the binding's staging maps; allocates the returned scene and
+    /// nothing else; never mutates anything.
+    pub fn console_snapshot(&self) -> ConsoleScene {
+        let mut scene = ConsoleScene::default();
+        for (i, s) in scene.strips.iter_mut().enumerate() {
+            let idx = i as u32;
+            s.exists = self.channel_ids.get(i).is_some_and(|c| c.is_some());
+            if let Some((_, p)) = self.mix_params_for(idx) {
+                s.gain = p.fader_gain;
+                s.pan = p.pan;
+                s.input_gain_db = p.input_gain_db;
+                s.phase_inverted = p.phase_inverted;
+                s.pan_law = p.pan_law;
+            }
+            if let (Some(&Some(id)), Some(engine)) =
+                (self.channel_ids.get(i), self.owning_engine(idx))
+            {
+                if let Ok(ch) = engine.get_channel(id) {
+                    s.name = ch.name().to_string();
+                }
+            }
+            // Mute/solo are captured as USER intent; the derived engine
+            // mute is recomputed by the setters on recall.
+            s.mute = self.user_muted.contains(&idx);
+            s.solo = self.soloed_channels.contains(&idx);
+            s.main_assign = self.main_assign.get(i).copied().unwrap_or(false);
+            if let Some(eq) = self.eq_chains.get(&idx) {
+                s.eq_bypass = eq.is_bypassed();
+                for (b, bs) in s.eq_bands.iter_mut().enumerate() {
+                    if let Some(band) = eq.inner().bands.get(b) {
+                        *bs = EqBandScene {
+                            gain_db: band.gain_db as f32,
+                            freq_hz: band.frequency as f32,
+                            q: band.q as f32,
+                        };
+                    }
+                }
+            }
+            if let Some(d) = self.dynamics_chains.get(&idx) {
+                s.comp = d.compressor.as_ref().map(|c| {
+                    let cfg = c.config();
+                    CompScene {
+                        threshold_db: cfg.threshold_db,
+                        ratio: cfg.ratio,
+                        attack_ms: cfg.attack_ms,
+                        release_ms: cfg.release_ms,
+                        makeup_gain_db: cfg.makeup_gain_db,
+                        knee_db: cfg.knee_db,
+                    }
+                });
+                s.gate = d.gate.as_ref().map(|g| {
+                    let cfg = g.config();
+                    GateScene {
+                        threshold_db: cfg.threshold_db,
+                        hysteresis_db: cfg.hysteresis_db,
+                        attack_ms: cfg.attack_ms,
+                        release_ms: cfg.release_ms,
+                        hold_ms: cfg.hold_ms,
+                    }
+                });
+                s.expander = d.expander.as_ref().map(|e| {
+                    let cfg = e.config();
+                    ExpanderScene {
+                        threshold_db: cfg.threshold_db,
+                        ratio: cfg.ratio,
+                        attack_ms: cfg.attack_ms,
+                        release_ms: cfg.release_ms,
+                    }
+                });
+            }
+        }
+        for (b, bs) in scene.buses.iter_mut().enumerate() {
+            for (slot, src) in bs.sources.iter_mut().enumerate() {
+                *src = self.bus_sources[b].get(slot).copied().flatten();
+            }
+            bs.gain = self.bus_gains[b];
+            bs.muted = self.bus_muted[b];
+            bs.feeds_main = self.feeds_main[b];
+        }
+        scene.master_gain = self.master_gain;
+        scene
+    }
+
+    /// Reapply a scene through the SAME code paths the per-parameter
+    /// setters use (never bypassing their side effects: engine state,
+    /// staged EQ/dynamics params, lazily-created strips, derived
+    /// mute/solo). Control-plane only — allocation here is fine; the
+    /// RT path's allocation profile is untouched.
+    fn apply_scene(&mut self, scene: &ConsoleScene) {
+        // Strip parameters, only for strips that existed at save time.
+        // Strips are never destroyed, so these all still exist and the
+        // setters below never lazily create anything. Strips created
+        // after the save are left alone (a scene has no opinion about
+        // strips it never saw — existence is stream state, not console
+        // state). Every setter can only fail on out-of-range indices,
+        // which the fixed 256-strip console excludes — ignore results.
+        for (i, s) in scene.strips.iter().enumerate() {
+            if !s.exists {
+                continue;
+            }
+            let idx = i as u32;
+            let _ = self.set_channel_gain(idx, s.gain);
+            let _ = self.set_channel_pan(idx, s.pan);
+            let _ = self.set_channel_input_gain(idx, s.input_gain_db);
+            let _ = self.set_channel_phase(idx, s.phase_inverted);
+            let _ = self.set_channel_pan_law(idx, pan_law_to_wire(s.pan_law));
+            let _ = self.set_channel_name(idx, s.name.clone());
+            if idx < 128 {
+                self.set_channel_main_assign(idx, s.main_assign);
+            }
+            let _ = self.set_eq_bypass(idx, s.eq_bypass);
+            for (b, band) in s.eq_bands.iter().enumerate() {
+                let _ = self.set_eq_band_gain(idx, b, band.gain_db);
+                let _ = self.set_eq_band_freq(idx, b, band.freq_hz);
+                let _ = self.set_eq_band_q(idx, b, band.q);
+            }
+            match &s.comp {
+                Some(c) => {
+                    let _ = self.enable_compressor(idx);
+                    let _ = self.set_comp_param(idx, 0, c.threshold_db);
+                    let _ = self.set_comp_param(idx, 1, c.ratio);
+                    let _ = self.set_comp_param(idx, 2, c.attack_ms);
+                    let _ = self.set_comp_param(idx, 3, c.release_ms);
+                    let _ = self.set_comp_param(idx, 4, c.makeup_gain_db);
+                    let _ = self.set_comp_param(idx, 5, c.knee_db);
+                }
+                None => self.disable_compressor(idx),
+            }
+            match &s.gate {
+                Some(g) => {
+                    let _ = self.enable_gate(idx);
+                    let _ = self.set_gate_param(idx, 0, g.threshold_db);
+                    let _ = self.set_gate_param(idx, 1, g.hysteresis_db);
+                    let _ = self.set_gate_param(idx, 2, g.attack_ms);
+                    let _ = self.set_gate_param(idx, 3, g.release_ms);
+                    let _ = self.set_gate_param(idx, 4, g.hold_ms);
+                }
+                None => self.disable_gate(idx),
+            }
+            match &s.expander {
+                Some(e) => {
+                    let _ = self.enable_expander(idx);
+                    let _ = self.set_expander_param(idx, 0, e.threshold_db);
+                    let _ = self.set_expander_param(idx, 1, e.ratio);
+                    let _ = self.set_expander_param(idx, 2, e.attack_ms);
+                    let _ = self.set_expander_param(idx, 3, e.release_ms);
+                }
+                None => self.disable_expander(idx),
+            }
+        }
+        // Mute/solo LAST, as USER intent: their setters recompute the
+        // derived engine mute (user mute OR solo-gate). A live solo on
+        // a strip the scene doesn't cover (created after the save)
+        // would leak into every scene strip's derived mute — clear
+        // those first, then apply the scene's own flags.
+        let foreign_solos: Vec<u32> = self
+            .soloed_channels
+            .iter()
+            .copied()
+            .filter(|&ch| !scene.strips.get(ch as usize).is_some_and(|s| s.exists))
+            .collect();
+        for ch in foreign_solos {
+            let _ = self.set_channel_solo(ch, false);
+        }
+        for (i, s) in scene.strips.iter().enumerate() {
+            if s.exists {
+                let _ = self.set_channel_mute(i as u32, s.mute);
+            }
+        }
+        for (i, s) in scene.strips.iter().enumerate() {
+            if s.exists {
+                let _ = self.set_channel_solo(i as u32, s.solo);
+            }
+        }
+        // Bus routing + tail controls: the scene fully owns all 8×16
+        // slot assignments (a slot assigned after the save is cleared).
+        for (b, bus) in scene.buses.iter().enumerate() {
+            for (slot, &src) in bus.sources.iter().enumerate() {
+                match src {
+                    Some(ch) => {
+                        let _ = self.set_bus_source(b as u32, slot as u32, ch);
+                    }
+                    None => self.clear_bus_source(b as u32, slot as u32),
+                }
+            }
+            self.set_bus_gain(b as u32, bus.gain);
+            self.set_bus_mute(b as u32, bus.muted);
+            self.set_bus_feeds_main(b as u32, bus.feeds_main);
+        }
+        self.set_master_gain(scene.master_gain);
+    }
+
     /// Process one block through the full console (pure Rust, no JS
     /// interop — callable from native tests). Returns the interleaved
     /// stereo output slice (`block_size × 2` frames), valid until the
