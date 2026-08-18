@@ -1,5 +1,6 @@
 // WebSRT receive client — worker bootstrap for the websrt store
-// (frontend/src/websrt/store.ts owns the single worker instance).
+// (frontend/src/websrt/store.ts owns the workers, one per receive
+// session).
 //
 // The receive worker is imported at source level from the vendor/WebSRT
 // submodule (docs/embedding.md "Supported embed model"). Vite bundles it as
