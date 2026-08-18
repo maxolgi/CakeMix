@@ -9,6 +9,16 @@ const webDir = path.join(root, 'web');
 // Read glue
 let glue = fs.readFileSync(path.join(pkgDir, 'mixer_wasm.js'), 'utf-8');
 
+// Guard: a node-target pkg (e.g. left behind by `make test-wasm`) inlines
+// require('fs') to load the wasm — that throws in AudioWorkletGlobalScope,
+// so registerProcessor never runs and the page dies with
+// "mixer-processor is not defined". Require `make build-web` first.
+if (/require\(/.test(glue)) {
+    console.error('ERROR: crates/mixer-wasm/pkg/mixer_wasm.js is a node-target build (contains require()).');
+    console.error('       Run `make build-web` to regenerate the web-target pkg before building the worklet.');
+    process.exit(1);
+}
+
 // Strip ES module syntax
 glue = glue.replace(/^export\s+/gm, '');
 glue = glue.replace(/^export\s*\{[^}]+\};?\s*$/gm, '');
