@@ -1,14 +1,15 @@
 #!/bin/bash
 # Real-audio source, 16-channel cut — pushes the FIRST 16 channels of the
-# same broadcast WAV (tmp/broadcast30.wav) over SRT to the running WebSRT
-# gateway. Same rules as stream_pcm_real.sh: one stereo s302m PID per source
-# track, mono tracks duplicated L=R (s302m has no mono layout), 48 kHz,
-# looped forever on a single shared loop point. Audio-only MPEG-2 TS, no
-# video. With the current session dir the first 16 channels are exactly
-# tracks 01-14 (kick/snare/hat mics, overheads, room, toms, ac+el guitars).
+# broadcast WAV (tmp/broadcast30.wav) over SRT to the running WebSRT
+# gateway, packed 2 mono channels per stereo s302m PID (s302m has no mono
+# layout): 16 distinct channels = 8 stereo PIDs, no duplication. The mixer
+# unpacks each PID into individual mono strips (ch1..ch16 in channel order).
+# 48 kHz, looped forever on a single shared loop point. Audio-only MPEG-2
+# TS, no video.
 #
 # Usage: ./fixtures/stream_pcm_real16.sh
 # Override source dir:  AUDIO_DIR=/path/to/wavs ./fixtures/stream_pcm_real16.sh
+#   (only used to build the WAV if missing)
 # Override target via WEBSTRT_SRT_URL (default srt://127.0.0.1:9000?streamid=audio).
 # The gateway rejects SRT connections without a streamid.
 # Ctrl+C to stop.
@@ -32,44 +33,22 @@ if [ ! -f "$BROADCAST_WAV" ]; then
   AUDIO_DIR="$AUDIO_DIR" OUT="$BROADCAST_WAV" "$ROOT/fixtures/make_broadcast_wav.sh"
 fi
 
-# Channel plan must match make_broadcast_wav.sh: track order = filename sort,
-# stereo tracks keep L+R. Track i -> PID i. Stop once MAX_CH channels of the
-# WAV are consumed; a stereo track that would straddle the cap ends the list.
+# Channel pairs -> stereo PIDs: PID k carries WAV channels 2k (L) + 2k+1 (R).
 PANS=()
 MAPS=()
 META=()
-ch=0
-i=0
-for f in "$AUDIO_DIR"/*.wav; do
-  if [ "$ch" -ge "$MAX_CH" ]; then
-    break
-  fi
-  chs=$(ffprobe -v error -show_entries stream=channels -of csv=p=0 "$f")
-  if [ "$chs" = "1" ]; then
-    PANS+=( "[s${i}]pan=stereo|c0=c${ch}|c1=c${ch}[a${i}]" )
-    ch=$((ch + 1))
-  elif [ $((ch + 2)) -le "$MAX_CH" ]; then
-    PANS+=( "[s${i}]pan=stereo|c0=c${ch}|c1=c$((ch + 1))[a${i}]" )
-    ch=$((ch + 2))
-  else
-    break
-  fi
+SPLITS=()
+for ((i = 0; 2 * i < MAX_CH; i++)); do
+  PANS+=( "[s${i}]pan=stereo|c0=c$((2 * i))|c1=c$((2 * i + 1))[a${i}]" )
   MAPS+=( -map "[a${i}]" )
-  META+=( -metadata:"s:a:${i}" "language=ch${i}" )
-  i=$((i + 1))
+  META+=( -metadata:"s:a:${i}" "language=ch$((2 * i))-$((2 * i + 1))" )
+  SPLITS+=( "[s${i}]" )
 done
 
-if [ "$ch" -ne "$MAX_CH" ]; then
-  echo "error: channel plan covered only ${ch} of ${MAX_CH} channels — AUDIO_DIR changed?" >&2
-  exit 1
-fi
-
-SPLITS=()
-for ((k = 0; k < i; k++)); do SPLITS+=( "[s${k}]" ); done
 FC="[0:a]asplit=${i}$(IFS=''; echo "${SPLITS[*]}")"
 FC+=";$(IFS=';'; echo "${PANS[*]}")"
 
-echo "PCM: first ${MAX_CH} channels as ${i} stereo s302m PIDs from ${BROADCAST_WAV}" >&2
+echo "PCM: first ${MAX_CH} channels packed as ${i} stereo s302m PIDs from ${BROADCAST_WAV}" >&2
 exec ffmpeg -re \
   -stream_loop -1 -i "$BROADCAST_WAV" \
   -filter_complex "$FC" \
