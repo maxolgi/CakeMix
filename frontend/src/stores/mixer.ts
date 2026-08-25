@@ -180,6 +180,7 @@ export function setMasterGain(gain: number) { setMasterGainState(gain); sendToWo
 export function setLimiterEnabled(enabled: boolean) { setLimiterEnabledState(enabled); sendToWorklet({ type: "set-limiter", enabled }); }
 export function setLimiterCeiling(ceilingDb: number) { setLimiterCeilingState(ceilingDb); sendToWorklet({ type: "set-limiter-ceiling", ceilingDb }); }
 export function setLimiterRelease(releaseMs: number) { setLimiterReleaseState(releaseMs); sendToWorklet({ type: "set-limiter-release", releaseMs }); }
+export function clearMasterClip() { sendToWorklet({ type: "clear-clip" }); }
 
 // ── Bus helpers ──────────────────────────────────────────────────────────────
 

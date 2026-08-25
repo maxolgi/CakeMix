@@ -4,6 +4,7 @@ import {
   limiterEnabled, setLimiterEnabled,
   limiterCeiling, setLimiterCeiling,
   limiterRelease, setLimiterRelease,
+  clearMasterClip,
   faderToGain, gainToFader, formatGainDb,
 } from "../stores/mixer";
 import { Knob } from "./Knob";
@@ -51,7 +52,7 @@ export function MasterStrip() {
 
       <div class="master-clip-indicator">
         <span>{fmtDbInf(meterData().peakL)}</span>
-        <span class={`clip ${meterData().clip ? "active" : ""}`}>CLIP</span>
+        <span class={`clip clickable ${meterData().clip ? "active" : ""}`} onClick={() => clearMasterClip()} title="Click to clear clip indicator">CLIP</span>
         <span>{fmtDbInf(meterData().peakR)}</span>
       </div>
 

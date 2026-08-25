@@ -1546,17 +1546,28 @@ impl MixerWasm {
         self.master_gain = gain.clamp(0.0, 2.0);
     }
 
+    /// Live-update the limiter ceiling. Assigns `threshold_db` on both L/R
+    /// limiters and calls `recalculate()`, which recomputes only the
+    /// derived coefficients — `gain_env`, look-ahead delay and oversample
+    /// state survive, so turning the knob mid-stream is click-free
+    /// (the previous reconstruct-via-`new()` reset the envelope, causing
+    /// an audible gain jump).
     pub fn set_limiter_ceiling(&mut self, ceiling_db: f32) {
         self.limiter_ceiling = ceiling_db;
-        let sr = self.sample_rate as f32;
-        self.limiter_l = OversampledLimiter::new(ceiling_db, self.limiter_release_ms, 4, sr);
-        self.limiter_r = OversampledLimiter::new(ceiling_db, self.limiter_release_ms, 4, sr);
+        self.limiter_l.threshold_db = ceiling_db;
+        self.limiter_r.threshold_db = ceiling_db;
+        self.limiter_l.recalculate();
+        self.limiter_r.recalculate();
     }
+    /// Live-update the limiter release. Same rationale as
+    /// `set_limiter_ceiling`: `recalculate()` preserves the gain envelope,
+    /// so release changes never reset limiting mid-stream.
     pub fn set_limiter_release(&mut self, release_ms: f32) {
         self.limiter_release_ms = release_ms;
-        let sr = self.sample_rate as f32;
-        self.limiter_l = OversampledLimiter::new(self.limiter_ceiling, release_ms, 4, sr);
-        self.limiter_r = OversampledLimiter::new(self.limiter_ceiling, release_ms, 4, sr);
+        self.limiter_l.release_ms = release_ms;
+        self.limiter_r.release_ms = release_ms;
+        self.limiter_l.recalculate();
+        self.limiter_r.recalculate();
     }
 
     // ── Bus mixing (8 buses × 16 full-channel-strip slots) ──
@@ -2649,6 +2660,10 @@ impl MixerWasm {
     }
     pub fn master_clipping(&self) -> bool {
         self.master_meter.clipped[0] || self.master_meter.clipped[1]
+    }
+    /// Clear the sticky master clip indicators (both channels).
+    pub fn master_clear_clip(&mut self) {
+        self.master_meter.clipped = [false; 2];
     }
 
     // ── Elastic playout diagnostics ────────────────────

@@ -280,3 +280,129 @@ fn test_channel_meters_json() {
     let count = json.matches("\"ch\":").count();
     assert_eq!(count, 2, "expected 2 meter entries, got {count}: {json}");
 }
+
+/// Test 10: `set_limiter_release` / `set_limiter_ceiling` must NOT reset the
+/// limiter's gain envelope mid-stream.
+///
+/// Warm up with a loud signal until limiting engages (GR < −1 dB), then
+/// call each setter with the SAME value currently configured and verify the
+/// envelope survived:
+///   1. A below-threshold block IMMEDIATELY after the setter releases SLOWLY —
+///      GR is still < −1 dB one block later (50 ms release vs a 128-frame
+///      block ≈ 2.7 ms). Under the old reconstruct-via-`new()` setters the
+///      envelope snapped back to unity and GR returned to exactly 0 dB here.
+///   2. Loud re-feed keeps GR < −1 dB and output peak under the ceiling.
+///
+/// The quiet probe must come FIRST: a loud block re-establishes the envelope
+/// in both variants, which would mask the reset.
+#[wasm_bindgen_test]
+fn test_limiter_setters_preserve_envelope() {
+    // DC drive: the channel→master path attenuates ~½ (pan + sum network),
+    // so the DC level is chosen to land ~1.5 at the limiter (well above the
+    // −0.3 dB ceiling) and stay there for every sample of the block.
+    let loud = vec![3.0f32; BLOCK_SIZE as usize];
+    let quiet = vec![0.1f32; BLOCK_SIZE as usize]; // below the −0.3 dB ceiling
+    let ceiling_linear = 10.0f32.powf(-0.3 / 20.0);
+
+    let mut mixer = mixer_wasm::MixerWasm::new(SAMPLE_RATE, BLOCK_SIZE, 2).unwrap();
+    mixer.set_eq_bypass(0, true).unwrap();
+    // Limiter stays ON at its defaults: ceiling −0.3 dB, release 50 ms.
+
+    // Engage limiting.
+    let mut engaged = false;
+    for _ in 0..200 {
+        let _ = run_block(&mut mixer, 0, &loud);
+        if mixer.limiter_gain_reduction_db() < -1.0 {
+            engaged = true;
+            break;
+        }
+    }
+    assert!(
+        engaged,
+        "limiter should engage on a hot DC input, GR={:.3}",
+        mixer.limiter_gain_reduction_db()
+    );
+
+    // ── Release setter: same value, must not touch the envelope ──
+    mixer.set_limiter_release(50.0);
+
+    // 1. Quiet block right after the setter: envelope releases slowly
+    //    instead of snapping to unity (this is the discriminating probe).
+    let _ = run_block(&mut mixer, 0, &quiet);
+    assert!(
+        mixer.limiter_gain_reduction_db() < -1.0,
+        "envelope was reset by set_limiter_release: quiet GR={:.3} (expected slow release)",
+        mixer.limiter_gain_reduction_db()
+    );
+    // 2. Loud re-feed still limited, peak under ceiling.
+    let out = run_block(&mut mixer, 0, &loud);
+    assert!(
+        mixer.limiter_gain_reduction_db() < -1.0,
+        "after set_limiter_release, loud GR={:.3}",
+        mixer.limiter_gain_reduction_db()
+    );
+    assert!(
+        max_abs(&out) <= ceiling_linear * 1.05,
+        "ceiling exceeded after set_limiter_release: {}",
+        max_abs(&out)
+    );
+
+    // ── Ceiling setter: same exercise ──
+    // Re-engage (the quiet block above released the envelope partway).
+    for _ in 0..200 {
+        let _ = run_block(&mut mixer, 0, &loud);
+        if mixer.limiter_gain_reduction_db() < -1.0 {
+            break;
+        }
+    }
+    mixer.set_limiter_ceiling(-0.3);
+
+    // 1. Quiet probe first (see doc comment above).
+    let _ = run_block(&mut mixer, 0, &quiet);
+    assert!(
+        mixer.limiter_gain_reduction_db() < -1.0,
+        "envelope was reset by set_limiter_ceiling: quiet GR={:.3} (expected slow release)",
+        mixer.limiter_gain_reduction_db()
+    );
+    // 2. Loud re-feed still limited, peak under ceiling.
+    let out = run_block(&mut mixer, 0, &loud);
+    assert!(
+        mixer.limiter_gain_reduction_db() < -1.0,
+        "after set_limiter_ceiling, loud GR={:.3}",
+        mixer.limiter_gain_reduction_db()
+    );
+    assert!(
+        max_abs(&out) <= ceiling_linear * 1.05,
+        "ceiling exceeded after set_limiter_ceiling: {}",
+        max_abs(&out)
+    );
+}
+
+/// Test 11: the sticky master clip latch sets on an over-0dBFS block and is
+/// cleared by `master_clear_clip` (the getter reads the latch, not current audio).
+///
+/// The limiter is bypassed here because the master meter sits AFTER the
+/// limiter in the chain. DC 3.0 lands ~1.5 at the meter after the ~½
+/// channel→master attenuation — comfortably past the ≥1.0 latch threshold.
+#[wasm_bindgen_test]
+fn test_master_clip_clear() {
+    let hot = vec![3.0f32; BLOCK_SIZE as usize];
+
+    let mut mixer = mixer_wasm::MixerWasm::new(SAMPLE_RATE, BLOCK_SIZE, 2).unwrap();
+    mixer.set_limiter_enabled(false);
+    mixer.set_eq_bypass(0, true).unwrap();
+
+    assert!(!mixer.master_clipping(), "clip latch must start clear");
+
+    let _ = run_block(&mut mixer, 0, &hot);
+    assert!(
+        mixer.master_clipping(),
+        "a block whose meter peak exceeds 1.0 must latch the clip indicator"
+    );
+
+    mixer.master_clear_clip();
+    assert!(
+        !mixer.master_clipping(),
+        "master_clear_clip must clear the latch"
+    );
+}

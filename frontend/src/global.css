@@ -73,6 +73,8 @@ body {
     transition: all 0.1s;
 }
 .clip.active { color: #f00; border-color: #f00; background: rgba(255,0,0,0.1); box-shadow: 0 0 6px rgba(255,0,0,0.3); }
+/* Sticky clip indicators that can be click-to-clear (master strip) */
+.clip.clickable { cursor: pointer; user-select: none; }
 
 /* ── Scene Bank (top bar) ────────────── */
 .scene-bank {

@@ -199,6 +199,8 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (this._mixer) try { this._mixer.set_limiter_ceiling(msg.ceilingDb); } catch(e) {}
             } else if (msg.type === "set-limiter-release") {
                 if (this._mixer) try { this._mixer.set_limiter_release(msg.releaseMs); } catch(e) {}
+            } else if (msg.type === "clear-clip") {
+                if (this._mixer) try { this._mixer.master_clear_clip(); } catch(e) {}
             } else if (msg.type === "set-main-assign") {
                 if (this._mixer) try { this._mixer.set_channel_main_assign(msg.ch, msg.on); } catch(e) {}
             } else if (msg.type === "set-bus-feeds-main") {
