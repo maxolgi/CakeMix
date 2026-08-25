@@ -64,7 +64,7 @@ struct Cli {
     // Legacy direct-ingest leg (OBS/fixture → this binary). Kept for
     // compatibility; NOT the test path — sources publish to the user's
     // websrt-gateway and CakeMix subscribes over WebSRT. See AGENTS.md.
-    #[arg(long, default_value_t = 9000u16, help = "SRT ingest UDP port")]
+    #[arg(long, default_value_t = 9001u16, help = "SRT ingest UDP port")]
     srt_port: u16,
 
     // Reference web UI (vendor/WebSRT/web demo app: viewer, publisher, debug
@@ -271,13 +271,10 @@ struct CertHashParams {
 async fn api_cert_hash(
     axum::extract::Query(params): axum::extract::Query<CertHashParams>,
 ) -> Response {
-    let parsed = match url::Url::parse(&params.url) {
+    let cert_url = match validate_gateway_target(&params.url) {
         Ok(u) => u,
-        Err(_) => return cert_hash_json(None, None, Some("invalid gateway url")),
+        Err(e) => return cert_hash_json(None, None, Some(&e)),
     };
-    let host = parsed.host_str().unwrap_or("127.0.0.1");
-    let port = parsed.port_or_known_default().unwrap_or(443);
-    let cert_url = format!("https://{host}:{port}/cert-hash.js");
     let client = match reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(4))
@@ -302,6 +299,76 @@ async fn api_cert_hash(
             Some(&format!("fetch failed for {cert_url}: {e}")),
         ),
     }
+}
+
+/// Validate a caller-supplied gateway URL before this server fetches its
+/// cert-hash.js. Returns the cert-hash.js URL to fetch.
+///
+/// The endpoint exists because a browser cannot fetch another origin's
+/// cert-hash.js (CORS) — legitimate targets are REMOTE WebSRT gateways.
+/// That also makes it an open prober for internal networks unless guarded:
+/// - scheme must be https (gateways are always TLS; WT requires it)
+/// - hostnames that ARE IP literals must not be loopback / private
+///   (RFC1918 + CGNAT) / link-local / unspecified
+/// - localhost / *.local / *.internal names rejected
+///
+/// Residual risk, accepted by design: DNS rebinding (the validator checks
+/// the NAME; resolution happens inside reqwest) and the fact that the hash
+/// bytes themselves are not the trust anchor — client-side
+/// `serverCertificateHashes` pinning is. TLS validation is deliberately off
+/// (`danger_accept_invalid_certs(true)`): self-signed gateway certs are the
+/// norm here.
+fn validate_gateway_target(raw: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(raw).map_err(|_| "invalid gateway url".to_string())?;
+    if parsed.scheme() != "https" {
+        return Err(format!(
+            "gateway url must be https, got {}",
+            parsed.scheme()
+        ));
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "gateway url has no host".to_string())?;
+    let port = parsed.port_or_known_default().unwrap_or(443);
+
+    // IP literals get a numeric classification; named hosts get suffix rules.
+    // (Parsing first matters: "10.0.0.5.example.com" is a NAME, not the
+    // private literal 10.0.0.5.)
+    // url serializes IPv6 hosts WITH brackets ("[::1]"), so strip them before
+    // attempting IpAddr parse.
+    let bare_host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ip) = bare_host.parse::<std::net::IpAddr>() {
+        let banned = match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_unspecified()
+                    || v4.is_broadcast()
+                    // CGNAT 100.64.0.0/10 has no is_* predicate on Ipv4Addr.
+                    || v4.octets()[0] == 100 && (v4.octets()[1] & 0b1100_0000) == 0b0100_0000
+            }
+            std::net::IpAddr::V6(v6) => {
+                // No is_private on Ipv6Addr: loopback (::1) and unspecified
+                // (::) cover the local cases; unique-local fc00::/7 tested
+                // directly (!is_global would over-reject documentation etc.).
+                v6.is_loopback() || v6.is_unspecified() || (v6.segments()[0] & 0xfe00) == 0xfc00
+            }
+        };
+        if banned {
+            return Err("gateway url points at a non-public address".to_string());
+        }
+    } else {
+        let lower = host.to_ascii_lowercase();
+        if lower == "localhost" || lower.ends_with(".local") || lower.ends_with(".internal") {
+            return Err(format!("gateway host {host:?} is not allowed"));
+        }
+    }
+
+    Ok(format!("https://{host}:{port}/cert-hash.js"))
 }
 
 fn cert_hash_json(hash: Option<String>, wt_port: Option<u16>, error: Option<&str>) -> Response {
@@ -628,5 +695,79 @@ async fn main() {
     }
     if !matches!(exited, Exited::Gateway) {
         let _ = (&mut gateway_task).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_gateway_target;
+
+    #[test]
+    fn accepts_public_ip_literal() {
+        let url = validate_gateway_target("https://203.0.113.7:8201/").unwrap();
+        assert_eq!(url, "https://203.0.113.7:8201/cert-hash.js");
+    }
+
+    #[test]
+    fn accepts_public_dns_name_and_preserves_port_and_path() {
+        // Port comes from the URL (no explicit port → https default 443);
+        // query strings are dropped — only the cert-hash.js path matters.
+        let url = validate_gateway_target("https://mixer.example.com:5173/?stream=x").unwrap();
+        assert_eq!(url, "https://mixer.example.com:5173/cert-hash.js");
+    }
+
+    #[test]
+    fn rejects_non_https_scheme() {
+        let err = validate_gateway_target("http://gateway.example.com/").unwrap_err();
+        assert!(err.contains("must be https"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_invalid_urls() {
+        for raw in ["", "not a url", "https://"] {
+            assert_eq!(
+                validate_gateway_target(raw).unwrap_err(),
+                "invalid gateway url"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_private_and_local_ip_literals() {
+        for raw in [
+            "https://127.0.0.1/",
+            "https://[::1]/",
+            "https://10.0.0.5/",
+            "https://192.168.1.214:5173/",
+            "https://172.16.0.9/",
+            "https://169.254.1.1/",
+            "https://100.64.0.1/",    // CGNAT
+            "https://100.127.255.9/", // CGNAT top edge
+            "https://0.0.0.0/",
+            "https://[fd00::5]/", // IPv6 unique-local
+            "https://[::]/",      // unspecified v6
+        ] {
+            let err = validate_gateway_target(raw).expect_err(&format!("{raw} must be rejected"));
+            assert!(err.contains("non-public"), "{raw}: got {err}");
+        }
+    }
+
+    #[test]
+    fn rejects_internal_hostnames() {
+        for raw in [
+            "https://localhost:4433/",
+            "https://LOCALHOST/", // case-insensitive
+            "https://gateway.local/",
+            "https://foo.internal/",
+        ] {
+            let err = validate_gateway_target(raw).expect_err(&format!("{raw} must be rejected"));
+            assert!(err.contains("not allowed"), "{raw}: got {err}");
+        }
+    }
+
+    #[test]
+    fn allows_named_hosts_that_merely_look_like_ips() {
+        // A NAME that embeds a private IP is not that IP — suffix rules apply.
+        assert!(validate_gateway_target("https://10.0.0.5.nip.io/").is_ok());
     }
 }
