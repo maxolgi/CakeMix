@@ -2,7 +2,12 @@ import { onMount, onCleanup, createEffect, on } from "solid-js";
 import { channels } from "../stores/mixer";
 
 function biquadResponse(type: string, f0: number, q: number, dbGain: number, freq: number, sampleRate: number): number {
-  if (type === "none" || dbGain === 0) return 0;
+  // A flat shelf/peak (gain ≈ 0 dB) is genuinely flat, but the HPF's gain
+  // param is irrelevant — its response must always be computed or the
+  // 80 Hz band would never shape the curve.
+  const isHpf = type === "high_pass" || type === "highpass";
+  if (!isHpf && Math.abs(dbGain) < 0.01) return 0;
+  if (type === "none") return 0;
   const A = Math.pow(10, dbGain / 40);
   const w0 = (2 * Math.PI * f0) / sampleRate;
   const alpha = Math.sin(w0) / (2 * q);
@@ -28,8 +33,7 @@ function biquadResponse(type: string, f0: number, q: number, dbGain: number, fre
       a2 = A + 1 - (A - 1) * Math.cos(w0) - 2 * Math.sqrt(A) * alpha; break;
     case "high_pass": case "highpass":
       b0 = (1 + Math.cos(w0)) / 2; b1 = -(1 + Math.cos(w0)); b2 = (1 + Math.cos(w0)) / 2;
-      a0 = 1 + alpha; a1 = -2 * Math.cos(w0); a2 = 1 - alpha;
-      if (dbGain === 0) return 0; break;
+      a0 = 1 + alpha; a1 = -2 * Math.cos(w0); a2 = 1 - alpha; break;
     default: return 0;
   }
 

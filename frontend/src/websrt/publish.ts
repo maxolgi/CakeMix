@@ -20,6 +20,7 @@
 import { createSignal } from "solid-js";
 import { sendToWorklet } from "../stores/mixer";
 import { userGestureUnlock } from "../audio/unlock";
+import { resolveCertHash, hexToBytes } from "./gateway";
 import type { PubCmd, PubMsg, PubStats } from "./publish-worker";
 
 export type PublishStatus = "disconnected" | "connecting" | "connected" | "error";
@@ -122,7 +123,15 @@ export async function connectPublish(): Promise<void> {
       certHashHex = certHashParam === "null" ? null : certHashParam;
       wtPort = 0;
     } else {
-      ({ certHashHex, wtPort } = await resolveCertHash());
+      // Same target rule as store.ts: ?host points at a remote gateway, so
+      // its cert-hash.js must be resolved through our /api/cert-hash proxy
+      // (cross-origin fetch is CORS-blocked); otherwise same-origin.
+      const urlParams = new URLSearchParams(location.search);
+      const host = urlParams.get("host");
+      const remoteOrigin = host
+        ? `https://${host}${urlParams.get("port") ? ":" + urlParams.get("port") : ""}`
+        : undefined;
+      ({ certHashHex, wtPort } = await resolveCertHash(remoteOrigin));
     }
     const url = buildPublishWtUrl(wtPort);
     const certHash = certHashHex ? hexToBytes(certHashHex) : null;
@@ -245,41 +254,6 @@ function onWorkerMsg(msg: PubMsg): void {
       setStatusDetail("publish stream closed by peer");
       break;
   }
-}
-
-/** cert-hash.js shape — identical to store.ts resolveCertHash (duplicated
- *  rather than imported: store.ts keeps this private). */
-interface CertHashInfo {
-  certHashHex: string | null;
-  wtPort: number;
-}
-
-async function resolveCertHash(): Promise<CertHashInfo> {
-  const resp = await fetch("cert-hash.js");
-  if (!resp.ok) {
-    throw new Error(`No cert-hash.js (HTTP ${resp.status}) — is the gateway running?`);
-  }
-  const text = await resp.text();
-  const hash = text.match(/window\.CERT_HASH\s*=\s*(?:"([^"]*)"|null)/);
-  const port = text.match(/window\.WT_PORT\s*=\s*(\d+)/);
-  if (!hash || !port) {
-    throw new Error("cert-hash.js is not parseable");
-  }
-  return { certHashHex: hash[1] ?? null, wtPort: parseInt(port[1], 10) };
-}
-
-/** Hex → 32 bytes, tolerant of ':' / whitespace separators.
- *  Duplicated from store.ts (kept private there). */
-function hexToBytes(hex: string): Uint8Array {
-  const clean = hex.replace(/[:\s]/g, "");
-  if (clean.length !== 64) {
-    throw new Error(`expected 32-byte (64 hex char) hash, got ${clean.length} hex chars`);
-  }
-  const out = new Uint8Array(32);
-  for (let i = 0; i < 32; i++) {
-    out[i] = parseInt(clean.substring(i * 2, i * 2 + 2), 16);
-  }
-  return out;
 }
 
 /** Build the publish WT URL — store.ts buildWtUrl with ?publish= instead of
