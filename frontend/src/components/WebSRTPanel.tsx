@@ -1,6 +1,8 @@
 import { createSignal, For, Show } from "solid-js";
 import {
   websrtSessions,
+  websrtStatus,
+  websrtStatusDetail,
   connectWebsrtSession,
   disconnectWebsrtSession,
   setWebsrtSessionLatency,
@@ -70,6 +72,15 @@ export function WebSRTPanel(props: { expanded: boolean }) {
   const pubActive = () => {
     const s = publishStatus();
     return s === "connected" || s === "connecting";
+  };
+
+  // Final status of the last torn-down primary session, shown while no
+  // session is live. The trivial "disconnected" (manual disconnect) is
+  // filtered out; everything else — including errors — stays visible so a
+  // failed connect never disappears silently.
+  const idleDetail = () => {
+    const d = websrtStatusDetail();
+    return d && d !== "disconnected" ? d : "";
   };
 
   const startEngine = () => {
@@ -218,9 +229,19 @@ export function WebSRTPanel(props: { expanded: boolean }) {
                   </div>
                 </Show>
               </div>
-            )}
-          </For>
-        </div>
+             )}
+           </For>
+
+          <Show when={websrtSessions().length === 0 && idleDetail()}>
+            <div class="websrt-idle-status">
+              <span
+                class={`websrt-pill ${websrtStatus()}`}
+                title={`Last receive session status: ${websrtStatus()}`}
+              >{websrtStatus() === "disconnected" ? "" : websrtStatus()}</span>
+              <span class="websrt-status-detail" title={idleDetail()}>{idleDetail()}</span>
+            </div>
+          </Show>
+         </div>
 
         <div class="websrt-subsection">
           <div class="websrt-section-controls">

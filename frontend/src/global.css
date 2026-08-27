@@ -438,6 +438,7 @@ body {
     font-family: 'SF Mono', monospace; font-size: 0.6em; color: #666;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.websrt-idle-status { display: flex; align-items: center; gap: 8px; margin-top: 6px; min-width: 0; }
 .websrt-pid-scroll { max-height: 140px; overflow-y: auto; border: 1px solid #1a1a25; border-radius: 3px; }
 .websrt-pid-table { width: 100%; border-collapse: collapse; font-size: 0.65em; }
 .websrt-pid-table th {
