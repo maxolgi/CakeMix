@@ -259,24 +259,58 @@ fn build_router(
 /// PKI/mkcert) and WT_PORT, which is everything the browser needs to build
 /// the WT URL and pin the cert.
 ///
-/// `danger_accept_invalid_certs(true)` is acceptable here because the real
-/// trust anchor is the WebTransport `serverCertificateHashes` pinning done
-/// client-side from the hash this proxy returns — TLS is just a transport
-/// for the hash bytes, not the trust root.
+/// TLS policy: self-signed gateways are a closed-network convenience. Only
+/// loopback/private/link-local hosts (or dotless/`.local`-style names) are
+/// fetched with `danger_accept_invalid_certs(true)`; public hosts must present
+/// a certificate a normal client already trusts — no unsafe allowance online.
+/// When the fetched `cert-hash.js` yields a non-null hash, the real trust
+/// anchor is still the client-side WebTransport `serverCertificateHashes`
+/// pinning built from that hash.
 #[derive(serde::Deserialize)]
 struct CertHashParams {
     url: String,
 }
 
+/// Whether a gateway host is on a closed network: loopback/private/link-local
+/// IP literal, `localhost`, a dotless hostname, or a `.local`/`.lan`/
+/// `.internal` name. Only these may be fetched with self-signed cert
+/// validation; public hosts require a PKI-valid certificate.
+fn closed_network_host(host: &str) -> bool {
+    let h = host
+        .trim_end_matches('.')
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    if h.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    if let Ok(ip) = h.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback() || v4.is_private() || v4.is_link_local()
+            }
+            std::net::IpAddr::V6(v6) => {
+                let s = v6.segments();
+                v6.is_loopback()
+                    || (s[0] & 0xfe00) == 0xfc00 // unique local fc00::/7
+                    || (s[0] & 0xffc0) == 0xfe80 // link local fe80::/10
+            }
+        };
+    }
+    !h.contains('.')
+        || h.ends_with(".local")
+        || h.ends_with(".lan")
+        || h.ends_with(".internal")
+}
+
 async fn api_cert_hash(
     axum::extract::Query(params): axum::extract::Query<CertHashParams>,
 ) -> Response {
-    let cert_url = match validate_gateway_target(&params.url) {
+    let (cert_url, host) = match validate_gateway_target(&params.url) {
         Ok(u) => u,
         Err(e) => return cert_hash_json(None, None, Some(&e)),
     };
     let client = match reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_certs(closed_network_host(&host))
         .timeout(std::time::Duration::from_secs(4))
         .build()
     {
@@ -302,7 +336,8 @@ async fn api_cert_hash(
 }
 
 /// Validate a caller-supplied gateway URL before this server fetches its
-/// cert-hash.js. Returns the cert-hash.js URL to fetch.
+/// cert-hash.js. Returns the cert-hash.js URL to fetch plus the host (for
+/// the closed-network TLS policy in `closed_network_host`).
 ///
 /// The endpoint exists because a browser cannot fetch another origin's
 /// cert-hash.js (CORS) — and for this product the legitimate targets are
@@ -312,10 +347,10 @@ async fn api_cert_hash(
 /// requires TLS) plus a parseable URL with a host.
 ///
 /// The trust anchor is not TLS here — it is the client-side
-/// `serverCertificateHashes` pinning done from the hash this proxy returns.
-/// TLS is just a transport for the hash bytes, not the trust root, which is
-/// why `danger_accept_invalid_certs(true)` is acceptable downstream.
-fn validate_gateway_target(raw: &str) -> Result<String, String> {
+/// `serverCertificateHashes` pinning done from the hash this proxy returns
+/// when non-null. For public hosts the fetch itself is strictly validated
+/// (PKI); the self-signed allowance applies only to closed-network hosts.
+fn validate_gateway_target(raw: &str) -> Result<(String, String), String> {
     let parsed = url::Url::parse(raw).map_err(|_| "invalid gateway url".to_string())?;
     if parsed.scheme() != "https" {
         return Err(format!(
@@ -325,12 +360,13 @@ fn validate_gateway_target(raw: &str) -> Result<String, String> {
     }
     let host = parsed
         .host_str()
-        .ok_or_else(|| "gateway url has no host".to_string())?;
+        .ok_or_else(|| "gateway url has no host".to_string())?
+        .to_string();
     let port = parsed.port_or_known_default().unwrap_or(443);
 
     // url serializes IPv6 hosts WITH brackets ("[::1]"), which is exactly
     // what the fetch URL needs — no stripping required.
-    Ok(format!("https://{host}:{port}/cert-hash.js"))
+    Ok((format!("https://{host}:{port}/cert-hash.js"), host))
 }
 
 fn cert_hash_json(hash: Option<String>, wt_port: Option<u16>, error: Option<&str>) -> Response {
