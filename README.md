@@ -37,6 +37,15 @@ server (`crates/cakemix-server`) embeds `web/`, the wasm-pack output
 three first. The reference WebSRT web app is served on its own port
 (`--web-port`, default 8201).
 
+Two cert modes: by default the WebTransport identity is self-signed (hash
+published at `/cert-hash.js`, pinned client-side via `serverCertificateHashes`
+— the closed-network mode). Pass `--cert-pem`/`--key-pem` (mkcert or a real
+CA such as Let's Encrypt) and `/cert-hash.js` serves `null` — browsers
+validate via normal PKI. The `/api/cert-hash?url=` proxy applies the same
+split: it accepts self-signed certs only from closed-network hosts
+(private/loopback IPs, dotless or `.local`-style names) and strictly
+validates public ones.
+
 ## Architecture
 
 ```
