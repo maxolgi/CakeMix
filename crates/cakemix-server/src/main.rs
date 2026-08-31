@@ -285,9 +285,7 @@ fn closed_network_host(host: &str) -> bool {
     }
     if let Ok(ip) = h.parse::<std::net::IpAddr>() {
         return match ip {
-            std::net::IpAddr::V4(v4) => {
-                v4.is_loopback() || v4.is_private() || v4.is_link_local()
-            }
+            std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
             std::net::IpAddr::V6(v6) => {
                 let s = v6.segments();
                 v6.is_loopback()
@@ -296,10 +294,7 @@ fn closed_network_host(host: &str) -> bool {
             }
         };
     }
-    !h.contains('.')
-        || h.ends_with(".local")
-        || h.ends_with(".lan")
-        || h.ends_with(".internal")
+    !h.contains('.') || h.ends_with(".local") || h.ends_with(".lan") || h.ends_with(".internal")
 }
 
 async fn api_cert_hash(
@@ -702,16 +697,19 @@ mod tests {
 
     #[test]
     fn accepts_public_ip_literal() {
-        let url = validate_gateway_target("https://203.0.113.7:8201/").unwrap();
+        let (url, host) = validate_gateway_target("https://203.0.113.7:8201/").unwrap();
         assert_eq!(url, "https://203.0.113.7:8201/cert-hash.js");
+        assert_eq!(host, "203.0.113.7");
     }
 
     #[test]
     fn accepts_public_dns_name_and_preserves_port_and_path() {
         // Port comes from the URL (no explicit port → https default 443);
         // query strings are dropped — only the cert-hash.js path matters.
-        let url = validate_gateway_target("https://mixer.example.com:5173/?stream=x").unwrap();
+        let (url, host) =
+            validate_gateway_target("https://mixer.example.com:5173/?stream=x").unwrap();
         assert_eq!(url, "https://mixer.example.com:5173/cert-hash.js");
+        assert_eq!(host, "mixer.example.com");
     }
 
     #[test]
@@ -748,7 +746,7 @@ mod tests {
             "https://[fd00::5]/", // IPv6 unique-local
             "https://[::]/",      // unspecified v6
         ] {
-            let url = validate_gateway_target(raw).unwrap_or_else(|e| panic!("{raw}: {e}"));
+            let (url, _) = validate_gateway_target(raw).unwrap_or_else(|e| panic!("{raw}: {e}"));
             assert!(url.ends_with("/cert-hash.js"), "{raw}: got {url}");
         }
     }
@@ -763,7 +761,7 @@ mod tests {
             "https://gateway.local/",
             "https://foo.internal/",
         ] {
-            let url = validate_gateway_target(raw).unwrap_or_else(|e| panic!("{raw}: {e}"));
+            let (url, _) = validate_gateway_target(raw).unwrap_or_else(|e| panic!("{raw}: {e}"));
             assert!(url.ends_with("/cert-hash.js"), "{raw}: got {url}");
         }
     }
