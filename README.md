@@ -1,11 +1,15 @@
 # CakeMix 🍰
 
-Professional WASM audio mixer with WebSRT I/O. Built on the real `oximedia-mixer` DSP engine, compiled to `wasm32-unknown-unknown`.
+Professional WASM audio mixer with QuicSRT I/O. Built on the real `oximedia-mixer` DSP engine, compiled to `wasm32-unknown-unknown`.
 
 ## Status
 
-Complete through M5: multi-session WebSRT PCM input, 128-strip console
-(EQ, dynamics, 8 buses, scenes with cross-fade), WebSRT publish.
+Complete through M5: multi-session QuicSRT PCM input, 128-strip console
+(EQ, dynamics, 8 buses, scenes with cross-fade), QuicSRT publish.
+
+| Date | Milestone |
+|---|---|
+| 2026-10-19 | QuicSRT migration: replaced the Rust WebSRT stack with the C++ QuicSRT engine (`vendor/QuicSRT-wasm` submodule, emcc + pthreads), COOP/COEP on every response, embedded gateway removed in favor of the external QuicSRT-gateway |
 
 ## Quick start
 
@@ -26,38 +30,52 @@ make test-all
 ## Running the server
 
 ```bash
-make serve      # builds wasm + UI, serves http://localhost:8200 (no TLS)
+make serve      # builds wasm + emcc engine + UI + worklet, serves http://localhost:8200 (no TLS)
 make serve-tls  # same, HTTPS with an auto-generated self-signed cert
 ```
 
-`web/` is generated and gitignored (Vite output + worklet bundle). The
-server (`crates/cakemix-server`) embeds `web/`, the wasm-pack output
-(`crates/mixer-wasm/pkg`) and the reference web app
-(`vendor/WebSRT/web/dist`) **at compile time** — `make serve` builds all
-three first. The reference WebSRT web app is served on its own port
-(`--web-port`, default 8201).
+`web/` is generated and gitignored (Vite output + worklet bundle + the
+QuicSRT engine staged at `web/build/`). The server
+(`crates/cakemix-server`) embeds only `web/` and the wasm-pack output
+(`crates/mixer-wasm/pkg`) **at compile time** — `make serve` builds
+everything first, including the emcc engine (`make build-quicsrt-engine`,
+which needs emsdk and inits the submodule's own deps).
 
-Two cert modes: by default the WebTransport identity is self-signed (hash
-published at `/cert-hash.js`, pinned client-side via `serverCertificateHashes`
-— the closed-network mode). Pass `--cert-pem`/`--key-pem` (mkcert or a real
-CA such as Let's Encrypt) and `/cert-hash.js` serves `null` — browsers
-validate via normal PKI. The `/api/cert-hash?url=` proxy applies the same
-split: it accepts self-signed certs only from closed-network hosts
-(private/loopback IPs, dotless or `.local`-style names) and strictly
-validates public ones.
+cakemix-server embeds **no gateway**. The external QuicSRT-gateway must
+be running (on the dev machine it is, under supervisord: web/player
+HTTPS :8443, WebTransport ingest :4435, SRT ingest :9102, health :9292);
+CakeMix subscribes/publishes through it via the drawer's URL field
+(default `https://127.0.0.1:8443`).
+
+Every response carries `Cross-Origin-Opener-Policy: same-origin` +
+`Cross-Origin-Embedder-Policy: require-corp`: the QuicSRT engine
+(emscripten + pthreads → `SharedArrayBuffer`) requires a
+cross-origin-isolated page, and `crossOriginIsolated` needs a secure
+context — with `--no-tls` plain HTTP that means localhost only; remote
+LAN clients need TLS mode.
+
+The WebTransport identity belongs to the gateway (self-signed mode: hash
+published at its `cert-hash.js`, pinned client-side via
+`serverCertificateHashes`). Its web origin is cross-origin to us, so the
+hash is resolved through our `/api/cert-hash?url=` proxy, which applies
+the same split: it accepts self-signed certs only from closed-network
+hosts (private/loopback IPs, dotless or `.local`-style names) and
+strictly validates public ones. Web TLS for cakemix-server itself:
+self-signed by default, or `--cert-pem`/`--key-pem` (mkcert or a real
+CA such as Let's Encrypt).
 
 ## Architecture
 
 ```
-WebSRT (SRT over WebTransport)
+QuicSRT (SRT over WebTransport, via the external QuicSRT-gateway)
   ↓ MPEG2-TS with SMPTE 302M audio PIDs
-mpeg2ts-wasm demuxer (WebSRT repo)
+QuicSRT engine demuxer (vendor/QuicSRT-wasm — C++/emscripten, in a Worker)
   ↓ Float32 interleaved per PID
 MixerWasm (this crate, in an AudioWorklet or Worker)
   ↓ elastic FIFOs → staging per strip: gate → expander → comp → EQ (raw source)
   ↓ 9 engine instances (1 main + 8 buses) — all summing via process_mix_rt
   ↓ bus tail (gain/mute → publish / feed master) → master gain → limiter
-Web Audio / WebSRT publish (master stereo, Nch direct-out taps, or any bus 1-8)
+Web Audio / QuicSRT publish (master stereo, Nch direct-out taps, or any bus 1-8)
 ```
 
 ### Console
@@ -69,18 +87,23 @@ reaches master only via its bus slots) and **FEEDS MAIN** per bus (off =
 independent bus, still publishable). Live per-strip COMP GR meters.
 **Scenes** capture the entire console (strips, buses, master); recall is
 instant or cross-faded (dB-domain gains, audio-rate fade inside the mixer
-block — any user set cancels the fade). Multiple WebSRT receive sessions
+block — any user set cancels the fade). Multiple QuicSRT receive sessions
 run concurrently — PIDs are namespaced per session (keyed mapping), so
 different gateways/streams may reuse PID numbers.
 
 ### PCM-only
 
-No codecs anywhere. Raw linear PCM (Float32) end-to-end. Audio is transported inside MPEG2-TS using SMPTE 302M (s302m) encapsulation over WebSRT/SRT (registration descriptor "BSSD").
+No codecs anywhere. Raw linear PCM (Float32) end-to-end. Audio is transported inside MPEG2-TS using SMPTE 302M (s302m) encapsulation over QuicSRT/SRT (registration descriptor "BSSD").
 
-### PCM handoff contract (CakeMix ↔ WebSRT)
+### PCM handoff contract (CakeMix ↔ QuicSRT)
 
-Browser-only integration — no compile-time dependency; pure `MessagePort` /
-`postMessage`:
+Browser-only integration — the boundary is pure `MessagePort` /
+`postMessage`; the receive worker is vendored at source level from the
+submodule (`vendor/QuicSRT-wasm/page/vendor/worker.ts`), the publish
+worker drives the engine's C-ABI `sendMessage` (`js/srt_engine.js` +
+`js/muxer_engine.js`). The `WorkerCmd`/`WorkerMsg` shapes are unchanged
+from the previous stack, and the engine's demux/mux byte parity is pinned
+upstream by QuicSRT-wasm's parity gates:
 
 - **worker → worklet** (transferred `MessagePort`, zero main-thread hops):
   `{type:'batch', msgs:[{type:'pcm', pid, channelCount, samples: Float32Array, pts}]}`
@@ -91,7 +114,9 @@ Browser-only integration — no compile-time dependency; pure `MessagePort` /
   from mixer channel 0, capped at 128 strips; overflow PCM is dropped+counted.
 - `map_pid` re-anchors the strip's elastic playout FIFOs (a remap = new stream).
 - ffmpeg publisher: `./fixtures/stream_pcm_real.sh` (30 stereo s302m PIDs,
-  looped; `WEBSTRT_SRT_URL=…` overrides the target).
+  looped; `WEBSTRT_SRT_URL=srt://127.0.0.1:9102` overrides the target —
+  the script's baked-in default still points at the old port, so set the
+  gateway's SRT ingest explicitly).
 
 ### Per-channel input architecture
 
@@ -156,6 +181,4 @@ which sets the license for the combined work. Third-party components:
 | Component | License |
 |-----------|---------|
 | `maxolgi/oximedia` (DSP engine fork) | Apache-2.0 |
-| `vendor/WebSRT` (submodule) | MPL-2.0 |
-| `maxolgi/srt-rs` (SRT transport) | Apache-2.0 |
-| `maxolgi/mpeg2ts` (TS demuxer) | MIT |
+| `vendor/QuicSRT-wasm` (submodule; itself carries libquicsrt + the srt fork as deps) | MPL-2.0 |
