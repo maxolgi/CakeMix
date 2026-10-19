@@ -1,6 +1,6 @@
 #!/bin/bash
 # Real-audio source, 16-channel cut — pushes the FIRST 16 channels of the
-# broadcast WAV (tmp/broadcast30.wav) over SRT to the running WebSRT
+# broadcast WAV (tmp/broadcast30.wav) over SRT to the running QuicSRT
 # gateway, packed 2 mono channels per stereo s302m PID (s302m has no mono
 # layout): 16 distinct channels = 8 stereo PIDs, no duplication. The mixer
 # unpacks each PID into individual mono strips (ch1..ch16 in channel order).
@@ -10,14 +10,15 @@
 # Usage: ./fixtures/stream_pcm_real16.sh
 # Override source dir:  AUDIO_DIR=/path/to/wavs ./fixtures/stream_pcm_real16.sh
 #   (only used to build the WAV if missing)
-# Override target via WEBSTRT_SRT_URL (default srt://127.0.0.1:9000?streamid=audio).
+# Override target via WEBSTRT_SRT_URL (default srt://127.0.0.1:9102?streamid=audio —
+# the supervised QuicSRT-gateway's SRT ingest).
 # The gateway rejects SRT connections without a streamid.
 # Ctrl+C to stop.
 
 set -euo pipefail
 
 AUDIO_DIR="${AUDIO_DIR:-$HOME/Downloads/audio/PawelMaciwoda_1OfTheFirst_Full}"
-SRT_URL="${WEBSTRT_SRT_URL:-srt://127.0.0.1:9000?streamid=audio}"
+SRT_URL="${WEBSTRT_SRT_URL:-srt://127.0.0.1:9102?streamid=audio}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BROADCAST_WAV="$ROOT/tmp/broadcast30.wav"
 MAX_CH=16

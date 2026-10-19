@@ -1,6 +1,6 @@
 #!/bin/bash
 # Real-audio source — pushes the 30-track Pawel Maciwoda session over SRT to
-# the running WebSRT gateway. All tracks come from one sample-aligned
+# the running QuicSRT gateway. All tracks come from one sample-aligned
 # multi-channel WAV (tmp/broadcast30.wav, built by make_broadcast_wav.sh if
 # missing) and are split here into 30 stereo s302m PIDs — one PID per track,
 # mono tracks duplicated L=R (s302m has no mono layout), 48 kHz, looped
@@ -8,14 +8,15 @@
 #
 # Usage: ./fixtures/stream_pcm_real.sh
 # Override source dir:  AUDIO_DIR=/path/to/wavs ./fixtures/stream_pcm_real.sh
-# Override target via WEBSTRT_SRT_URL (default srt://127.0.0.1:9000?streamid=audio).
+# Override target via WEBSTRT_SRT_URL (default srt://127.0.0.1:9102?streamid=audio —
+# the supervised QuicSRT-gateway's SRT ingest).
 # The gateway rejects SRT connections without a streamid.
 # Ctrl+C to stop.
 
 set -euo pipefail
 
 AUDIO_DIR="${AUDIO_DIR:-$HOME/Downloads/audio/PawelMaciwoda_1OfTheFirst_Full}"
-SRT_URL="${WEBSTRT_SRT_URL:-srt://127.0.0.1:9000?streamid=audio}"
+SRT_URL="${WEBSTRT_SRT_URL:-srt://127.0.0.1:9102?streamid=audio}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BROADCAST_WAV="$ROOT/tmp/broadcast30.wav"
 
