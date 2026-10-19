@@ -1,6 +1,4 @@
 mod certs;
-mod gateway;
-mod ref_web;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -15,7 +13,6 @@ use clap::Parser;
 use mime_guess::from_path;
 use rust_embed::Embed;
 use tokio::sync::Notify;
-use websrt::cert::{Cert, CertSource};
 
 /// Embedded static assets from web/ and the WASM pkg.
 #[derive(Embed)]
@@ -28,14 +25,12 @@ struct WebAsset;
 #[prefix = "pkg/"]
 struct WasmAsset;
 
-/// How the two TLS surfaces (web HTTPS + WebTransport identity) get their cert.
+/// How the web server's TLS cert is obtained.
 enum CertMode {
-    /// Self-signed: persisted 13-month PEM for the web server (certs.rs) plus a
-    /// fresh ≤14-day WT identity whose DER SHA-256 is pinned by the browser.
+    /// Self-signed: persisted 13-month PEM (certs.rs).
     SelfSigned,
     /// User-provided PEM files (--cert-pem/--key-pem, e.g. mkcert or a real
-    /// CA) used for BOTH the web TLS and the WT identity; the browser
-    /// validates via its trust store, so no cert hash is advertised.
+    /// CA); the browser validates them via its trust store.
     Pem { cert: PathBuf, key: PathBuf },
 }
 
@@ -52,52 +47,20 @@ struct Cli {
     )]
     bind: String,
 
-    #[arg(
-        long,
-        help = "Serve the web UI over plain HTTP (WebTransport + SRT still run)"
-    )]
+    #[arg(long, help = "Serve the web UI over plain HTTP")]
     no_tls: bool,
-
-    #[arg(long, default_value_t = 4433u16, help = "WebTransport UDP port")]
-    wt_port: u16,
-
-    // Legacy direct-ingest leg (OBS/fixture → this binary). Kept for
-    // compatibility; NOT the test path — sources publish to the user's
-    // websrt-gateway and CakeMix subscribes over WebSRT. See AGENTS.md.
-    #[arg(long, default_value_t = 9001u16, help = "SRT ingest UDP port")]
-    srt_port: u16,
-
-    // Reference web UI (vendor/WebSRT/web demo app: viewer, publisher, debug
-    // panels) on its own HTTPS port, mirroring websrt-gateway's --web-port.
-    #[arg(
-        long,
-        default_value_t = 8201u16,
-        help = "HTTPS port for the reference WebSRT web UI (0 disables)"
-    )]
-    web_port: u16,
-
-    #[arg(
-        long,
-        default_value = "0.0.0.0",
-        help = "Bind address for the reference web UI"
-    )]
-    web_bind: String,
-
-    #[arg(long, default_value_t = 1000u64, value_parser = clap::value_parser!(u64).range(1..),
-          help = "SRT TSBPD latency in ms (gateway and ingest legs)")]
-    latency_ms: u64,
 
     #[arg(
         long,
         requires = "key_pem",
-        help = "PEM cert path (mkcert/real CA) for web TLS + WebTransport"
+        help = "PEM cert path (mkcert/real CA) for web TLS"
     )]
     cert_pem: Option<PathBuf>,
 
     #[arg(
         long,
         requires = "cert_pem",
-        help = "PEM key path (mkcert/real CA) for web TLS + WebTransport"
+        help = "PEM key path (mkcert/real CA) for web TLS"
     )]
     key_pem: Option<PathBuf>,
 }
@@ -174,85 +137,36 @@ async fn health() -> &'static str {
     "ok"
 }
 
-fn build_router(
-    cert_hash_js: String,
-    stats: std::sync::Arc<websrt::gateway::GatewayStatsHandle>,
-) -> Router {
+fn build_router() -> Router {
     Router::new()
         .route("/", get(serve_index))
         .route("/health", get(health))
         .route("/api/cert-hash", get(api_cert_hash))
-        .route(
-            "/api/streams",
-            get(move || {
-                let stats = stats.clone();
-                async move {
-                    let s = stats.stats();
-                    let streams: Vec<serde_json::Value> = s
-                        .per_stream
-                        .iter()
-                        .map(|st| {
-                            serde_json::json!({
-                                "name": st.name,
-                                "alive": st.alive,
-                                "viewers": st.viewers,
-                                "messagesSent": st.messages_sent,
-                                "sendFailures": st.send_failures,
-                            })
-                        })
-                        .collect();
-                    let sessions: Vec<serde_json::Value> = s
-                        .per_session
-                        .iter()
-                        .map(|se| {
-                            serde_json::json!({
-                                "id": se.session_id,
-                                "peer": se.peer.to_string(),
-                                "stream": se.stream_name,
-                                "messagesPushed": se.messages_pushed,
-                                "publishDropped": se.publish_dropped,
-                            })
-                        })
-                        .collect();
-                    let body = serde_json::json!({
-                        "streams": streams,
-                        "aliveStreams": s.alive_streams,
-                        "totalViewers": s.total_viewers,
-                        "activeSessions": s.active_sessions,
-                        "sessions": sessions,
-                    });
-                    (
-                        [
-                            (header::CONTENT_TYPE, "application/json"),
-                            (header::CACHE_CONTROL, "no-store"),
-                        ],
-                        body.to_string(),
-                    )
-                }
-            }),
-        )
-        // Served dynamically: the WT cert hash changes whenever the identity
-        // is regenerated, so it must never be cached as a static asset.
-        .route(
-            "/cert-hash.js",
-            get(move || {
-                let js = cert_hash_js.clone();
-                async move {
-                    (
-                        [
-                            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
-                            (header::CACHE_CONTROL, "no-store"),
-                        ],
-                        js,
-                    )
-                }
-            }),
-        )
         .fallback(serve_web_file)
+        .layer(axum::middleware::from_fn(coop_coep_headers))
 }
 
-/// Proxy a remote gateway's `cert-hash.js` (embedding.md "Delivering the
-/// cert hash cross-origin", pattern copied from SlopShady's
+/// Every response — routes and the fallback static handler alike, in both TLS
+/// and --no-tls modes — carries the COOP/COEP pair: the QuicSRT receive and
+/// publish engine (emscripten + pthreads → SharedArrayBuffer) requires a
+/// cross-origin-isolated page. Limitation: over plain HTTP (--no-tls) the
+/// browser only grants `crossOriginIsolated` on localhost (secure context);
+/// remote LAN clients need the TLS mode.
+async fn coop_coep_headers(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let mut res = next.run(req).await;
+    res.headers_mut().insert(
+        header::HeaderName::from_static("cross-origin-opener-policy"),
+        header::HeaderValue::from_static("same-origin"),
+    );
+    res.headers_mut().insert(
+        header::HeaderName::from_static("cross-origin-embedder-policy"),
+        header::HeaderValue::from_static("require-corp"),
+    );
+    res
+}
+
+/// Proxy a remote gateway's `cert-hash.js` (the browser cannot fetch another
+/// origin's cert-hash.js — CORS; pattern copied from SlopShady's
 /// /api/stream/cert-hash). The caller passes the gateway's WEB URL — the
 /// page the user browses to; cert-hash.js is served same-origin there. One
 /// fetch yields both CERT_HASH (hex for self-signed pinning, null for
@@ -337,7 +251,7 @@ async fn api_cert_hash(
 /// The endpoint exists because a browser cannot fetch another origin's
 /// cert-hash.js (CORS) — and for this product the legitimate targets are
 /// OTHER MACHINES ON THE LAN (the multi-session receive architecture:
-/// one WebSRT session per remote source), so private/loopback/link-local
+/// one QuicSRT session per remote source), so private/loopback/link-local
 /// addresses are deliberately ALLOWED. Validation is https-only (WebTransport
 /// requires TLS) plus a parseable URL with a host.
 ///
@@ -404,26 +318,6 @@ fn extract_wt_port(text: &str) -> Option<u16> {
     after[..end].parse().ok()
 }
 
-/// cert-hash.js body, mirroring the websrt-gateway format: the DER SHA-256 hex
-/// of the WT identity (or null when the browser should use normal PKI), plus
-/// the actual WT port.
-fn build_cert_hash_js(cert: &Cert, wt_port: u16) -> String {
-    match cert.der_sha256.as_ref() {
-        Some(hash) => {
-            tracing::info!("WebTransport cert DER SHA-256: {}", hex::encode(hash));
-            format!(
-                "window.CERT_HASH = \"{}\";\nwindow.WT_PORT = {};",
-                hex::encode(hash),
-                wt_port
-            )
-        }
-        None => {
-            tracing::info!("PEM identity loaded; browser uses normal PKI");
-            format!("window.CERT_HASH = null;\nwindow.WT_PORT = {wt_port};")
-        }
-    }
-}
-
 fn read_pem_file(path: &Path) -> Vec<u8> {
     std::fs::read(path).unwrap_or_else(|e| {
         eprintln!("Error: could not read {}: {e}", path.display());
@@ -481,12 +375,6 @@ async fn spawn_web_server(
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    // quinn (via websrt/wtransport) links the ring rustls provider while
-    // axum-server's rustls default is aws-lc-rs; with both in the process
-    // rustls cannot pick a default by itself. Install ring explicitly (same
-    // as the websrt-gateway reference binary).
-    let _ = rustls::crypto::ring::default_provider().install_default();
-
     let cli = Cli::parse();
 
     let mode = match (cli.cert_pem.clone(), cli.key_pem.clone()) {
@@ -494,29 +382,6 @@ async fn main() {
         (None, None) => CertMode::SelfSigned,
         _ => unreachable!("clap `requires` enforces the PEM flag pair"),
     };
-
-    // WebTransport identity — always needed, even with --no-tls (WT runs its
-    // own TLS). Self-signed identities are regenerated on every boot:
-    // serverCertificateHashes pinning caps cert validity at 14 days, so
-    // persisting can't extend it (vendor/WebSRT/docs/embedding.md "Cert
-    // modes"); /cert-hash.js always serves the fresh hash.
-    let wt_cert_source = match &mode {
-        CertMode::SelfSigned => CertSource::SelfSigned {
-            sans: vec![
-                "localhost".to_string(),
-                "127.0.0.1".to_string(),
-                "::1".to_string(),
-            ],
-        },
-        CertMode::Pem { cert, key } => CertSource::Mkcert {
-            cert: cert.clone(),
-            key: key.clone(),
-        },
-    };
-    let wt_cert = Cert::build(wt_cert_source).await.unwrap_or_else(|e| {
-        eprintln!("Error: failed to build WebTransport identity: {e}");
-        std::process::exit(1);
-    });
 
     // Web TLS material (None in --no-tls dev mode).
     let web_tls = if cli.no_tls {
@@ -538,11 +403,6 @@ async fn main() {
         }
     };
 
-    let cert_hash_js = build_cert_hash_js(&wt_cert, cli.wt_port);
-    // Same identity/port advertised to the reference web UI on :8201 — both
-    // servers front the SAME gateway.
-    let ref_cert_hash_js = cert_hash_js.clone();
-
     let bind_addr: std::net::IpAddr = cli
         .bind
         .parse()
@@ -555,22 +415,13 @@ async fn main() {
     println!("CakeMix server starting");
     println!("  web:        {url} (bind {})", cli.bind);
     println!(
-        "  webrt:      udp 0.0.0.0:{} (latency {} ms)",
-        cli.wt_port, cli.latency_ms
-    );
-    println!(
-        "  srt ingest: udp 0.0.0.0:{} → stream \"{}\"",
-        cli.srt_port,
-        gateway::SRT_STREAM_NAME
+        "  gateway:    external QuicSRT-gateway (browser connects via the drawer URL; default https://127.0.0.1:8443)"
     );
     match &mode {
-        CertMode::SelfSigned => println!(
-            "  cert mode:  self-signed (web PEM persisted; WT identity ≤14d, hash at /cert-hash.js)"
-        ),
-        CertMode::Pem { cert, .. } => println!(
-            "  cert mode:  pem {} (browser PKI validation; CERT_HASH=null)",
-            cert.display()
-        ),
+        CertMode::SelfSigned => {
+            println!("  cert mode:  self-signed (web PEM persisted 13 months)")
+        }
+        CertMode::Pem { cert, .. } => println!("  cert mode:  pem {}", cert.display()),
     }
     if cli.no_tls {
         println!("  web TLS:    disabled (--no-tls)");
@@ -586,18 +437,6 @@ async fn main() {
         }
     });
 
-    let (gateway_task, gateway_stats) = gateway::spawn(
-        wt_cert,
-        cli.wt_port,
-        cli.srt_port,
-        cli.latency_ms,
-        shutdown.clone(),
-    )
-    .unwrap_or_else(|e| {
-        eprintln!("Error: failed to build WebTransport gateway: {e}");
-        std::process::exit(1);
-    });
-
     // Open browser after a short delay.
     let open_url = url.clone();
     tokio::spawn(async move {
@@ -605,49 +444,19 @@ async fn main() {
         let _ = open::that(&open_url);
     });
 
-    let axum_task = spawn_web_server(
-        addr,
-        build_router(cert_hash_js, std::sync::Arc::new(gateway_stats)),
-        web_tls.clone(),
-        shutdown.clone(),
-    )
-    .await
-    .unwrap_or_else(|e| {
-        eprintln!("Error: {e}");
-        std::process::exit(1);
-    });
+    let axum_task = spawn_web_server(addr, build_router(), web_tls, shutdown.clone())
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        });
 
-    // Reference WebSRT web UI on its own HTTPS port (vendor demo app — the
-    // canonical viewer/publisher pages for our gateway). Requires web TLS
-    // material; skipped when disabled (--web-port 0) or in --no-tls dev mode.
-    let ref_web_task: Option<tokio::task::JoinHandle<anyhow::Result<()>>> = if cli.web_port != 0 {
-        match &web_tls {
-            Some((cert_pem, key_pem)) => Some(tokio::spawn(ref_web::run(
-                cli.web_bind.clone(),
-                cli.web_port,
-                ref_cert_hash_js,
-                cert_pem.clone(),
-                key_pem.clone(),
-                shutdown.clone(),
-            ))),
-            None => {
-                println!("  ref web:    disabled (--no-tls)");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    // Exit on ctrl-c, or as soon as any server task fails.
+    // Exit on ctrl-c, or as soon as the web server task fails.
     tokio::pin!(axum_task);
-    tokio::pin!(gateway_task);
 
     enum Exited {
         CtrlC,
         WebServer,
-        Gateway,
-        RefWeb,
     }
     let exited = tokio::select! {
         _ = shutdown.notified() => Exited::CtrlC,
@@ -657,37 +466,16 @@ async fn main() {
             }
             Exited::WebServer
         }
-        res = &mut gateway_task => {
-            if let Ok(Err(e)) = res {
-                eprintln!("Error: WebTransport gateway failed: {e}");
-            }
-            Exited::Gateway
-        }
-        res = async {
-            match ref_web_task {
-                Some(t) => t.await.map_err(anyhow::Error::from).and_then(|r| r),
-                None => std::future::pending().await,
-            }
-        } => {
-            if let Err(e) = res {
-                eprintln!("Error: reference web server failed: {e}");
-            }
-            Exited::RefWeb
-        }
     };
     if let Exited::CtrlC = exited {
         println!("Shutting down.");
     }
     shutdown.notify_waiters();
 
-    // Drain: the axum task exits via its shutdown watcher/handle, the gateway
-    // drains its sessions when `shutdown` fires. Tasks that already finished
-    // (the select! winner) are not awaited again.
+    // Drain: the axum task exits via its shutdown watcher/handle. Tasks that
+    // already finished (the select! winner) are not awaited again.
     if !matches!(exited, Exited::WebServer) {
         let _ = (&mut axum_task).await;
-    }
-    if !matches!(exited, Exited::Gateway) {
-        let _ = (&mut gateway_task).await;
     }
 }
 

@@ -1,14 +1,13 @@
 //! Web (HTTPS) certificate lifecycle.
 //!
-//! Distinct from the WebTransport identity (built via `websrt::cert`, ≤14-day
-//! validity because `serverCertificateHashes` pinning caps it — see
-//! vendor/WebSRT/docs/embedding.md "Cert modes"). The web cert only needs to
-//! satisfy the browser's HTTPS requirement for the page + AudioWorklet, so it
-//! is a self-signed PEM persisted at the repo root (cert.pem/key.pem, already
-//! gitignored) with ~13 months of validity (Chrome caps public certs at 398
-//! days). Regenerated when missing, unreadable, or close to expiry — SANs
-//! cover localhost plus all local LAN IPs so other machines on the LAN get a
-//! secure context too.
+//! Distinct from the external QuicSRT-gateway's own WebTransport identity
+//! (≤14-day validity because `serverCertificateHashes` pinning caps it). The
+//! web cert only needs to satisfy the browser's HTTPS requirement for the
+//! page + AudioWorklet, so it is a self-signed PEM persisted at the repo
+//! root (cert.pem/key.pem, already gitignored) with ~13 months of validity
+//! (Chrome caps public certs at 398 days). Regenerated when missing,
+//! unreadable, or close to expiry — SANs cover localhost plus all local LAN
+//! IPs so other machines on the LAN get a secure context too.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;

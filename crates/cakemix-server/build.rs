@@ -2,7 +2,7 @@
 /// compile time when the build outputs haven't been generated yet. The
 /// directories may be empty (all embedded assets return `None`) — the server
 /// still compiles and runs; it just 404s the web UI until `make build-ui`
-/// (and friends) populate them. Same pattern as websrt-gateway's build.rs.
+/// (and friends) populate them.
 fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let root = std::path::Path::new(&manifest_dir).join("../..");
@@ -11,7 +11,6 @@ fn main() {
     for (rel, hint) in [
         ("web", "make build-ui + make build-worklet"),
         ("crates/mixer-wasm/pkg", "make build-web"),
-        ("vendor/WebSRT/web/dist", "make build-websrt-web"),
     ] {
         let dir = root.join(rel);
         if !dir.exists() {
