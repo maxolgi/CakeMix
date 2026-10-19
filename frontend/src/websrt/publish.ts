@@ -20,7 +20,7 @@
 import { createSignal } from "solid-js";
 import { sendToWorklet } from "../stores/mixer";
 import { userGestureUnlock } from "../audio/unlock";
-import { resolveCertHash, hexToBytes } from "./gateway";
+import { DEFAULT_GATEWAY_URL, resolveCertHash, hexToBytes } from "./gateway";
 import type { PubCmd, PubMsg, PubStats } from "./publish-worker";
 
 export type PublishStatus = "disconnected" | "connecting" | "connected" | "error";
@@ -125,12 +125,13 @@ export async function connectPublish(): Promise<void> {
     } else {
       // Same target rule as store.ts: ?host points at a remote gateway, so
       // its cert-hash.js must be resolved through our /api/cert-hash proxy
-      // (cross-origin fetch is CORS-blocked); otherwise same-origin.
+      // (cross-origin fetch is CORS-blocked); otherwise the default
+      // gateway (DEFAULT_GATEWAY_URL).
       const urlParams = new URLSearchParams(location.search);
       const host = urlParams.get("host");
       const remoteOrigin = host
         ? `https://${host}${urlParams.get("port") ? ":" + urlParams.get("port") : ""}`
-        : undefined;
+        : DEFAULT_GATEWAY_URL;
       ({ certHashHex, wtPort } = await resolveCertHash(remoteOrigin));
     }
     const url = buildPublishWtUrl(wtPort);
@@ -257,14 +258,13 @@ function onWorkerMsg(msg: PubMsg): void {
 }
 
 /** Build the publish WT URL — store.ts buildWtUrl with ?publish= instead of
- *  ?stream= (gateway.rs: "?publish=<name> publishes"). Same host/port
- *  resolution: ?host > page host ("localhost" → 127.0.0.1), ?port >
- *  cert-hash WT_PORT > 4433; ?token passthrough. */
+ *  ?stream= ("?publish=<name> publishes"). Same host/port resolution:
+ *  ?host > default gateway host, ?port > cert-hash WT_PORT > 4435;
+ *  ?token passthrough. */
 function buildPublishWtUrl(wtPort: number): string {
   const urlParams = new URLSearchParams(location.search);
-  const pageHost = location.hostname || "127.0.0.1";
-  const wtHost = urlParams.get("host") ?? (pageHost === "localhost" ? "127.0.0.1" : pageHost);
-  const port = urlParams.get("port") ?? String(wtPort || 4433);
+  const wtHost = urlParams.get("host") ?? new URL(DEFAULT_GATEWAY_URL).hostname;
+  const port = urlParams.get("port") ?? String(wtPort || 4435);
   const qp = new URLSearchParams({ publish: STREAM_NAME });
   const token = urlParams.get("token");
   if (token) qp.set("token", token);

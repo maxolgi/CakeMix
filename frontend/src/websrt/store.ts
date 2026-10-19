@@ -16,8 +16,8 @@
 //
 // PCM path: one MessageChannel per session — port1 transferred to the
 // worker (its 'pcm-port' cmd), port2 to the mixer worklet — so raw pcm
-// flows worker→worklet with zero main-thread hops (vendor/WebSRT
-// docs/embedding.md "pcm-port"; the worker splits pcm batches onto the
+// flows worker→worklet with zero main-thread hops (the vendor worker's
+// "pcm-port" command; the worker splits pcm batches onto the
 // port, control/stats stay on the parent channel). A fresh channel per
 // session is required: transferred ports die with their worker.
 //
@@ -46,7 +46,7 @@
 
 import { createSignal, createMemo, type Accessor } from "solid-js";
 import { createWebsrtWorker, type WorkerCmd, type WorkerMsg } from "./client";
-import { resolveCertHash, hexToBytes } from "./gateway";
+import { DEFAULT_GATEWAY_URL, resolveCertHash, hexToBytes } from "./gateway";
 import { sendToWorklet } from "../stores/mixer";
 import { userGestureUnlock } from "../audio/unlock";
 
@@ -145,9 +145,9 @@ export const websrtRelayPcm = relayPcm;
 // One URL (settings drawer): the target's web-viewer URL, e.g.
 //   https://192.168.1.214:5173/?stream=audio
 // Host + stream name + token are parsed from it; the gateway's cert hash
-// and WT port are fetched from that origin's /cert-hash.js — exactly what
-// the target's own viewer does. Empty = the gateway serving this page,
-// stream "default" (same-origin cert-hash.js).
+// and WT port are fetched from that origin via our /api/cert-hash proxy —
+// exactly what the target's own viewer does. Empty = the default gateway
+// (DEFAULT_GATEWAY_URL), stream "default".
 const initialParams = new URLSearchParams(location.search);
 const initialTargetUrl = initialParams.get("host")
   ? `https://${initialParams.get("host")}${initialParams.get("port") ? ":" + initialParams.get("port") : ""}/?stream=${initialParams.get("stream") ?? "default"}`
@@ -157,11 +157,11 @@ export const websrtTarget = { url: targetUrl, setUrl: setTargetUrl };
 
 // ── Sessions ───────────────────────────────────────────────────────────────
 
-/** Connect one session: parse the target URL (empty = this page's
- *  gateway, stream "default"), fetch the target origin's /cert-hash.js
- *  for its cert hash + WT port, build the WebTransport URL, start a
- *  receive worker and post 'init'. User-triggered. Concurrent sessions
- *  are independent (one worker + one direct pcm channel each). */
+/** Connect one session: parse the target URL (empty = the default
+ *  gateway, stream "default"), resolve the target origin's cert hash +
+ *  WT port via our /api/cert-hash proxy, build the WebTransport URL,
+ *  start a receive worker and post 'init'. User-triggered. Concurrent
+ *  sessions are independent (one worker + one direct pcm channel each). */
 export async function connectWebsrtSession(url: string, latencyMs?: number): Promise<void> {
   userGestureUnlock(); // synchronous: keep the click's autoplay gesture
   const id = nextSessionId++;
@@ -358,9 +358,9 @@ function onPcm(pid: number, samples: Float32Array, id: number): void {
 
 // ── Target resolution (shared by every connect) ───────────────────────────
 
-/** Resolve a drawer target URL ("" = this page's gateway, stream
+/** Resolve a drawer target URL ("" = the default gateway, stream
  *  "default") to what the worker needs: the target origin's cert hash +
- *  WT port via its /cert-hash.js, the subscribe WT URL, the parsed
+ *  WT port via our /api/cert-hash proxy, the subscribe WT URL, the parsed
  *  token. Throws on an unparseable URL or a failed cert-hash fetch. */
 interface ResolvedTarget {
   wtUrl: string;
@@ -386,9 +386,9 @@ async function resolveTarget(raw: string): Promise<ResolvedTarget> {
     streamName = target.searchParams.get("stream") ?? "default";
     token = target.searchParams.get("token");
   } else {
-    ({ certHashHex, wtPort } = await resolveCertHash());
-    const pageHost = location.hostname || "127.0.0.1";
-    wtHost = pageHost === "localhost" ? "127.0.0.1" : pageHost;
+    const gw = new URL(DEFAULT_GATEWAY_URL);
+    ({ certHashHex, wtPort } = await resolveCertHash(gw.origin));
+    wtHost = gw.hostname;
     streamName = "default";
   }
   const wtUrl = buildWtUrl(wtHost, wtPort, streamName, token);
@@ -396,9 +396,9 @@ async function resolveTarget(raw: string): Promise<ResolvedTarget> {
 }
 
 /** Build the subscribe WT URL: fixed /wt path, WT port from the target's
- *  cert-hash.js (4433 fallback), ?stream= + ?token passthrough. */
+ *  cert-hash.js (4435 fallback), ?stream= + ?token passthrough. */
 function buildWtUrl(wtHost: string, wtPort: number, streamName: string, token: string | null): string {
   const qp = new URLSearchParams({ stream: streamName });
   if (token) qp.set("token", token);
-  return `https://${wtHost}:${wtPort || 4433}/wt?${qp}`;
+  return `https://${wtHost}:${wtPort || 4435}/wt?${qp}`;
 }

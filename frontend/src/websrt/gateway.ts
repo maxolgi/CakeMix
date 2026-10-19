@@ -4,34 +4,31 @@
 // former private copy only did same-origin fetches and could not target
 // remote gateways).
 
-/** Fetch + parse a gateway's cert-hash.js. Same origin when `origin` is
- *  omitted; a remote origin goes through OUR server's /api/cert-hash proxy
- *  (embedding.md "Delivering the cert hash cross-origin" — the browser
- *  cannot fetch another origin's cert-hash.js directly, CORS). Shape
- *  (written by websrt-gateway/src/main.rs):
+/** Default gateway: the external supervised QuicSRT-gateway's web origin
+ *  (ports: web HTTPS 8443, WT ingest 4435, SRT ingest 9102, health 9292).
+ *  Its cert-hash.js advertises WT_PORT 4435; being cross-origin it always
+ *  resolves through OUR server's /api/cert-hash proxy. */
+export const DEFAULT_GATEWAY_URL = "https://127.0.0.1:8443";
+
+/** Fetch + parse a gateway's cert-hash.js through OUR server's
+ *  /api/cert-hash proxy (the browser cannot fetch another origin's
+ *  cert-hash.js directly, CORS). Shape (written by the gateway's
+ *  /cert-hash.js generator):
  *      window.CERT_HASH = "<64 hex chars>";   …or null (mkcert/PKI mode)
- *      window.WT_PORT = 4433; */
+ *      window.WT_PORT = 4435; */
 export interface CertHashInfo {
   certHashHex: string | null;
   wtPort: number;
 }
 
-export async function resolveCertHash(origin?: string): Promise<CertHashInfo> {
-  if (!origin) {
-    const resp = await fetch("/cert-hash.js", { cache: "no-store" });
-    if (!resp.ok) {
-      throw new Error(`No cert-hash.js (HTTP ${resp.status}) — is the gateway running?`);
-    }
-    const text = await resp.text();
-    return parseCertHashJs(text);
-  }
+export async function resolveCertHash(origin: string): Promise<CertHashInfo> {
   const resp = await fetch(`/api/cert-hash?url=${encodeURIComponent(origin)}`, { cache: "no-store" });
   const j = await resp.json().catch(() => null);
   if (!j) throw new Error(`proxy response not JSON (HTTP ${resp.status})`);
   if (j.error) throw new Error(String(j.error));
   return {
     certHashHex: typeof j.hash === "string" && j.hash.length === 64 ? j.hash : null,
-    wtPort: Number(j.wtPort) || 4433,
+    wtPort: Number(j.wtPort) || 4435,
   };
 }
 
@@ -45,7 +42,7 @@ export function parseCertHashJs(text: string): CertHashInfo {
 }
 
 /** Hex → 32 bytes, tolerant of ':' / whitespace separators.
- *  Copied from vendor/WebSRT/web/src/shared/viewer.ts hexToBytes. */
+ *  Copied from the reference player's hexToBytes. */
 export function hexToBytes(hex: string): Uint8Array {
   const clean = hex.replace(/[:\s]/g, "");
   if (clean.length !== 64) {

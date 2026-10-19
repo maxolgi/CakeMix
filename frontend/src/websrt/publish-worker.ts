@@ -1,21 +1,30 @@
 // CakeMix PCM publish worker — audio-only WebSRT publisher, NO codecs.
 //
-// Structurally mirrors vendor/WebSRT/web/src/stream-worker.ts (the reference
-// publish worker): doInit's WebTransport open (datagrams readable/writable
-// compat shims, getStats smoothedRtt → newWithLatencyAndRtt), the SRT loop
-// (runSrtLoop: reader.read → rx.handle_datagram → poll(nowUs) →
-// processActions), processActions (SendDatagram → writer.write),
-// wt.closed handling, queue/batch message flushing, 1s stats timer.
+// Structurally mirrors vendor/QuicSRT-wasm/page/vendor/stream-worker.ts
+// (the reference publish worker for the C++ engine): doInit's
+// WebTransport open (datagrams readable/writable compat shims, getStats
+// smoothedRtt → newWithLatencyAndRtt), the SRT loop (runSrtLoop:
+// reader.read → rx.handle_datagram → poll(nowUs) → processActions),
+// processActions (SendDatagram → writer.write), wt.closed handling,
+// queue/batch message flushing, 1s stats timer.
 //
 // The audio path differs: instead of Opus WebCodecs, raw PCM arrives from
 // the mixer AudioWorklet (relayed main-thread by publish.ts, see
 // web/worklet-template.js _pubTap: 1024-frame interleaved batches, pts =
-// frames/48000 µs since pub-start) and is muxed as SMPTE 302M by
-// ts-muxer-wasm — N channels (2..128) packed as ceil(N/2) stereo PIDs.
-// Nothing here touches WebCodecs.
+// frames/48000 µs since pub-start) and is muxed as SMPTE 302M by the
+// same emcc module's muxer (js/muxer_engine.js) — N channels (2..128)
+// packed as ceil(N/2) stereo PIDs. Nothing here touches WebCodecs.
+//
+// Send-path divergence vs the old Rust engine (ported from the reference
+// stream-worker's flushTsToSrt): the C++ sendMessage(bytes[, timeoutMs])
+// returns the C ABI int, NOT SrtAction[] — rc > 0 bytes accepted
+// (possibly partial: resume from bytes.subarray(rc)), 0 empty buffer,
+// -1 send buffer full (drop the remainder, rate-limited warn), -2 closed
+// (queue {type:'close'}), -3 not handshaked (gated above), -4/-5
+// invalid/error (warn once). There is no now_us parameter anymore.
 
-import initSrt, { SrtReceiver, type SrtAction, type SrtStats } from "../../../vendor/WebSRT/web/wasm/srt-wasm/srt_wasm.js";
-import initMux, { TsMuxer } from "../../../vendor/WebSRT/web/wasm/ts-muxer-wasm/ts_muxer_wasm.js";
+import initSrt, { SrtReceiver, type SrtAction, type SrtStats } from "../../../vendor/QuicSRT-wasm/js/srt_engine.js";
+import initMux, { TsMuxer } from "../../../vendor/QuicSRT-wasm/js/muxer_engine.js";
 
 /** Publish-link stats surfaced to the UI (subset of SrtStats). */
 export interface PubStats {
@@ -29,8 +38,8 @@ export interface PubStats {
 
 // v2: configurable channel count — the mixer is published as `channels`
 // (2|16|32|64|128) packed as ceil(channels/2) stereo s302m PIDs. PID
-// convention (matches the muxer's own multi-PID tests in
-// vendor/WebSRT/crates/ts-muxer-wasm/src/lib.rs, ef18993): setAudioCodec
+// convention (the C++ muxer keeps the wasm-bindgen surface's multi-PID
+// behavior): setAudioCodec
 // fixes the first s302m stream at PID 0x101, addAudioPid registers
 // 0x102, 0x103, … — so PID i carries input channels 2i (L) and 2i+1 (R),
 // the same packing the receive path auto-maps by PMT discovery and the
@@ -305,10 +314,9 @@ function handlePcm(samples: Float32Array, ptsUs: number, channels: number) {
       muxer.push_pcm_pid(FIRST_PID + i, pids[i], ptsUs);
     }
   } catch (e) {
-    // Muxer-side Rust panic (state may be corrupt; the long-PMT write_pmt
-    // panic at ≥16 audio PIDs was fixed upstream in WebSRT b8c4364).
-    // Stop the session cleanly instead of feeding every following batch
-    // into the same panic.
+    // Muxer-side throw (the C++ wrapper throws on a bad push — state may
+    // be corrupt). Stop the session cleanly instead of feeding every
+    // following batch into the same failure.
     queue({ type: "log", msg: `muxer error on pcm push: ${e} — stopping publish session`, cls: "err" });
     queue({ type: "wtClosed", error: `muxer: ${e}` });
     flushOutgoing();
@@ -319,6 +327,12 @@ function handlePcm(samples: Float32Array, ptsUs: number, channels: number) {
   flushTsToSrt();
 }
 
+// [C++ engine delta] warn bookkeeping for the sendMessage() return codes
+// in flushTsToSrt(): rate-limited for -1 (send buffer full), one-shot for
+// -4/-5 (invalid/error). See the divergence note at the top of this file.
+let sendFullWarnAt = 0;
+let sendErrWarned = false;
+
 function flushTsToSrt() {
   if (!muxer || !rx || !inited) return;
   if (!rx.isHandshakeComplete()) return;
@@ -326,9 +340,31 @@ function flushTsToSrt() {
   const tsBytes = muxer.poll();
   if (tsBytes.length === 0) return;
 
-  const nowUs = (performance.now() - epoch) * 1000;
-  const actions = rx.sendMessage(tsBytes, nowUs);
-  processActions(actions);
+  let offset = 0;
+  while (offset < tsBytes.length) {
+    const rc = rx.sendMessage(tsBytes.subarray(offset));
+    if (rc > 0) {
+      offset += rc;
+      continue;
+    }
+    if (rc === -1) {
+      const now = performance.now();
+      if (now - sendFullWarnAt >= 5000) {
+        console.warn(`publish-worker: srt send buffer full, dropping ${tsBytes.length - offset} TS bytes`);
+        sendFullWarnAt = now;
+      }
+      break;
+    }
+    if (rc === -2) {
+      queue({ type: "close" });
+      break;
+    }
+    if (rc !== 0 && !sendErrWarned) {
+      console.warn(`publish-worker: srt sendMessage failed (rc=${rc})`);
+      sendErrWarned = true;
+    }
+    break;
+  }
   flushOutgoing();
 }
 

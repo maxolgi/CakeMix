@@ -27,9 +27,9 @@ export default function App() {
   const [settingsExpanded, setSettingsExpanded] = createSignal(false);
 
   onMount(async () => {
-    // Build plumbing: expose the WebSRT client (receive worker + muxer init)
+    // Build plumbing: expose the WebSRT client (receive worker bootstrap)
     // and the WebSRT store (connect/disconnect + status signals) on window
-    // so the bundler keeps the worker chunk, wasm binaries and store in the
+    // so the bundler keeps the worker chunk and store in the
     // bundle. Also reachable from the console for manual testing; connection
     // itself is user-triggered (settings drawer).
     (window as any).__cakemix_websrt = websrt;
