@@ -1,4 +1,4 @@
-// CakeMix PCM publish worker — audio-only WebSRT publisher, NO codecs.
+// CakeMix PCM publish worker — audio-only QuicSRT publisher, NO codecs.
 //
 // Structurally mirrors vendor/QuicSRT-wasm/page/vendor/stream-worker.ts
 // (the reference publish worker for the C++ engine): doInit's
@@ -163,7 +163,7 @@ async function doInit(url: string, certHash: Uint8Array | null, latencyMs: numbe
     // consecutive PIDs via addAudioPid (muxer test convention, ef18993).
     const pidCount = Math.ceil(channels / 2);
     muxer = new TsMuxer();
-    // Redundant since WebSRT bde9ca7 (sparse default off) but kept as an
+    // Redundant since QuicSRT bde9ca7 (sparse default off) but kept as an
     // explicit contract: silent PIDs must never drop from our PMT.
     muxer.setSparseEnabled(false);
     muxer.setVideoEnabled(false);

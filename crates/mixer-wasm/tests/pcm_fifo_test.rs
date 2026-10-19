@@ -1,6 +1,6 @@
 //! Chunked PCM delivery honesty test (feed_pcm FIFO semantics).
 //!
-//! WebSRT delivers PCM in ~23 ms interleaved chunks while the worklet calls
+//! QuicSRT delivers PCM in ~23 ms interleaved chunks while the worklet calls
 //! process(128) every 2.67 ms. The channel input must behave as a FIFO:
 //! every input frame is played exactly once, in order; starvation yields
 //! silence, not replayed audio.
@@ -30,7 +30,7 @@ fn process(mixer: &mut mixer_wasm::MixerWasm) -> Vec<f32> {
 }
 
 /// Feed 4 blocks worth of a strictly increasing marker ramp as ONE chunk
-/// (how WebSRT delivers), then process 4 blocks. Every block must advance:
+/// (how QuicSRT delivers), then process 4 blocks. Every block must advance:
 /// block b's first L sample tracks marker frame b*128 (measuring the
 /// channel's static gain from block 0 to stay pan-law agnostic).
 #[wasm_bindgen_test]

@@ -1,4 +1,4 @@
-// Shared WebSRT gateway discovery — cert-hash.js resolution for both the
+// Shared QuicSRT gateway discovery — cert-hash.js resolution for both the
 // receive (./store.ts) and publish (./publish.ts) paths. Canonical
 // implementation lives here so the two stores cannot drift (publish's
 // former private copy only did same-origin fetches and could not target

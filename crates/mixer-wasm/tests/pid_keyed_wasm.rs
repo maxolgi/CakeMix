@@ -1,6 +1,6 @@
 //! Keyed PID mapping (multi-session) tests, run under node.
 //!
-//! Distinct WebSRT sessions may reuse the same TS PID numbers; the keyed
+//! Distinct QuicSRT sessions may reuse the same TS PID numbers; the keyed
 //! map (`(sessionId << 16) | pid`) lets both streams coexist on separate
 //! mixer channels instead of the second mapping clobbering the first.
 //!

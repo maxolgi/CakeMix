@@ -1,14 +1,14 @@
 import { createSignal, For, Show } from "solid-js";
 import {
-  websrtSessions,
-  websrtStatus,
-  websrtStatusDetail,
-  connectWebsrtSession,
-  disconnectWebsrtSession,
-  setWebsrtSessionLatency,
-  websrtLatencyMs,
-  setWebsrtLatencyMs,
-} from "../websrt/store";
+  quicsrtSessions,
+  quicsrtStatus,
+  quicsrtStatusDetail,
+  connectQuicsrtSession,
+  disconnectQuicsrtSession,
+  setQuicsrtSessionLatency,
+  quicsrtLatencyMs,
+  setQuicsrtLatencyMs,
+} from "../quicsrt/store";
 import {
   publishStatus,
   publishStatusDetail,
@@ -25,7 +25,7 @@ import {
   type PublishChannels,
   connectPublish,
   disconnectPublish,
-} from "../websrt/publish";
+} from "../quicsrt/publish";
 import { wasmReady, isRunning, setIsRunning, sendToWorklet } from "../stores/mixer";
 import { userGestureUnlock } from "../audio/unlock";
 
@@ -51,9 +51,9 @@ const parseMs = (v: string): number | null => {
   return Number.isFinite(ms) && ms > 0 ? ms : null;
 };
 
-/** Settings drawer — engine controls, test tones, WebSRT receive + publish.
+/** Settings drawer — engine controls, test tones, QuicSRT receive + publish.
  *  Toggled from the top bar (App owns `expanded`). */
-export function WebSRTPanel(props: { expanded: boolean }) {
+export function QuicSRTPanel(props: { expanded: boolean }) {
   const [tonesOn, setTonesOn] = createSignal(false);
 
   // Add-session target URL. Seeded from the page's ?host/?port/?stream params
@@ -66,7 +66,7 @@ export function WebSRTPanel(props: { expanded: boolean }) {
   const [addUrl, setAddUrl] = createSignal(initialTargetUrl);
 
   const connectSession = () => {
-    void connectWebsrtSession(addUrl(), websrtLatencyMs());
+    void connectQuicsrtSession(addUrl(), quicsrtLatencyMs());
   };
 
   const pubActive = () => {
@@ -79,13 +79,13 @@ export function WebSRTPanel(props: { expanded: boolean }) {
   // filtered out; everything else — including errors — stays visible so a
   // failed connect never disappears silently.
   const idleDetail = () => {
-    const d = websrtStatusDetail();
+    const d = quicsrtStatusDetail();
     return d && d !== "disconnected" ? d : "";
   };
 
   const startEngine = () => {
     if (!isRunning()) {
-      // The click is the only user gesture we get without a WebSRT/publish
+      // The click is the only user gesture we get without a QuicSRT/publish
       // connect — resume the AudioContext here or the worklet never renders
       // (frozen meters, silence, scene fades never advance).
       userGestureUnlock();
@@ -113,29 +113,29 @@ export function WebSRTPanel(props: { expanded: boolean }) {
   return (
     <Show when={props.expanded}>
       <div class="settings-body">
-        <div class="websrt-subsection">
-          <div class="websrt-section-controls">
+        <div class="quicsrt-subsection">
+          <div class="quicsrt-section-controls">
             <button
               class="btn btn-start"
               onClick={connectSession}
-              title="Connect a NEW WebSRT receive session to the target URL below. Multiple sessions can be live at once — each gets its own worker and direct PCM channel into the mixer. Per-session state shows in the rows below."
+              title="Connect a NEW QuicSRT receive session to the target URL below. Multiple sessions can be live at once — each gets its own worker and direct PCM channel into the mixer. Per-session state shows in the rows below."
             >CONNECT</button>
             <input
-              class="websrt-input websrt-input-url"
+              class="quicsrt-input quicsrt-input-url"
               type="text"
               value={addUrl()}
               onInput={(e) => setAddUrl(e.currentTarget.value)}
               placeholder="this page — or https://192.168.1.214:5173/?stream=audio"
-              title="Web-viewer URL of a WebSRT gateway. Host, stream name and token are parsed from it; cert hash + WT port are fetched from its /cert-hash.js. Empty = the gateway serving this page, stream default."
+              title="Web-viewer URL of a QuicSRT gateway. Host, stream name and token are parsed from it; cert hash + WT port are fetched from its /cert-hash.js. Empty = the gateway serving this page, stream default."
             />
             <label class="detail-select-label">LATENCY
               <input
-                class="websrt-input websrt-input-latency"
+                class="quicsrt-input quicsrt-input-latency"
                 type="number"
-                value={String(websrtLatencyMs())}
+                value={String(quicsrtLatencyMs())}
                 onInput={(e) => {
                   const ms = parseMs(e.currentTarget.value);
-                  if (ms !== null) setWebsrtLatencyMs(ms);
+                  if (ms !== null) setQuicsrtLatencyMs(ms);
                 }}
                 title="TSBPD latency (ms) for the NEXT connect — higher = more robust, use ~1000 ms for LAN PCM. Live sessions keep the value they were initialized with; editing a session row updates this default too."
               />
@@ -144,7 +144,7 @@ export function WebSRTPanel(props: { expanded: boolean }) {
               class={`btn btn-engine ${isRunning() ? "btn-stop" : "btn-start"}`}
               disabled={!wasmReady()}
               onClick={toggleEngine}
-              title="Run / freeze the mixer engine. Starts automatically when WebSRT connects."
+              title="Run / freeze the mixer engine. Starts automatically when QuicSRT connects."
             >{isRunning() ? "ENGINE ON" : "ENGINE OFF"}</button>
             <button
               class={`btn ${tonesOn() ? "btn-stop" : "btn-start"}`}
@@ -153,50 +153,50 @@ export function WebSRTPanel(props: { expanded: boolean }) {
             >{tonesOn() ? "TONES ON" : "TONES OFF"}</button>
           </div>
 
-          <For each={websrtSessions()}>
+          <For each={quicsrtSessions()}>
             {(s) => (
-              <div class="websrt-session">
-                <div class="websrt-session-controls">
+              <div class="quicsrt-session">
+                <div class="quicsrt-session-controls">
                   <span
-                    class="websrt-session-tag"
+                    class="quicsrt-session-tag"
                     title={`Receive session ${s.id} — its audio PIDs are mapped in arrival order to consecutive mixer input channels from a pool shared by all sessions (128-channel cap).`}
                   >S{s.id}</span>
                   <span
-                    class={`websrt-pill ${s.status}`}
+                    class={`quicsrt-pill ${s.status}`}
                     title={`Session S${s.id} status: ${s.status}`}
                   >{s.status}</span>
                   <span
-                    class="websrt-session-url"
+                    class="quicsrt-session-url"
                     title={s.url || "resolving the target's cert-hash.js…"}
                   >{s.url || "resolving…"}</span>
                   <label class="detail-select-label">LATENCY
                     <input
-                      class="websrt-input websrt-input-latency"
+                      class="quicsrt-input quicsrt-input-latency"
                       type="number"
                       value={String(s.latencyMs)}
                       onInput={(e) => {
                         const ms = parseMs(e.currentTarget.value);
-                        if (ms !== null) setWebsrtSessionLatency(s.id, ms);
+                        if (ms !== null) setQuicsrtSessionLatency(s.id, ms);
                       }}
                       title="This session's TSBPD latency (ms) — display + default only: the live worker keeps the value it was initialized with, so edits apply from the next connect and become the default for new sessions."
                     />
                   </label>
                   <button
                     class="btn btn-stop"
-                    onClick={() => disconnectWebsrtSession(s.id)}
+                    onClick={() => disconnectQuicsrtSession(s.id)}
                     title={`Disconnect session S${s.id}: unmap its PIDs (other sessions keep their channels), close its direct PCM channel and stop its worker.`}
                   >DISCONNECT</button>
                 </div>
 
                 <Show when={s.statusDetail}>
-                  <div class="websrt-status-detail" title={s.statusDetail}>
+                  <div class="quicsrt-status-detail" title={s.statusDetail}>
                     {s.statusDetail}
                   </div>
                 </Show>
 
                 <Show when={s.dropped > 0 || s.relay > 0}>
                   <div
-                    class="websrt-status-detail"
+                    class="quicsrt-status-detail"
                     title="dropped: PIDs of this session past the 128-channel mixer cap — their PCM is dropped worklet-side. relay: PCM batches that arrived via the parent-channel fallback instead of the direct port — 0 expected in normal operation."
                   >{[
                     s.dropped > 0 ? `dropped ${s.dropped}` : null,
@@ -205,8 +205,8 @@ export function WebSRTPanel(props: { expanded: boolean }) {
                 </Show>
 
                 <Show when={s.pids.length > 0}>
-                  <div class="websrt-pid-scroll">
-                    <table class="websrt-pid-table">
+                  <div class="quicsrt-pid-scroll">
+                    <table class="quicsrt-pid-table">
                       <thead title="Audio PIDs are auto-discovered from this session's stream and mapped in arrival order to consecutive mixer input channels (shared across all sessions, capped at 128 total).">
                         <tr>
                           <th>PID</th>
@@ -232,19 +232,19 @@ export function WebSRTPanel(props: { expanded: boolean }) {
              )}
            </For>
 
-          <Show when={websrtSessions().length === 0 && idleDetail()}>
-            <div class="websrt-idle-status">
+          <Show when={quicsrtSessions().length === 0 && idleDetail()}>
+            <div class="quicsrt-idle-status">
               <span
-                class={`websrt-pill ${websrtStatus()}`}
-                title={`Last receive session status: ${websrtStatus()}`}
-              >{websrtStatus() === "disconnected" ? "" : websrtStatus()}</span>
-              <span class="websrt-status-detail" title={idleDetail()}>{idleDetail()}</span>
+                class={`quicsrt-pill ${quicsrtStatus()}`}
+                title={`Last receive session status: ${quicsrtStatus()}`}
+              >{quicsrtStatus() === "disconnected" ? "" : quicsrtStatus()}</span>
+              <span class="quicsrt-status-detail" title={idleDetail()}>{idleDetail()}</span>
             </div>
           </Show>
          </div>
 
-        <div class="websrt-subsection">
-          <div class="websrt-section-controls">
+        <div class="quicsrt-subsection">
+          <div class="quicsrt-section-controls">
             <button
               class={`btn ${pubActive() ? "btn-stop" : "btn-start"}`}
               disabled={publishStatus() === "connecting"}
@@ -300,13 +300,13 @@ export function WebSRTPanel(props: { expanded: boolean }) {
               </label>
             </Show>
             <span
-              class={`websrt-pill ${publishStatus()}`}
-              title={`WebSRT publish status: ${publishStatus()}`}
+              class={`quicsrt-pill ${publishStatus()}`}
+              title={`QuicSRT publish status: ${publishStatus()}`}
             >{publishStatus() === "disconnected" ? "" : publishStatus()}</span>
           </div>
 
           <div
-            class="websrt-status-detail"
+            class="quicsrt-status-detail"
             title={`Publish stream name and gateway target — same discovery as the receive path (?pubstream / ?host / ?port)`}
           >{publishTarget()
               ? `stream ${publishStreamName()}${publishSource() === "bus" ? ` · bus ${publishBus() + 1}` : ""} → ${publishTarget()}`
@@ -315,14 +315,14 @@ export function WebSRTPanel(props: { expanded: boolean }) {
           <Show when={publishStats()}>
             {(s) => (
               <div
-                class="websrt-status-detail"
+                class="quicsrt-status-detail"
                 title="Publish link stats (last second): TS payload bitrate · SRT round-trip time · cumulative tx-lost packets"
               >{`${s().kbps} kb/s · rtt ${s().rttMs.toFixed(0)} ms · tx loss ${s().txLoss}`}</div>
             )}
           </Show>
 
           <Show when={publishStatusDetail()}>
-            <div class="websrt-status-detail" title={publishStatusDetail()}>
+            <div class="quicsrt-status-detail" title={publishStatusDetail()}>
               {publishStatusDetail()}
             </div>
           </Show>

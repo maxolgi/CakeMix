@@ -1,5 +1,5 @@
-// WebSRT receive client — worker bootstrap for the websrt store
-// (frontend/src/websrt/store.ts owns the workers, one per receive
+// QuicSRT receive client — worker bootstrap for the quicsrt store
+// (frontend/src/quicsrt/store.ts owns the workers, one per receive
 // session).
 //
 // The receive worker is imported at source level from the
@@ -17,11 +17,11 @@ import type { WorkerCmd, WorkerMsg } from "../../../vendor/QuicSRT-wasm/page/ven
 
 export type { WorkerCmd, WorkerMsg };
 
-/** Create the WebSRT receive worker. The `new URL(..., import.meta.url)`
+/** Create the QuicSRT receive worker. The `new URL(..., import.meta.url)`
  *  module-worker construction is what makes Vite emit the worker chunk.
  *  All worker output arrives batched:
  *  `{ type: "batch", msgs: WorkerMsg[] }` (see vendor worker.ts flushOutgoing). */
-export function createWebsrtWorker(): Worker {
+export function createQuicsrtWorker(): Worker {
   return new Worker(
     new URL("../../../vendor/QuicSRT-wasm/page/vendor/worker.ts", import.meta.url),
     { type: "module" },

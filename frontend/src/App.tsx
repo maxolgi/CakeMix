@@ -1,15 +1,15 @@
 import { onMount, onCleanup, createSignal, createEffect, For } from "solid-js";
-import * as websrt from "./websrt/client";
-import * as websrtStore from "./websrt/store";
+import * as quicsrt from "./quicsrt/client";
+import * as quicsrtStore from "./quicsrt/store";
 import * as scenesStore from "./stores/scenes";
-import { websrtStatus } from "./websrt/store";
-import { publishStatus, relayPubPcm } from "./websrt/publish";
+import { quicsrtStatus } from "./quicsrt/store";
+import { publishStatus, relayPubPcm } from "./quicsrt/publish";
 import { registerAudioUnlock } from "./audio/unlock";
 import { ChannelDetailPanel } from "./components/ChannelDetailPanel";
 import { MasterStrip } from "./components/MasterStrip";
 import { BusMasterStrip } from "./components/BusMasterStrip";
 import { BusManager } from "./components/BusManager";
-import { WebSRTPanel } from "./components/WebSRTPanel";
+import { QuicSRTPanel } from "./components/QuicSRTPanel";
 import {
   updateMeterData, applyConsoleParams,
   wasmReady, setWasmReady, isRunning, setIsRunning,
@@ -27,13 +27,13 @@ export default function App() {
   const [settingsExpanded, setSettingsExpanded] = createSignal(false);
 
   onMount(async () => {
-    // Build plumbing: expose the WebSRT client (receive worker bootstrap)
-    // and the WebSRT store (connect/disconnect + status signals) on window
+    // Build plumbing: expose the QuicSRT client (receive worker bootstrap)
+    // and the QuicSRT store (connect/disconnect + status signals) on window
     // so the bundler keeps the worker chunk and store in the
     // bundle. Also reachable from the console for manual testing; connection
     // itself is user-triggered (settings drawer).
-    (window as any).__cakemix_websrt = websrt;
-    (window as any).__cakemix_websrt_store = websrtStore;
+    (window as any).__cakemix_quicsrt = quicsrt;
+    (window as any).__cakemix_quicsrt_store = quicsrtStore;
 
     // Autoplay unlock: connect click handlers call this synchronously so
     // resume() traces to the user gesture even across the async handshake.
@@ -60,16 +60,16 @@ export default function App() {
         else if (msg.type === "meter") {
           updateMeterData(msg);
           // Cumulative worklet-side pcm drop count rides the meter tick.
-          if (typeof msg.droppedPcm === "number") websrtStore.onWorkletPcmDropped(msg.droppedPcm);
+          if (typeof msg.droppedPcm === "number") quicsrtStore.onWorkletPcmDropped(msg.droppedPcm);
         }
-        else if (msg.type === "pid-mapped") { websrtStore.onWorkletPidMapped(msg); }
+        else if (msg.type === "pid-mapped") { quicsrtStore.onWorkletPidMapped(msg); }
         else if (msg.type === "scene-saved") { scenesStore.addScene(msg.id); }
         // Scene-recall UI loop: a recall happened in the mixer — pull the
         // console state back so sliders/knobs reflect it (otherwise the
         // next interaction writes stale values over the recalled scene).
         else if (msg.type === "scene-recalled") { sendToWorklet({ type: "get-params" }); }
         else if (msg.type === "console-params") { applyConsoleParams(msg.json); }
-        else if (msg.type === "pcm-dropped") { websrtStore.onWorkletPcmDropped(msg.total); }
+        else if (msg.type === "pcm-dropped") { quicsrtStore.onWorkletPcmDropped(msg.total); }
         else if (msg.type === "pub-pcm") { relayPubPcm(msg.samples, msg.ptsUs, msg.channels); }
       };
     } catch (e: any) { setStatus("Init failed: " + e.message); }
@@ -78,7 +78,7 @@ export default function App() {
   // Engine auto-start: any active transport (receive or publish) needs the
   // mixer running; starting manually is still possible from the drawer.
   createEffect(() => {
-    if (websrtStatus() === "connected" || publishStatus() === "connected") {
+    if (quicsrtStatus() === "connected" || publishStatus() === "connected") {
       if (wasmReady() && !isRunning()) {
         sendToWorklet({ type: "start" });
         setIsRunning(true);
@@ -86,7 +86,7 @@ export default function App() {
     }
   });
 
-  onCleanup(() => { websrtStore.disconnectWebsrt(); audioCtx?.close(); });
+  onCleanup(() => { quicsrtStore.disconnectQuicsrt(); audioCtx?.close(); });
 
   async function loadWasm() {
     try {
@@ -113,7 +113,7 @@ export default function App() {
         running={isRunning()}
         wasmReady={wasmReady()}
         status={status()}
-        websrtStatus={websrtStatus()}
+        quicsrtStatus={quicsrtStatus()}
         expanded={settingsExpanded()}
         onToggleExpanded={() => setSettingsExpanded(!settingsExpanded())}
         mode={mode()}
@@ -121,7 +121,7 @@ export default function App() {
         index={mode() === "bus" ? (selectedBus() ?? 0) : bank()}
         onIndex={onSelectIndex}
       />
-      <WebSRTPanel expanded={settingsExpanded()} />
+      <QuicSRTPanel expanded={settingsExpanded()} />
       <div class="mixer-console">
         {selectedBus() === null ? (
           <For each={Array.from({ length: STRIPS_PER_BANK }, (_, i) => bank() * STRIPS_PER_BANK + i)}>

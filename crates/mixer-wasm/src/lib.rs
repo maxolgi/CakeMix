@@ -131,7 +131,7 @@ const NULL_PROCESS_PARAMS: ChannelProcessParams = ChannelProcessParams {
 /// Channel direct-out tap: `set_channel_tap()` captures each input
 /// channel's MONO signal at the pan-stage input (post input gain/phase,
 /// post gate/comp/EQ, post fader) during `process()` for external
-/// publishing (WebSRT Nch out).
+/// publishing (QuicSRT Nch out).
 #[wasm_bindgen]
 pub struct MixerWasm {
     // ── Engine instances: all summing happens here ──
@@ -160,7 +160,7 @@ pub struct MixerWasm {
     /// and EQ; the engine call lists below point into these rows.
     staged: Vec<f32>,
     /// PID → channel mapping, keyed by an opaque u32: the JS side encodes
-    /// `(sessionId << 16) | pid` so multiple WebSRT sessions can reuse
+    /// `(sessionId << 16) | pid` so multiple QuicSRT sessions can reuse
     /// the same TS PID numbers without colliding. The u16 accessors use
     /// the bare PID as the key (= session 0).
     pid_map: HashMap<u32, PidMapping>,
@@ -510,7 +510,7 @@ impl MixerWasm {
     //
     // Two addressing modes over one map: the legacy u16 accessors key by
     // the bare PID (= session 0) and simply delegate; the `*_keyed`
-    // variants take the raw map key so multiple WebSRT sessions can
+    // variants take the raw map key so multiple QuicSRT sessions can
     // reuse the same TS PID numbers (see the `pid_map` field comment).
 
     pub fn map_pid(&mut self, pid: u16, ch_start: u32, channel_count: u32) -> Result<(), JsValue> {

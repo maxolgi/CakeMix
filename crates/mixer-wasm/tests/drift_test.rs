@@ -1,6 +1,6 @@
 //! Elastic playout buffer drift known-answer tests (native, no JS).
 //!
-//! The delivery clock (WebSRT worker TSBPD, `performance.now()`) and the
+//! The delivery clock (QuicSRT worker TSBPD, `performance.now()`) and the
 //! consumption clock (audio hardware) always differ by some ppm. Before the
 //! elastic FIFO, a net-fast stream climbed until the 8192-frame drop-oldest
 //! cap wrapped into continuous glitching (~28 min at 100 ppm), and a

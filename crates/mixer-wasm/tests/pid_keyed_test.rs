@@ -1,6 +1,6 @@
 //! Keyed PID mapping tests (multi-session, native, no JS runtime).
 //!
-//! Multiple WebSRT sessions can reuse the same TS PID numbers; the map
+//! Multiple QuicSRT sessions can reuse the same TS PID numbers; the map
 //! is keyed by an opaque u32 (`(sessionId << 16) | pid`, see the
 //! `pid_map` field comment in lib.rs) so colliding PIDs coexist. The
 //! legacy u16 accessors keep addressing the session-0 entries (key =

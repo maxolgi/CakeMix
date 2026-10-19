@@ -400,83 +400,83 @@ body {
 .bus-master { position: sticky !important; top: 0; z-index: 10; overflow-y: hidden !important; }
 .bus-master .detail-meter-fader canvas { position: static; }
 
-/* ── WebSRT panel / settings drawer ──── */
+/* ── QuicSRT panel / settings drawer ──── */
 .settings-panel {
     background: #0e0e14;
     border-bottom: 1px solid #1e1e28;
 }
-.websrt-label { font-size: 0.65em; font-weight: 700; letter-spacing: 1px; color: #888; }
-.websrt-pill {
+.quicsrt-label { font-size: 0.65em; font-weight: 700; letter-spacing: 1px; color: #888; }
+.quicsrt-pill {
     font-size: 0.55em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
     padding: 2px 7px; border-radius: 3px;
     border: 1px solid #2a2a30; background: #16161e; color: #666;
 }
-.websrt-pill:empty { display: none; }
-.websrt-pill.connecting { background: #3a2a10; color: #e0b050; border-color: #6a4a10; }
-.websrt-pill.connected { background: #1a3a1a; color: #4ade80; border-color: #2a5a2a; }
-.websrt-pill.error { background: #2a1414; color: #f87171; border-color: #5a2a2a; }
-.websrt-chevron {
+.quicsrt-pill:empty { display: none; }
+.quicsrt-pill.connecting { background: #3a2a10; color: #e0b050; border-color: #6a4a10; }
+.quicsrt-pill.connected { background: #1a3a1a; color: #4ade80; border-color: #2a5a2a; }
+.quicsrt-pill.error { background: #2a1414; color: #f87171; border-color: #5a2a2a; }
+.quicsrt-chevron {
     width: 24px; height: 20px; font-size: 0.7em;
     border: 1px solid #2a2a30; border-radius: 2px; background: #16161e; color: #666;
     cursor: pointer; transition: all 0.1s;
 }
-.bus-manager .websrt-chevron { margin-left: 0; margin-right: 2px; }
-.websrt-chevron:hover { border-color: #444; color: #aaa; }
+.bus-manager .quicsrt-chevron { margin-left: 0; margin-right: 2px; }
+.quicsrt-chevron:hover { border-color: #444; color: #aaa; }
 .settings-body { display: flex; flex-direction: column; gap: 6px; padding: 2px 12px 8px; }
-.websrt-controls { display: flex; align-items: center; gap: 10px; }
-.websrt-target-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.websrt-input {
+.quicsrt-controls { display: flex; align-items: center; gap: 10px; }
+.quicsrt-target-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.quicsrt-input {
     background: #11111a; border: 1px solid #222230; border-radius: 3px; color: #ccc;
     font-size: 0.7em; font-family: 'SF Mono', monospace; padding: 3px 5px; outline: none;
     width: 96px;
 }
-.websrt-input:focus { border-color: #2a4a6a; }
-.websrt-input:disabled { opacity: 0.5; }
-.websrt-input-url { flex: 1; min-width: 240px; }
-.websrt-controls .btn { padding: 4px 14px; font-size: 0.7em; }
-.websrt-status-detail {
+.quicsrt-input:focus { border-color: #2a4a6a; }
+.quicsrt-input:disabled { opacity: 0.5; }
+.quicsrt-input-url { flex: 1; min-width: 240px; }
+.quicsrt-controls .btn { padding: 4px 14px; font-size: 0.7em; }
+.quicsrt-status-detail {
     font-family: 'SF Mono', monospace; font-size: 0.6em; color: #666;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.websrt-idle-status { display: flex; align-items: center; gap: 8px; margin-top: 6px; min-width: 0; }
-.websrt-pid-scroll { max-height: 140px; overflow-y: auto; border: 1px solid #1a1a25; border-radius: 3px; }
-.websrt-pid-table { width: 100%; border-collapse: collapse; font-size: 0.65em; }
-.websrt-pid-table th {
+.quicsrt-idle-status { display: flex; align-items: center; gap: 8px; margin-top: 6px; min-width: 0; }
+.quicsrt-pid-scroll { max-height: 140px; overflow-y: auto; border: 1px solid #1a1a25; border-radius: 3px; }
+.quicsrt-pid-table { width: 100%; border-collapse: collapse; font-size: 0.65em; }
+.quicsrt-pid-table th {
     position: sticky; top: 0; z-index: 1;
     font-size: 0.9em; font-weight: 700; letter-spacing: 0.5px; color: #555; text-align: left;
     padding: 3px 8px; background: #11111a; border-bottom: 1px solid #1a1a25;
 }
-.websrt-pid-table td {
+.quicsrt-pid-table td {
     padding: 2px 8px; color: #aaa; font-family: 'SF Mono', monospace;
     border-bottom: 1px solid #14141c; white-space: nowrap;
 }
-.websrt-pid-table tbody tr:last-child td { border-bottom: none; }
-.websrt-subsection {
+.quicsrt-pid-table tbody tr:last-child td { border-bottom: none; }
+.quicsrt-subsection {
     display: flex; flex-direction: column; gap: 6px;
     margin-top: 4px; padding-top: 6px; border-top: 1px solid #1e1e28;
 }
-.websrt-subsection-head { display: flex; align-items: center; gap: 8px; }
-.websrt-section-controls { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; }
-.websrt-section-controls .websrt-input-url { flex: 2 1 320px; min-width: 240px; }
-.websrt-section-controls .btn.btn-engine { margin-left: auto; }
-.websrt-section-controls .detail-select-label { white-space: nowrap; }
+.quicsrt-subsection-head { display: flex; align-items: center; gap: 8px; }
+.quicsrt-section-controls { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; }
+.quicsrt-section-controls .quicsrt-input-url { flex: 2 1 320px; min-width: 240px; }
+.quicsrt-section-controls .btn.btn-engine { margin-left: auto; }
+.quicsrt-section-controls .detail-select-label { white-space: nowrap; }
 
-/* WebSRT receive sessions (N concurrent) */
-.websrt-input-latency { width: 64px; text-align: right; }
-.websrt-session {
+/* QuicSRT receive sessions (N concurrent) */
+.quicsrt-input-latency { width: 64px; text-align: right; }
+.quicsrt-session {
     display: flex; flex-direction: column; gap: 4px;
     padding: 4px 8px; border: 1px solid #1a1a25; border-radius: 3px; background: #101018;
 }
-.websrt-session-controls { display: flex; align-items: center; gap: 8px; }
-.websrt-session-controls .btn { padding: 3px 10px; font-size: 0.65em; }
-.websrt-session-controls .detail-select-label { white-space: nowrap; }
-.websrt-session-tag {
+.quicsrt-session-controls { display: flex; align-items: center; gap: 8px; }
+.quicsrt-session-controls .btn { padding: 3px 10px; font-size: 0.65em; }
+.quicsrt-session-controls .detail-select-label { white-space: nowrap; }
+.quicsrt-session-tag {
     font-family: 'SF Mono', monospace; font-size: 0.7em; font-weight: 700;
     color: #8ab4f8; white-space: nowrap;
 }
-.websrt-session-url {
+.quicsrt-session-url {
     flex: 1 1 auto; min-width: 120px;
     font-family: 'SF Mono', monospace; font-size: 0.6em; color: #777;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.websrt-session .websrt-pid-scroll { max-height: 110px; }
+.quicsrt-session .quicsrt-pid-scroll { max-height: 110px; }

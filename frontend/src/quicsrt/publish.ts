@@ -1,6 +1,6 @@
-// WebSRT publish store — the UI-facing contract for the PCM publish path.
+// QuicSRT publish store — the UI-facing contract for the PCM publish path.
 //
-// Publishes the mixer's output as SMPTE 302M PCM (no codecs) to the WebSRT
+// Publishes the mixer's output as SMPTE 302M PCM (no codecs) to the QuicSRT
 // gateway via ./publish-worker.ts: 2ch = master stereo on one PID, 16–128ch
 // = ceil(N/2) stereo PIDs (multi-PID muxing in the worker) fed by the
 // worklet's channel direct-out tap. Mirrors ./store.ts (the receive
@@ -107,7 +107,7 @@ let worker: Worker | null = null;
  *  receive store — ?certHash=<64-hex>|null, ?host, ?port), build
  *  https://<host>:<port>/wt?publish=<name>, start the publish worker, post
  *  'init' and switch on the worklet's master-output tap. User-triggered
- *  (WebSRTPanel). */
+ *  (QuicSRTPanel). */
 export async function connectPublish(): Promise<void> {
   if (worker) return;
   userGestureUnlock(); // synchronous: keep the click's autoplay gesture

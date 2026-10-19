@@ -488,7 +488,7 @@ try {
 }
 
 
-// Test: keyed PID multi-session — two WebSRT sessions reuse the SAME TS
+// Test: keyed PID multi-session — two QuicSRT sessions reuse the SAME TS
 // PID (0x101) on separate channels via the keyed API (key = (sessionId
 // << 16) | pid); with a bare-PID map the second mapping would clobber
 // the first. Same ratio-baseline pattern as the multi-PID tests above.

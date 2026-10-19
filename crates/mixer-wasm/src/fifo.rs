@@ -9,7 +9,7 @@ pub(crate) const MAX_QUEUE_FRAMES: usize = 8192;
 
 // ── Elastic playout buffer ─────────────────────────────────────────────
 //
-// Delivery is paced by the WebSRT worker's `performance.now()` clock while
+// Delivery is paced by the QuicSRT worker's `performance.now()` clock while
 // process() consumes at the audio hardware clock. The two always differ by
 // some ppm, so a fixed-cap FIFO either accumulates drift until it wraps
 // into drop-oldest glitching (net-fast delivery) or drains into periodic

@@ -75,7 +75,7 @@ class MixerProcessor extends AudioWorkletProcessor {
         this._busTapErrorWarned = false;
         // Direct pcm paths (transferred MessagePorts; see _attachPcmPort
         // and the 'pub-port' message). sessionId → port so multiple
-        // WebSRT receive sessions can carry pcm concurrently; no entry
+        // QuicSRT receive sessions can carry pcm concurrently; no entry
         // = parent-channel relay fallback for that session.
         this._pcmPorts = new Map();
         this._pubOutPort = null;
@@ -417,9 +417,9 @@ class MixerProcessor extends AudioWorkletProcessor {
         this._pubFill = 0;
     }
 
-    // Direct pcm channel (see the store's connectWebsrt): the store
+    // Direct pcm channel (see the store's connectQuicsrt): the store
     // creates a MessageChannel per connect, per session, transfers one
-    // end to the WebSRT worker (its 'pcm-port' cmd) and this end here —
+    // end to the QuicSRT worker (its 'pcm-port' cmd) and this end here —
     // raw pcm then flows worker→worklet with zero main-thread hops.
     // Ports are scoped by sessionId: attaching replaces (closes) any
     // existing port for that session. port null WITH a sessionId closes
@@ -510,7 +510,7 @@ class MixerProcessor extends AudioWorkletProcessor {
     }
 
     // Session-scoped wasm pid-map access: key = (sid << 16) | pid lets
-    // multiple WebSRT sessions reuse TS PID numbers in the mixer's map.
+    // multiple QuicSRT sessions reuse TS PID numbers in the mixer's map.
     // Feature-detected (typeof) like _setChannelTap: wasm builds
     // predating the keyed API only expose the legacy u16 calls, which
     // are exactly the keyed ones under session 0 — so the fallback is

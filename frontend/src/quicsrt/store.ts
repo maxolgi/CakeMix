@@ -1,4 +1,4 @@
-// WebSRT receiver store — the UI-facing contract for the receive path.
+// QuicSRT receiver store — the UI-facing contract for the receive path.
 //
 // Owns N concurrent receive sessions (each created via ./client so Vite
 // emits the worker chunk), relays PCM into the mixer AudioWorklet and
@@ -9,10 +9,10 @@
 // incrementing from 1 (0 is the worklet's legacy bucket for messages
 // that omit sessionId — every message this store sends carries an
 // explicit id ≥ 1). WASM pid keys are (sessionId << 16) | pid (the
-// worklet encodes). The pre-sessions single-session exports (websrtStatus,
-// connectWebsrt, …) are views/operations on the PRIMARY session = the
+// worklet encodes). The pre-sessions single-session exports (quicsrtStatus,
+// connectQuicsrt, …) are views/operations on the PRIMARY session = the
 // first live one, so the settings drawer keeps working until it migrates
-// to the session list (websrtSessions()).
+// to the session list (quicsrtSessions()).
 //
 // PCM path: one MessageChannel per session — port1 transferred to the
 // worker (its 'pcm-port' cmd), port2 to the mixer worklet — so raw pcm
@@ -26,14 +26,14 @@
 // which feed each session's pids list):
 // - A PID is mapped on its FIRST 'pcm' message. The channelCount carried
 //   there is authoritative (auto-detected from the AES3 frame header by the
-//   WebSRT demuxer); the PMT never triggers mapping.
+//   QuicSRT demuxer); the PMT never triggers mapping.
 // - PIDs are packed consecutively from mixer channel 0, capped at 128
 //   channels total. Overflow PIDs report chStart -1 and their PCM is
 //   dropped (counted per-session in `dropped` and globally in
-//   websrtDroppedPcm(), as are pre-WASM drops).
+//   quicsrtDroppedPcm(), as are pre-WASM drops).
 // - The parent-channel relay remains as a fallback (worker pcm-port not
 //   wired, e.g. mid-handshake): identical worklet-side auto-mapping, and
-//   counted per-session in `relay` and cumulatively in websrtRelayPcm()
+//   counted per-session in `relay` and cumulatively in quicsrtRelayPcm()
 //   so the direct path is verifiable — it should stay 0 in normal
 //   operation.
 //
@@ -45,47 +45,47 @@
 //   { type: "pcm-dropped", total }          (worklet → main, global cumulative)
 
 import { createSignal, createMemo, type Accessor } from "solid-js";
-import { createWebsrtWorker, type WorkerCmd, type WorkerMsg } from "./client";
+import { createQuicsrtWorker, type WorkerCmd, type WorkerMsg } from "./client";
 import { DEFAULT_GATEWAY_URL, resolveCertHash, hexToBytes } from "./gateway";
 import { sendToWorklet } from "../stores/mixer";
 import { userGestureUnlock } from "../audio/unlock";
 
-export type WebsrtStatus = "disconnected" | "connecting" | "connected" | "error";
+export type QuicsrtStatus = "disconnected" | "connecting" | "connected" | "error";
 
-export interface WebsrtPidInfo {
+export interface QuicsrtPidInfo {
   pid: number;
   channelCount: number;
   /** First mixer channel for this PID; -1 = not mapped (128-ch cap exceeded). */
   chStart: number;
 }
 
-/** One receive session as the UI sees it (websrtSessions()). */
-export interface WebsrtSessionInfo {
+/** One receive session as the UI sees it (quicsrtSessions()). */
+export interface QuicsrtSessionInfo {
   id: number;
   /** Resolved subscribe URL (cert-hash + WT port + stream/token applied). */
   url: string;
   /** TSBPD latency the session's worker was init'ed with. */
   latencyMs: number;
-  status: WebsrtStatus;
+  status: QuicsrtStatus;
   statusDetail: string;
-  pids: WebsrtPidInfo[];
+  pids: QuicsrtPidInfo[];
   /** PIDs of this session past the 128-ch cap — their PCM is dropped
    *  worklet-side. (The cumulative dropped-pcm count is global — the
-   *  worklet cannot attribute drops per session; see websrtDroppedPcm.) */
+   *  worklet cannot attribute drops per session; see quicsrtDroppedPcm.) */
   dropped: number;
   /** PCM batches that arrived via this session's parent-channel fallback. */
   relay: number;
 }
 
-/** Internal session record — WebsrtSessionInfo plus its worker. */
-interface WebsrtSession extends WebsrtSessionInfo {
+/** Internal session record — QuicsrtSessionInfo plus its worker. */
+interface QuicsrtSession extends QuicsrtSessionInfo {
   worker: Worker | null;
 }
 
 /** Mixer input-channel cap (AGENTS.md: 128 input strips max). */
 const MAX_MIXER_CHANNELS = 128;
 
-const [sessions, setSessions] = createSignal<WebsrtSession[]>([]);
+const [sessions, setSessions] = createSignal<QuicsrtSession[]>([]);
 
 /** Session ids start at 1 — 0 is the worklet's legacy default for
  *  sessionId-less messages, so every message from here carries an
@@ -94,7 +94,7 @@ let nextSessionId = 1;
 
 /** Live sessions for the UI (workers stripped). First entry = the primary
  *  session the single-session exports below view. */
-export const websrtSessions: Accessor<WebsrtSessionInfo[]> = createMemo(() =>
+export const quicsrtSessions: Accessor<QuicsrtSessionInfo[]> = createMemo(() =>
   sessions().map((s) => ({
     id: s.id, url: s.url, latencyMs: s.latencyMs, status: s.status,
     statusDetail: s.statusDetail, pids: s.pids, dropped: s.dropped, relay: s.relay,
@@ -104,42 +104,42 @@ export const websrtSessions: Accessor<WebsrtSessionInfo[]> = createMemo(() =>
 // What the single-session views show while no session is live: the final
 // status/detail of the last torn-down primary, so an error line or
 // "disconnected" survives its record's removal.
-const [idleStatus, setIdleStatus] = createSignal<WebsrtStatus>("disconnected");
+const [idleStatus, setIdleStatus] = createSignal<QuicsrtStatus>("disconnected");
 const [idleDetail, setIdleDetail] = createSignal("");
 
 const primary = createMemo(() => sessions()[0]);
 
-export const websrtStatus: Accessor<WebsrtStatus> = createMemo(
+export const quicsrtStatus: Accessor<QuicsrtStatus> = createMemo(
   () => primary()?.status ?? idleStatus(),
 );
 /** Last log/error/stats line from the receive path. */
-export const websrtStatusDetail: Accessor<string> = createMemo(
+export const quicsrtStatusDetail: Accessor<string> = createMemo(
   () => primary()?.statusDetail ?? idleDetail(),
 );
 /** Discovered audio PIDs and their mixer channel assignment. */
-export const websrtPids: Accessor<WebsrtPidInfo[]> = createMemo(
+export const quicsrtPids: Accessor<QuicsrtPidInfo[]> = createMemo(
   () => primary()?.pids ?? [],
 );
 
 const [defaultLatencyMs, setDefaultLatencyMsSignal] = createSignal(120);
 /** TSBPD latency in ms (the glass-to-glass buffer). Default for new
- *  connects (websrtLatencyMs-override per call aside); applies on next
+ *  connects (quicsrtLatencyMs-override per call aside); applies on next
  *  connect. */
-export const websrtLatencyMs: Accessor<number> = defaultLatencyMs;
+export const quicsrtLatencyMs: Accessor<number> = defaultLatencyMs;
 
-export function setWebsrtLatencyMs(ms: number): void {
+export function setQuicsrtLatencyMs(ms: number): void {
   setDefaultLatencyMsSignal(ms);
 }
 
 /** PCM dropped worklet-side (WASM not ready, or PID beyond the 128-ch
  *  cap). Global cumulative — the worklet is the single counting authority. */
 const [droppedPcm, setDroppedPcm] = createSignal(0);
-export const websrtDroppedPcm = droppedPcm;
+export const quicsrtDroppedPcm = droppedPcm;
 /** PCM that arrived via a parent-channel fallback instead of the direct
  *  port — 0 in normal operation (proves the direct path is live).
  *  Lifetime cumulative across sessions. */
 const [relayPcm, setRelayPcm] = createSignal(0);
-export const websrtRelayPcm = relayPcm;
+export const quicsrtRelayPcm = relayPcm;
 
 // ── Connection target ─────────────────────────────────────────────────────
 // One URL (settings drawer): the target's web-viewer URL, e.g.
@@ -153,7 +153,7 @@ const initialTargetUrl = initialParams.get("host")
   ? `https://${initialParams.get("host")}${initialParams.get("port") ? ":" + initialParams.get("port") : ""}/?stream=${initialParams.get("stream") ?? "default"}`
   : "";
 const [targetUrl, setTargetUrl] = createSignal(initialTargetUrl);
-export const websrtTarget = { url: targetUrl, setUrl: setTargetUrl };
+export const quicsrtTarget = { url: targetUrl, setUrl: setTargetUrl };
 
 // ── Sessions ───────────────────────────────────────────────────────────────
 
@@ -162,7 +162,7 @@ export const websrtTarget = { url: targetUrl, setUrl: setTargetUrl };
  *  WT port via our /api/cert-hash proxy, build the WebTransport URL,
  *  start a receive worker and post 'init'. User-triggered. Concurrent
  *  sessions are independent (one worker + one direct pcm channel each). */
-export async function connectWebsrtSession(url: string, latencyMs?: number): Promise<void> {
+export async function connectQuicsrtSession(url: string, latencyMs?: number): Promise<void> {
   userGestureUnlock(); // synchronous: keep the click's autoplay gesture
   const id = nextSessionId++;
   const lat = latencyMs ?? defaultLatencyMs();
@@ -196,15 +196,15 @@ export async function connectWebsrtSession(url: string, latencyMs?: number): Pro
  *  session — other sessions keep their channels), close its direct pcm
  *  channel (the worklet forgets only this session's mappings), terminate
  *  its worker, remove the record. */
-export function disconnectWebsrtSession(id: number): void {
+export function disconnectQuicsrtSession(id: number): void {
   teardownSession(id, "disconnected", "disconnected");
 }
 
 /** Update a session's latency. A live worker was init'ed with the old
- *  value, so — exactly like setWebsrtLatencyMs — the new value applies on
+ *  value, so — exactly like setQuicsrtLatencyMs — the new value applies on
  *  the next connect (and becomes the default for new sessions); the
  *  record updates immediately so the UI shows it. */
-export function setWebsrtSessionLatency(id: number, ms: number): void {
+export function setQuicsrtSessionLatency(id: number, ms: number): void {
   if (!getSession(id)) return;
   patchSession(id, { latencyMs: ms });
   setDefaultLatencyMsSignal(ms);
@@ -216,28 +216,28 @@ export function setWebsrtSessionLatency(id: number, ms: number): void {
 // the status/pids signals above are primary-session views. No-ops /
 // idle values when no session is live.
 
-export function connectWebsrt(): Promise<void> {
+export function connectQuicsrt(): Promise<void> {
   if (primary()) return Promise.resolve(); // one drawer session at a time
-  return connectWebsrtSession(targetUrl(), defaultLatencyMs());
+  return connectQuicsrtSession(targetUrl(), defaultLatencyMs());
 }
 
-export function disconnectWebsrt(): void {
+export function disconnectQuicsrt(): void {
   const p = primary();
-  if (p) disconnectWebsrtSession(p.id);
+  if (p) disconnectQuicsrtSession(p.id);
 }
 
 // ── Session internals ──────────────────────────────────────────────────────
 
-function getSession(id: number): WebsrtSession | undefined {
+function getSession(id: number): QuicsrtSession | undefined {
   return sessions().find((s) => s.id === id);
 }
 
-function patchSession(id: number, patch: Partial<WebsrtSession>): void {
+function patchSession(id: number, patch: Partial<QuicsrtSession>): void {
   setSessions((list) => list.map((s) => (s.id === id ? { ...s, ...patch } : s)));
 }
 
 function startWorker(id: number): Worker {
-  const w = createWebsrtWorker();
+  const w = createQuicsrtWorker();
   w.onmessage = (e: MessageEvent) => {
     const data = e.data as WorkerMsg;
     if (data.type === "batch") {
@@ -256,7 +256,7 @@ function startWorker(id: number): Worker {
  *  mappings; its global channel cursor never rewinds per-session), kill
  *  its worker, remove the record. If it was the primary, its final
  *  status/detail move to the idle views so they outlive the record. */
-function teardownSession(id: number, finalStatus: WebsrtStatus, finalDetail: string): void {
+function teardownSession(id: number, finalStatus: QuicsrtStatus, finalDetail: string): void {
   const s = getSession(id);
   if (!s) return;
   const wasPrimary = sessions()[0]?.id === id;
@@ -270,7 +270,7 @@ function teardownSession(id: number, finalStatus: WebsrtStatus, finalDetail: str
   }
 }
 
-function unmapSessionPids(s: WebsrtSession): void {
+function unmapSessionPids(s: QuicsrtSession): void {
   for (const p of s.pids) {
     if (p.chStart >= 0) sendToWorklet({ type: "unmap-pid", pid: p.pid, sessionId: s.id });
   }
@@ -324,7 +324,7 @@ export function onWorkletPidMapped(msg: {
 }): void {
   const s = getSession(msg.sessionId);
   if (!s) return;
-  const entry: WebsrtPidInfo = { pid: msg.pid, channelCount: msg.channelCount, chStart: msg.chStart };
+  const entry: QuicsrtPidInfo = { pid: msg.pid, channelCount: msg.channelCount, chStart: msg.chStart };
   const known = s.pids.some((p) => p.pid === msg.pid);
   patchSession(s.id, {
     pids: known ? s.pids.map((p) => (p.pid === msg.pid ? entry : p)) : [...s.pids, entry],

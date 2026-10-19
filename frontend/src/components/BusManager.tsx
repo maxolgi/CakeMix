@@ -5,7 +5,7 @@ export function BusManager(props: {
   running: boolean;
   wasmReady: boolean;
   status: string;
-  websrtStatus: string;
+  quicsrtStatus: string;
   expanded: boolean;
   onToggleExpanded: () => void;
   mode: "inputs" | "bus";
@@ -21,9 +21,9 @@ export function BusManager(props: {
   return (
     <div class="bus-manager" title="Buses">
       <button
-        class="websrt-chevron"
+        class="quicsrt-chevron"
         onClick={() => props.onToggleExpanded()}
-        title={props.expanded ? "Collapse settings" : "Expand settings (engine, test tones, WebSRT)"}
+        title={props.expanded ? "Collapse settings" : "Expand settings (engine, test tones, QuicSRT)"}
       >{props.expanded ? "▾" : "▸"}</button>
       <SceneBank />
       <span

@@ -1,7 +1,7 @@
 // Audio unlock — AudioContext.resume() must run inside (or traceable to) a
 // user gesture or Chrome autoplay policy leaves the context suspended and
 // the worklet never renders. The App registers the unlock callback on mount;
-// connect handlers (WebSRT receive/publish) call it synchronously from their
+// connect handlers (QuicSRT receive/publish) call it synchronously from their
 // click handlers so the gesture survives the async WebTransport handshake.
 
 let unlock: (() => void) | null = null;
