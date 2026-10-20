@@ -246,3 +246,4 @@ which sets the license for the combined work. Third-party components:
 |-----------|---------|
 | `maxolgi/oximedia` (DSP engine fork) | Apache-2.0 |
 | `vendor/QuicSRT-wasm` (submodule; itself carries libquicsrt + the srt fork as deps) | MPL-2.0 |
+| `vendor/guitarix` (submodule, pinned upstream `a4c561a`) | mixed per-file — `stereoverb.dsp` BSD (brummer 2008); faust-generated `.cc` files carry no in-file headers; guitarix-authored code GPL-2.0+ per its COPYING, which conveys guitarix as a whole under GPL-3+. All compatible with the AGPL-3.0 combined work; components remain under their own terms. |
