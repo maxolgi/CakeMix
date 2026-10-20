@@ -18,6 +18,14 @@ wasm-bindgen.workspace = true
 js-sys.workspace = true
 console_error_panic_hook.workspace = true
 
+# Pure-Rust libm for the wasm-only math shims in src/gxfx.rs: on
+# wasm32-unknown-unknown std's f32/f64 math methods lower to LLVM
+# intrinsics that become calls to the very C symbols the shims define,
+# so the shims must delegate to libm (never std) or they recurse
+# forever at runtime.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+libm = "0.2"
+
 [dev-dependencies]
 # 0.3.x required: 0.2.x ended at 0.2.50, which registers zero tests against
 # wasm-bindgen 0.2.127 ("no tests to run!"). 0.3.77 pins wasm-bindgen =0.2.127.

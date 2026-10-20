@@ -15,6 +15,7 @@ use oximedia_mixer::{
 pub mod console_json;
 pub mod effects;
 pub mod fifo;
+pub mod gxfx;
 mod meter;
 mod scene;
 
