@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "WASM bindings for the oximedia-mixer audio engine"
+build = "build.rs"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
