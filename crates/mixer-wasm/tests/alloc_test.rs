@@ -85,11 +85,19 @@ fn process_block_is_alloc_free_steady_state() {
         .collect();
 
     // Warmup: settle every capacity (FIFO, EQ f64 scratch, pass1 vec,
-    // meter rings, HashMap entries, engine channels).
-    for _ in 0..64 {
-        for pid in 0..PIDS {
-            let ch_start = pid as u32 * 2;
-            m.feed_interleaved(ch_start, &chunk, 2).expect("feed");
+    // meter rings, HashMap entries, engine channels). Delivery is PACED
+    // like the real QuicSRT shape — a 960-frame chunk lands only once the
+    // standing lead has drained below the margin. (A chunk per block
+    // would be 7.5x over real time: the queue pins at the 8192 cap and
+    // the stream-health gate correctly fades the overfeed out.)
+    let mut fed = 0usize;
+    for i in 0..64usize {
+        while fed < i * BLOCK as usize + 512 {
+            for pid in 0..PIDS {
+                let ch_start = pid as u32 * 2;
+                m.feed_interleaved(ch_start, &chunk, 2).expect("feed");
+            }
+            fed += CHUNK;
         }
         let out = m.process_block(BLOCK).expect("process");
         assert!(out.len() == BLOCK as usize * 2);
@@ -116,10 +124,14 @@ fn process_block_is_alloc_free_steady_state() {
     let mut total_allocs = 0u64;
     let mut worst_block = String::new();
     for i in 0..200u32 {
-        // Feeds sit OUTSIDE the measurement (delivery side, not RT).
-        for pid in 0..PIDS {
-            let ch_start = pid as u32 * 2;
-            m.feed_interleaved(ch_start, &chunk, 2).expect("feed");
+        // Feeds sit OUTSIDE the measurement (delivery side, not RT),
+        // paced exactly like the warmup (see the note there).
+        while fed < (64 + i as usize) * BLOCK as usize + 512 {
+            for pid in 0..PIDS {
+                let ch_start = pid as u32 * 2;
+                m.feed_interleaved(ch_start, &chunk, 2).expect("feed");
+            }
+            fed += CHUNK;
         }
         let before = LIVE.load(Ordering::Relaxed);
         let out = m.process_block(BLOCK).expect("process");
