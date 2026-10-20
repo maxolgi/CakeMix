@@ -23,6 +23,10 @@ x509-parser = "0.18"
 time = "0.3"
 # Validate the persisted key PEM before handing it to rustls.
 rustls-pki-types = "1"
+# Process-default crypto provider for the TLS acceptor (see the install in
+# spawn_web_server): axum-server (aws-lc-rs) + reqwest (ring) both link rustls
+# providers, so ring must be installed explicitly or TLS mode panics.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
 anyhow = "1"
 open = "5"
 clap = { version = "4", features = ["derive"] }

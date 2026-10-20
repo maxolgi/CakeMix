@@ -335,6 +335,14 @@ async fn spawn_web_server(
 ) -> anyhow::Result<tokio::task::JoinHandle<anyhow::Result<()>>> {
     match web_tls {
         Some((cert_pem, key_pem)) => {
+            // axum-server's tls-rustls default provider is aws-lc-rs while
+            // reqwest's rustls-tls links ring; with both providers in the
+            // process, rustls cannot pick a process default by itself and the
+            // TLS acceptor panics on first use. Install ring explicitly (the
+            // same provider the old websrt-based binary installed for
+            // quinn/wtransport) before the acceptor is built.
+            let _ = rustls::crypto::ring::default_provider().install_default();
+
             let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem(cert_pem, key_pem)
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to load TLS certificate: {e}"))?;
@@ -481,7 +489,7 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_gateway_target;
+    use super::{build_router, spawn_web_server, validate_gateway_target, SocketAddr};
 
     #[test]
     fn accepts_public_ip_literal() {
@@ -559,5 +567,80 @@ mod tests {
         // A NAME that embeds a private IP is not that IP — it fetches like
         // any other name.
         assert!(validate_gateway_target("https://10.0.0.5.nip.io/").is_ok());
+    }
+
+    #[tokio::test]
+    async fn tls_mode_serves_and_sends_coop_coep() {
+        // Regression (caught by the supervised instance, which runs TLS mode
+        // while CI/dev use --no-tls): axum-server (aws-lc-rs) and reqwest
+        // (ring) both link rustls providers, so rustls cannot auto-pick a
+        // process default and the TLS acceptor panicked on first use.
+        // spawn_web_server must install a provider itself — this test
+        // process installs nothing, so a missing install fails the fetch.
+        use axum::http::header::HeaderMap;
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::sync::Notify;
+        let mut params = rcgen::CertificateParams::default();
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "localhost");
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key_pair).unwrap();
+        let cert_pem = cert.pem().into_bytes();
+        let key_pem = key_pair.serialize_pem().into_bytes();
+
+        // Ephemeral port: bind, read, drop — spawn_web_server rebinds it.
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let shutdown = Arc::new(Notify::new());
+        let task = spawn_web_server(
+            SocketAddr::from(([127, 0, 0, 1], port)),
+            build_router(),
+            Some((cert_pem, key_pem)),
+            shutdown.clone(),
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let mut last_err = String::new();
+        let mut served = false;
+        for _ in 0..50 {
+            match client
+                .get(format!("https://127.0.0.1:{port}/health"))
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => {
+                    let headers: HeaderMap = r.headers().clone();
+                    assert_eq!(
+                        headers.get("cross-origin-opener-policy").unwrap(),
+                        "same-origin",
+                        "COOP header missing in TLS mode"
+                    );
+                    assert_eq!(
+                        headers.get("cross-origin-embedder-policy").unwrap(),
+                        "require-corp",
+                        "COEP header missing in TLS mode"
+                    );
+                    assert_eq!(r.text().await.unwrap(), "ok");
+                    served = true;
+                    break;
+                }
+                Ok(r) => last_err = format!("status {}", r.status()),
+                Err(e) => last_err = e.to_string(),
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        shutdown.notify_waiters();
+        let _ = task.await;
+        assert!(served, "TLS web server never became reachable: {last_err}");
     }
 }
