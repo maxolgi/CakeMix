@@ -3,10 +3,13 @@
 //! The binding IS the honest path now (FIFO drain → staging of 256 strips
 //! with dynamics + EQ → nine `process_mix_rt` engine instances → bus tail
 //! → master gain → limiter → meter), so this simulates the worklet's real
-//! workload instead of a hand-rolled replica. Two scenarios:
+//! workload instead of a hand-rolled replica. Three scenarios:
 //!
 //! - `realistic_load()`: 30 stereo PIDs (60 strips), 2 buses × 4 slots,
 //!   compressor on 4 strips, 16-channel tap armed.
+//! - `realistic_fx_load()`: the realistic load plus enabled gxfx chains
+//!   on 16 of the 30 pairs — stereo reverb ×4, stereo delay ×4, chorus
+//!   ×4, overdrive ×4, one effect per pair.
 //! - `full_load()`: 64 stereo PIDs (128 strips) + all 8 buses × 16 slots
 //!   = 256 strips, comp + gate on strips 0-15 and the bus-0 slots, two
 //!   buses off-main, tap armed. Limiter + six-band EQ at defaults.
@@ -112,6 +115,54 @@ fn realistic_load() -> Rig {
     m.set_channel_tap(16);
     Rig {
         label: "realistic load",
+        m,
+        pids: 30,
+        strips: 60 + 8,
+        drain_buses: &[],
+    }
+}
+
+/// Realistic console + FX: the realistic load (30 stereo PIDs, 2 buses
+/// × 4 slots, compressor on 4 strips, 16-channel tap) plus enabled
+/// gxfx chains on 16 of the 30 pairs — stereo reverb on pairs 0-3,
+/// stereo delay on 4-7, chorus on 8-11, overdrive on 12-15, one
+/// enabled effect per pair at a chain position matching its role
+/// (drive early, time effects late). Chorus/delay/reverb run their
+/// native stereo path (one DSP instance); overdrive is mono (a
+/// dual-mono pair of instances). 8 memory-class instances are created
+/// (4 delay + 4 reverb) — nowhere near the 96 cap.
+fn realistic_fx_load() -> Rig {
+    let mut m = MixerWasm::new(SR, BLOCK, 256).expect("ctor");
+    for pid in 0..30u16 {
+        m.map_pid(0x100 + pid, pid as u32 * 2, 2).expect("map pid");
+    }
+    for bus in 0..2u32 {
+        for slot in 0..4u32 {
+            m.set_bus_source(bus, slot, (bus * 4 + slot) * 2)
+                .expect("bus source");
+        }
+    }
+    for ch in 0..4u32 {
+        m.enable_compressor(ch).expect("comp");
+    }
+    m.set_channel_tap(16);
+    // (first pair, slot, effect id) — catalog ids: 1 overdrive,
+    // 4 chorus, 8 delay, 10 reverb. All four TUs have landed.
+    const FX: [(u32, u32, i32); 4] = [
+        (0, 9, 10), // pairs 0-3: reverb
+        (4, 6, 8),  // pairs 4-7: delay
+        (8, 3, 4),  // pairs 8-11: chorus
+        (12, 0, 1), // pairs 12-15: overdrive
+    ];
+    for &(first, slot, fx) in &FX {
+        for pair in first..first + 4 {
+            let owner = pair * 2; // even strip = the pair's chain owner
+            m.fx_set_slot(owner, slot, fx).expect("fx set slot");
+            m.fx_set_enabled(owner, slot, true).expect("fx enable");
+        }
+    }
+    Rig {
+        label: "realistic load + FX",
         m,
         pids: 30,
         strips: 60 + 8,
@@ -344,6 +395,43 @@ fn realistic_load_within_budget() {
     }
     let minutes = sim_minutes();
     let r = run(realistic_load(), 1.0, minutes);
+    r.print();
+    assert_eq!(
+        r.starved, 0,
+        "paced 1.0x delivery starved {} channel-blocks",
+        r.starved
+    );
+    assert_eq!(
+        r.zero_runs, 0,
+        "output went silent {} times (longest {} blocks)",
+        r.zero_runs, r.max_zero_run
+    );
+    assert_eq!(r.nan_inf, 0, "DSP produced {} NaN/Inf samples", r.nan_inf);
+    assert!(
+        r.p99_us < BUDGET_US,
+        "p99 block time {:.1} us exceeds the {:.0} us real-time budget",
+        r.p99_us,
+        BUDGET_US
+    );
+}
+
+/// Production-shaped console WITH gxfx chains must hold the same
+/// real-time budget as the bare console: p99 block time under 2667 µs,
+/// no starvation, no NaN. Measured (native release, 1-min runs, five
+/// runs): avg ~275-283 µs / p99 ~305-313 µs — ~8.5-8.7× headroom.
+/// The bare realistic load measures ~250/~275 µs (9.7×), so the 16
+/// single-effect chains add only ~30 µs/block — ~2 µs per chain
+/// (stereo reverb/delay/chorus + dual-mono overdrive alike). The FX
+/// pass leaves the realistic console deep inside budget; extrapolated
+/// linearly, all 64 pairs with one effect each would still clear the
+/// gate with room to spare.
+#[test]
+fn realistic_fx_load_within_budget() {
+    if !require_release() {
+        return;
+    }
+    let minutes = sim_minutes();
+    let r = run(realistic_fx_load(), 1.0, minutes);
     r.print();
     assert_eq!(
         r.starved, 0,
