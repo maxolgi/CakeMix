@@ -191,6 +191,33 @@ class MixerProcessor extends AudioWorkletProcessor {
                 if (this._mixer) try { this._mixer.disable_expander(msg.ch); } catch(e) {}
             } else if (msg.type === "set-exp-param") {
                 if (this._mixer) try { this._mixer.set_expander_param(msg.ch, msg.param, msg.value); } catch(e) {}
+            } else if (msg.type === "set-fx-slot") {
+                // FX chain of the stereo pair owned by even strip ch
+                // (pair t = strips 2t/2t+1, 11 slots). fxId is a catalog
+                // id or -1 = empty; the wasm resets the slot's params
+                // to the new effect's defaults and clears its enabled
+                // flag. try/catch also covers wasm builds without the
+                // fx API (inert, like a stale set-comp-param call).
+                if (this._mixer) try { this._mixer.fx_set_slot(msg.ch, msg.slot, msg.fxId); } catch(e) {}
+            } else if (msg.type === "set-fx-enabled") {
+                if (this._mixer) try { this._mixer.fx_set_enabled(msg.ch, msg.slot, msg.on); } catch(e) {}
+            } else if (msg.type === "set-fx-param") {
+                // param is the param ORDINAL (catalog row order) in
+                // engine units; value is unconstrained (clamping is
+                // the UI's job).
+                if (this._mixer) try { this._mixer.fx_set_param(msg.ch, msg.slot, msg.param, msg.value); } catch(e) {}
+            } else if (msg.type === "move-fx-slot") {
+                if (this._mixer) try { this._mixer.fx_move_slot(msg.ch, msg.from, msg.to); } catch(e) {}
+            } else if (msg.type === "get-fx-catalog") {
+                // FX catalog pull (request/reply like get-params): the
+                // catalog JSON is the FX UI's source of truth. Unlike
+                // get-params this ALWAYS replies — wasm absent or a
+                // build without the fx API gets an empty-but-valid
+                // catalog so the UI degrades to "no effects" instead
+                // of waiting on a reply that never comes.
+                var fxCatalog = '{"slots":0,"slotParams":0,"effects":[]}';
+                if (this._mixer) try { fxCatalog = this._mixer.fx_catalog_json(); } catch(e) {}
+                this.port.postMessage({ type: "fx-catalog", json: fxCatalog });
             } else if (msg.type === "set-master-gain") {
                 if (this._mixer) try { this._mixer.set_master_gain(msg.gain); } catch(e) {}
             } else if (msg.type === "set-limiter") {
