@@ -9,6 +9,7 @@ Complete through M5: multi-session QuicSRT PCM input, 128-strip console
 
 | Date | Milestone |
 |---|---|
+| 2026-10-20 | Per-pair guitarix FX insert chains: the real faust C++ DSP compiled freestanding from `vendor/guitarix` (`crates/mixer-wasm/gxfx/`), 10 effects honesty-tested and live (wah, overdrive, compressor, chorus, flanger, phaser, tremolo, delay, echo, reverb; distortion id 2 catalogued, DSP TU pending), 11 slots per stereo pair post-EQ, FX rack UI, scene snap, engine-sourced catalog |
 | 2026-10-19 | QuicSRT migration: replaced the Rust WebSRT stack with the C++ QuicSRT engine (`vendor/QuicSRT-wasm` submodule, emcc + pthreads), COOP/COEP on every response, embedded gateway removed in favor of the external QuicSRT-gateway |
 | 2026-10-19 | Stream-health gate: per-channel delivery-pathology protection (below) — lossy/bursty streams (any latency; jitter-tail events at 120 ms+ included) fade their strips to silence (~40 ms worst-case blip) instead of blasting constant full-scale granular static |
 
@@ -27,6 +28,12 @@ make test-wasm
 # Run everything
 make test-all
 ```
+
+Prerequisites: the pinned Rust toolchain with `wasm32-unknown-unknown`.
+Building mixer-wasm compiles the gxfx guitarix C++ DSP freestanding —
+that needs `clang++` and `ar` on PATH plus the vendored sources:
+`git submodule update --init vendor/guitarix`. The QuicSRT engine step
+(`make serve`) additionally needs emsdk (below).
 
 ## Running the server
 
@@ -73,7 +80,7 @@ QuicSRT (SRT over WebTransport, via the external QuicSRT-gateway)
 QuicSRT engine demuxer (vendor/QuicSRT-wasm — C++/emscripten, in a Worker)
   ↓ Float32 interleaved per PID
 MixerWasm (this crate, in an AudioWorklet or Worker)
-  ↓ elastic FIFOs → staging per strip: gate → expander → comp → EQ (raw source)
+  ↓ elastic FIFOs → staging per strip: gate → expander → comp → EQ → FX pair chains (bus slots tap the raw source)
   ↓ 9 engine instances (1 main + 8 buses) — all summing via process_mix_rt
   ↓ bus tail (gain/mute → publish / feed master) → master gain → limiter
 Web Audio / QuicSRT publish (master stereo, Nch direct-out taps, or any bus 1-8)
@@ -91,6 +98,22 @@ instant or cross-faded (dB-domain gains, audio-rate fade inside the mixer
 block — any user set cancels the fade). Multiple QuicSRT receive sessions
 run concurrently — PIDs are namespaced per session (keyed mapping), so
 different gateways/streams may reuse PID numbers.
+
+**FX chains** insert in the staging pass post-EQ, pre-meter/fader. The
+128 input strips form 64 stereo pairs; pair *t* (strips 2t/2t+1, the
+even strip owning) carries one 11-slot chain — any effect per slot or
+empty, per-slot IN/BYP, params in engine units. Stereo effects run
+native stereo across the pair, mono effects dual-mono. Ten guitarix
+effects are live (wah, overdrive, compressor, chorus, flanger, phaser,
+tremolo, delay, echo, reverb); distortion (id 2) is catalogued but has
+no DSP TU yet, so the engine rejects it. The effect catalog is
+delivered once from the engine (`fx_catalog_json`, single source of
+truth); DSP is created/activated eagerly at message time, never inside
+`process()`. Delay/echo/reverb allocate MB-scale tapes at create, so
+the engine caps concurrently created memory-class instances at 96
+(~384 MiB worst case); rejections surface in the UI (fx-error toast +
+store rollback). Scene recall snaps FX state — never interpolates,
+even mid-cross-fade — and muted chains keep running so tails ring out.
 
 ### PCM-only
 
@@ -181,11 +204,16 @@ Budget: **2667 µs/block** (128 frames @ 48 kHz).
 | Load | avg | p99 | headroom |
 |---|---|---|---|
 | Realistic — 60 strips + 2 buses × 4 slots, 4 comps, 16-ch tap | 253 µs | **275 µs** | **9.7×** (CI-enforced) |
+| Realistic + FX — realistic load + 16 enabled chains (reverb×4, delay×4, chorus×4, overdrive×4) | 275–283 µs | **305–313 µs** | **~8.6×** (CI-enforced) |
 | Full console — 128 strips + 8×16 bus slots, comp+gate on 32 strips | 1074 µs | **1161 µs** | **2.3×** |
 
 - ~3.8 µs/strip/block, scaling ~linearly (staging + 6-band EQ dominates;
   the nine engine sums add little). 256 strips ≈ 44% of budget — no room
   for 2× without slimmer staging.
+- FX marginal cost ≈ 2 µs per enabled chain per block (reverb/delay/
+  chorus/overdrive alike; measured over multiple 1-min native-release
+  runs) — extrapolated, all 64 pairs running one effect each still
+  clear the budget with room to spare.
 - Zero starvation, zero NaN/Inf, FIFO depth bounded under 300 ppm clock
   drift (elastic slip reconciliation).
 - Known: limiter transient inter-sample overshoot up to +0.6 dBFS at
@@ -206,6 +234,7 @@ All verified with known-answer honesty tests (per AGENTS.md honesty rule):
 | Expander | ✅ | (in honesty suite) | ✅ staging layer |
 | Gate | ✅ | (in honesty suite) | ✅ staging layer |
 | OversampledLimiter | ✅ | 3 | ✅ master bus |
+| gxfx insert FX — guitarix faust DSP, 10 effects (wah — a manual pedal wah, band set by HOTPOTZ, not envelope-driven — overdrive, compressor, chorus, flanger, phaser, tremolo, delay, echo, reverb) | ✅ | 10 known-answer honesty (8 in `gxfx_honesty_test` + rack-level delay impulse + console-level echo e2e) + unit/console suites | ✅ staging pass post-EQ, per-pair 11-slot chains (distortion id 2 catalogued, DSP TU pending) |
 
 ## License
 

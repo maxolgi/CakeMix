@@ -91,6 +91,19 @@ If a ported module's output doesn't match expected DSP math, treat it as
 "compiles-but-fake" until proven otherwise — file the finding, don't paper
 over it.
 
+The gxfx insert FX follow the same rule: the guitarix C++ DSP lives under
+`crates/mixer-wasm/gxfx/`, compiled freestanding by `build.rs` (plain
+`clang++` + `ar` — prerequisite; sources from the pinned
+`vendor/guitarix` submodule: `git submodule update --init
+vendor/guitarix`), and every newly ported effect must pass a known-answer
+honesty test before its factory slot is enabled — distortion (id 2) is
+the current pending example (catalogued, rejected by `set_slot` until
+its TU + audit land). Because delay/echo/reverb allocate MB-scale tapes
+at create, the engine caps concurrently created memory-class instances
+at 96 (~384 MiB worst case, 1.5× the 64 pairs so every pair can run a
+delay with headroom); DSP create/activate is eager at message time,
+never inside process().
+
 ### QuicSRT boundary
 
 The user **owns the QuicSRT repos** (https://github.com/maxolgi/libquicsrt,
