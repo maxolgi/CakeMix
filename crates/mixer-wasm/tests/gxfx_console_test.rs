@@ -56,11 +56,10 @@ fn fx_api_validates_channel_slot_and_effect() {
         m.fx_set_slot(0, 0, 100_000).is_err(),
         "huge fx id rejected before the i16 cast"
     );
-    // Distortion (id 2): DSP TU not landed → the rack's unavailable error.
-    assert!(
-        m.fx_set_slot(0, 0, 2).is_err(),
-        "unavailable effect rejected"
-    );
+    // Distortion (id 2) landed with its TU: it sets like any effect
+    // (then cleared, so the untouched-chain sweep below stays uniform).
+    m.fx_set_slot(0, 0, 2).expect("distortion sets");
+    m.fx_set_slot(0, 0, -1).expect("...and clears");
 
     // A valid set works; param/enabled/move share the validation shape.
     m.fx_set_slot(0, 4, 8).expect("valid set"); // delay (7 live params)

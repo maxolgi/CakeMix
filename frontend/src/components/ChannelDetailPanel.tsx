@@ -36,11 +36,6 @@ const fmtHz = (v: number) => (v >= 1000 ? (v / 1000).toFixed(1) + "k" : v.toFixe
 const fmtMs = (v: number) => (v < 1 ? v.toFixed(2) : v < 10 ? v.toFixed(1) : v.toFixed(0));
 const fmtFx = (v: number) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2));
 
-// TEMPORARY GUARD: distortion (catalog id 2) stays disabled in the FX
-// picker — its C++ TU has not landed yet and the engine rejects the id.
-// TODO: remove every use of FX_ID_DISTORTION when the distortion TU lands.
-const FX_ID_DISTORTION = 2;
-
 /** Snap a knob's raw drag output onto the catalog param's step/integer
  *  grid and clamp to [min, max] — the worklet treats clamping as the
  *  UI's job (no stepped knob control exists in the repo yet, so a plain
@@ -397,12 +392,7 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
                     {fxCategories().map((cat) => (
                       <optgroup label={cat.charAt(0).toUpperCase() + cat.slice(1)}>
                         {fxCatalog()!.effects.filter((f) => f.category === cat).map((f) => (
-                          // TEMPORARY GUARD (see FX_ID_DISTORTION above):
-                          // distortion stays visible-but-disabled until its
-                          // C++ TU lands.
-                          <option value={f.id} disabled={f.id === FX_ID_DISTORTION}>
-                            {f.label}{f.id === FX_ID_DISTORTION ? " (unavailable)" : ""}
-                          </option>
+                          <option value={f.id}>{f.label}</option>
                         ))}
                       </optgroup>
                     ))}

@@ -112,8 +112,18 @@ fn main() {
     let root = manifest_dir.join("../.."); // crates/mixer-wasm -> workspace root
     let vendor_dsp = root.join("vendor/guitarix/trunk/src/LV2/DSP");
     let vendor_faust = root.join("vendor/guitarix/trunk/src/LV2/faust-generated");
+    // zita-resampler: <zita-resampler/resampler.h> pulled in by
+    // gx_resampler.h (distortion's oversampling chain). LV2/faust:
+    // bossds1.cc includes "clipping.h", which lives in the faust (dsp
+    // source) dir, one level up from faust-generated.
+    let vendor_zita = root.join("vendor/guitarix/trunk/src/zita-resampler-1.1.0");
+    let vendor_clipping = root.join("vendor/guitarix/trunk/src/LV2/faust");
 
-    if !vendor_dsp.is_dir() || !vendor_faust.is_dir() {
+    if !vendor_dsp.is_dir()
+        || !vendor_faust.is_dir()
+        || !vendor_zita.is_dir()
+        || !vendor_clipping.is_dir()
+    {
         panic!(
             "vendor/guitarix is missing or not initialized (expected {}): run \
              `git submodule update --init vendor/guitarix` and rebuild",
@@ -146,6 +156,8 @@ fn main() {
     includes.push(gxfx.display().to_string());
     includes.push(vendor_dsp.display().to_string());
     includes.push(vendor_faust.display().to_string());
+    includes.push(vendor_zita.display().to_string());
+    includes.push(vendor_clipping.display().to_string());
 
     let mut flags: Vec<String> = [
         "-std=c++20",

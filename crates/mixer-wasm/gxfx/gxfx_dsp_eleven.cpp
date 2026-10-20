@@ -122,25 +122,23 @@ PluginLV2* gxfx_create_delay() { return gxfx_delay::stereodelay::plugin(); }
 PluginLV2* gxfx_create_echo() { return gxfx_echo::stereoecho::plugin(); }
 PluginLV2* gxfx_create_reverb() { return gxfx_reverb::stereoverb::plugin(); }
 
-// Distortion (catalog id 2) rides gxfx_dsp_distortion.cpp (separate task).
-// Until that TU lands, its factory slot is null and gxfx_create(2, ..)
-// returns null. Flip when it exists: declare
-//   PluginLV2* gxfx_create_distortion();
-// here and replace the null slot below.
+// Distortion (catalog id 2) rides gxfx_dsp_distortion.cpp (same archive,
+// separate TU: it alone pulls gx_resampler/zita link-complete).
+PluginLV2* gxfx_create_distortion();
 
 // Effect id (gxfx_catalog.h row order) → factory. Rows 0..10.
 static const gxfx_factory GXFX_FACTORIES[GXFX_EFFECT_COUNT] = {
-    gxfx_create_wah,        /*  0 wah        */
-    gxfx_create_overdrive,  /*  1 overdrive  */
-    0,                      /*  2 distortion — gxfx_dsp_distortion.cpp, not yet landed */
-    gxfx_create_compressor, /*  3 compressor */
-    gxfx_create_chorus,     /*  4 chorus     */
-    gxfx_create_flanger,    /*  5 flanger    */
-    gxfx_create_phaser,     /*  6 phaser     */
-    gxfx_create_tremolo,    /*  7 tremolo    */
-    gxfx_create_delay,      /*  8 delay      */
-    gxfx_create_echo,       /*  9 echo       */
-    gxfx_create_reverb,     /* 10 reverb     */
+    gxfx_create_wah,         /*  0 wah         */
+    gxfx_create_overdrive,   /*  1 overdrive   */
+    gxfx_create_distortion,  /*  2 distortion  */
+    gxfx_create_compressor,  /*  3 compressor  */
+    gxfx_create_chorus,      /*  4 chorus      */
+    gxfx_create_flanger,     /*  5 flanger     */
+    gxfx_create_phaser,      /*  6 phaser      */
+    gxfx_create_tremolo,     /*  7 tremolo     */
+    gxfx_create_delay,       /*  8 delay       */
+    gxfx_create_echo,        /*  9 echo        */
+    gxfx_create_reverb,      /* 10 reverb      */
 };
 
 static bool gxfx_id_ok(int fx)
@@ -198,8 +196,8 @@ const GxFxParamDef* gxfx_param_def(int fx, int param)
 }
 
 /* Create a DSP instance for effect id at the given rate; null when the id
- * is unknown, the effect's TU has not landed (distortion today) or
- * allocation fails. Calls set_samplerate BEFORE any port connection. */
+ * is unknown or allocation fails. Calls set_samplerate BEFORE any port
+ * connection. */
 GxFxInstance* gxfx_create(int fx, uint32_t sample_rate)
 {
     if (!gxfx_id_ok(fx))

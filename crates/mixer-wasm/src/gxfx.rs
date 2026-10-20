@@ -74,9 +74,8 @@ mod ffi {
         pub fn gxfx_param_default(fx: c_int, param: c_int) -> f32;
         /// Pointee is static storage (gxfx_catalog.h), null when out of range.
         pub fn gxfx_param_def(fx: c_int, param: c_int) -> *const GxFxParamDef;
-        /// Null when the id is unknown, the effect's TU has not landed
-        /// (distortion today) or allocation fails. Calls set_samplerate
-        /// BEFORE any port connection.
+        /// Null when the id is unknown or allocation fails. Calls
+        /// set_samplerate BEFORE any port connection.
         pub fn gxfx_create(fx: c_int, sample_rate: u32) -> *mut GxFxInstance;
         pub fn gxfx_connect_port(
             handle: *mut GxFxInstance,
@@ -171,7 +170,7 @@ struct GxFxHandle(*mut GxFxInstance);
 
 impl GxFxHandle {
     /// Create (set_samplerate included). None = effect unavailable
-    /// (distortion until its TU lands) or allocation failure.
+    /// (null factory / allocation failure).
     fn create(fx: i16, sample_rate: u32) -> Option<Self> {
         let h = unsafe { ffi::gxfx_create(fx as c_int, sample_rate) };
         (!h.is_null()).then_some(Self(h))
@@ -206,8 +205,8 @@ pub enum GxFxError {
     /// Effect id outside the catalog (-1 ..= effect_count()-1 for
     /// `set_slot`).
     BadEffect,
-    /// Effect exists in the catalog but its DSP TU has not landed
-    /// (distortion, id 2, today) — create returned null.
+    /// Effect exists in the catalog but its DSP could not be created —
+    /// create returned null (null factory or allocation failure).
     Unavailable,
     /// [`MEMORY_CLASS_CAP`] concurrently created memory-class instances
     /// would be exceeded.
@@ -223,7 +222,7 @@ impl fmt::Display for GxFxError {
         let s = match self {
             GxFxError::BadIndex => "pair/slot index out of range",
             GxFxError::BadEffect => "effect id outside the catalog",
-            GxFxError::Unavailable => "effect unavailable (DSP TU not landed)",
+            GxFxError::Unavailable => "effect unavailable (DSP create failed)",
             GxFxError::Budget => "memory-class instance cap would be exceeded",
             GxFxError::NoEffect => "slot holds no effect",
             GxFxError::BadParam => "param index outside the effect's param count",
@@ -382,8 +381,7 @@ impl GxFxRack {
     ///   connected to the slot's param storage BEFORE any activation —
     ///   the activation ordering OctOBX proved in production.
     /// * Errors leave the slot EMPTY (never a torn half-state):
-    ///   [`GxFxError::Unavailable`] when the id's factory is null
-    ///   (distortion, id 2, until its TU lands),
+    ///   [`GxFxError::Unavailable`] when the id's factory is null,
     ///   [`GxFxError::Budget`] when the memory-class cap would be
     ///   exceeded (checked BEFORE any teardown, so a rejected set
     ///   leaves the previous effect running).
@@ -990,15 +988,34 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_effect_rejected_cleanly() {
+    fn distortion_loads_and_runs_like_any_available_effect() {
         let mut r = rack();
-        // Distortion (id 2) has a null factory until its TU lands:
-        // a clean error, slot left empty and usable.
-        assert_eq!(r.set_slot(1, 2, 2).unwrap_err(), GxFxError::Unavailable);
+        // Distortion (id 2, bossds1) landed with gxfx_dsp_distortion.cpp:
+        // set_slot must create it eagerly (mono → two instances for the
+        // pair), accept its three params and run audio through it.
+        r.set_slot(1, 2, 2).unwrap();
+        assert_eq!(r.slot_effect(1, 2).unwrap(), 2);
+        assert_eq!(r.slot_instances(1, 2).unwrap(), 2);
+        assert_eq!(r.param(1, 2, 0).unwrap(), -2.0, "LEVEL default");
+        assert_eq!(r.param(1, 2, 1).unwrap(), 0.5, "TONE default");
+        assert_eq!(r.param(1, 2, 2).unwrap(), 0.5, "DRIVE default");
+        r.set_param(1, 2, 2, 0.9).unwrap();
+        r.set_enabled(1, 2, true).unwrap();
+        let mut buf: Vec<f32> = (0..BS).map(|i| (i as f32 / 32.0).sin() * 0.5).collect();
+        let expect = buf.clone();
+        let mut rbuf = buf.clone();
+        r.process_pair(1, &mut buf, Some(&mut rbuf));
+        assert!(
+            buf.iter()
+                .zip(expect.iter())
+                .any(|(o, e)| (o - e).abs() > 1e-4),
+            "distortion must actually process audio (output differs from input)"
+        );
+        assert!(buf.iter().all(|v| v.is_finite()));
+        // Not memory-class: its instances never count toward the budget.
+        assert_eq!(r.memory_class_instances(), 0);
+        r.set_slot(1, 2, -1).unwrap();
         assert_eq!(r.slot_effect(1, 2).unwrap(), -1);
-        assert_eq!(r.slot_instances(1, 2).unwrap(), 0);
-        r.set_slot(1, 2, 0).unwrap();
-        assert_eq!(r.slot_effect(1, 2).unwrap(), 0);
     }
 
     #[test]

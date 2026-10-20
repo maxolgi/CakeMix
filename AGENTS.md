@@ -96,9 +96,10 @@ The gxfx insert FX follow the same rule: the guitarix C++ DSP lives under
 `clang++` + `ar` — prerequisite; sources from the pinned
 `vendor/guitarix` submodule: `git submodule update --init
 vendor/guitarix`), and every newly ported effect must pass a known-answer
-honesty test before its factory slot is enabled — distortion (id 2) is
-the current pending example (catalogued, rejected by `set_slot` until
-its TU + audit land). Because delay/echo/reverb allocate MB-scale tapes
+honesty test before its factory slot is enabled — distortion (id 2,
+bossds1, landed 2026-10-20) is the applied example of that rule: it
+stayed rejected by `set_slot` until its TU, freestanding object audit
+and honesty test all landed. Because delay/echo/reverb allocate MB-scale tapes
 at create, the engine caps concurrently created memory-class instances
 at 96 (~384 MiB worst case, 1.5× the 64 pairs so every pair can run a
 delay with headroom); DSP create/activate is eager at message time,

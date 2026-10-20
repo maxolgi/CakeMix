@@ -9,7 +9,7 @@ Complete through M5: multi-session QuicSRT PCM input, 128-strip console
 
 | Date | Milestone |
 |---|---|
-| 2026-10-20 | Per-pair guitarix FX insert chains: the real faust C++ DSP compiled freestanding from `vendor/guitarix` (`crates/mixer-wasm/gxfx/`), 10 effects honesty-tested and live (wah, overdrive, compressor, chorus, flanger, phaser, tremolo, delay, echo, reverb; distortion id 2 catalogued, DSP TU pending), 11 slots per stereo pair post-EQ, FX rack UI, scene snap, engine-sourced catalog |
+| 2026-10-20 | Per-pair guitarix FX insert chains: the real faust C++ DSP compiled freestanding from `vendor/guitarix` (`crates/mixer-wasm/gxfx/`), 11 effects honesty-tested and live (wah, overdrive, distortion — bossds1 via the gx_resampler/zita oversampling TU — compressor, chorus, flanger, phaser, tremolo, delay, echo, reverb), 11 slots per stereo pair post-EQ, FX rack UI, scene snap, engine-sourced catalog |
 | 2026-10-19 | QuicSRT migration: replaced the Rust WebSRT stack with the C++ QuicSRT engine (`vendor/QuicSRT-wasm` submodule, emcc + pthreads), COOP/COEP on every response, embedded gateway removed in favor of the external QuicSRT-gateway |
 | 2026-10-19 | Stream-health gate: per-channel delivery-pathology protection (below) — lossy/bursty streams (any latency; jitter-tail events at 120 ms+ included) fade their strips to silence (~40 ms worst-case blip) instead of blasting constant full-scale granular static |
 
@@ -104,10 +104,9 @@ different gateways/streams may reuse PID numbers.
 128 input strips form 64 stereo pairs; pair *t* (strips 2t/2t+1, the
 even strip owning) carries one 11-slot chain — any effect per slot or
 empty, per-slot IN/BYP, params in engine units. Stereo effects run
-native stereo across the pair, mono effects dual-mono. Ten guitarix
-effects are live (wah, overdrive, compressor, chorus, flanger, phaser,
-tremolo, delay, echo, reverb); distortion (id 2) is catalogued but has
-no DSP TU yet, so the engine rejects it. The effect catalog is
+native stereo across the pair, mono effects dual-mono. Eleven guitarix
+effects are live (wah, overdrive, distortion, compressor, chorus,
+flanger, phaser, tremolo, delay, echo, reverb). The effect catalog is
 delivered once from the engine (`fx_catalog_json`, single source of
 truth); DSP is created/activated eagerly at message time, never inside
 `process()`. Delay/echo/reverb allocate MB-scale tapes at create, so
@@ -235,7 +234,7 @@ All verified with known-answer honesty tests (per AGENTS.md honesty rule):
 | Expander | ✅ | (in honesty suite) | ✅ staging layer |
 | Gate | ✅ | (in honesty suite) | ✅ staging layer |
 | OversampledLimiter | ✅ | 3 | ✅ master bus |
-| gxfx insert FX — guitarix faust DSP, 10 effects (wah — a manual pedal wah, band set by HOTPOTZ, not envelope-driven — overdrive, compressor, chorus, flanger, phaser, tremolo, delay, echo, reverb) | ✅ | 10 known-answer honesty (8 in `gxfx_honesty_test` + rack-level delay impulse + console-level echo e2e) + unit/console suites | ✅ staging pass post-EQ, per-pair 11-slot chains (distortion id 2 catalogued, DSP TU pending) |
+| gxfx insert FX — guitarix faust DSP, 11 effects (wah — a manual pedal wah, band set by HOTPOTZ, not envelope-driven — overdrive, distortion — bossds1, oversampled via gx_resampler/zita; its faust model drains onto a documented ~-130 dBFS control-voltage DC floor, not exact zero — compressor, chorus, flanger, phaser, tremolo, delay, echo, reverb) | ✅ | 11 known-answer honesty (9 in `gxfx_honesty_test` + rack-level delay impulse + console-level echo e2e) + unit/console suites | ✅ staging pass post-EQ, per-pair 11-slot chains |
 
 ## License
 

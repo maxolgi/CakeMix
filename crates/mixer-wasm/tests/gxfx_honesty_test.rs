@@ -5,11 +5,11 @@
 //! Per AGENTS.md's honesty rule, every DSP path must pass an end-to-end
 //! known-answer test before being trusted. Stereo delay (rack-level) and
 //! echo (console-level) are already covered; this file drives the remaining
-//! eight testable effects — wah (0), overdrive (1), compressor (3), chorus
-//! (4), flanger (5), phaser (6), tremolo (7), reverb (10) — natively, with
-//! musically active (never bypass-like) parameter settings, asserting the
-//! PHYSICAL claim each measurement verifies. (Distortion, id 2, has no DSP
-//! TU yet — `set_slot` rejects it — so it has nothing to test.)
+//! nine testable effects — wah (0), overdrive (1), distortion (2),
+//! compressor (3), chorus (4), flanger (5), phaser (6), tremolo (7),
+//! reverb (10) — natively, with musically active (never bypass-like)
+//! parameter settings, asserting the PHYSICAL claim each measurement
+//! verifies.
 //!
 //! VERDICT: all eight are REAL DSP. One documented deviation from the
 //! task brief: gcb_95 "wah" is a MANUAL pedal wah (LTI at a fixed pedal
@@ -298,6 +298,115 @@ fn overdrive_scream_nonlinear_and_compressing() {
     drain_and_assert_silent(&mut r, 0, 1.0, "overdrive");
 }
 
+// ===========================================================================
+// Distortion / bossds1 (id 2) — BOSS DS-1 style, oversampled via zita
+// ===========================================================================
+
+#[test]
+fn distortion_bossds1_nonlinear_and_compressing() {
+    let mut r = rack();
+    r.set_slot(0, 0, 2).unwrap();
+    // defaults: level -2 dB, tone 0.5, drive 0.5 — level to unity, full
+    // drive (gain into the asymmetric diode clipper), tone at its neutral
+    // mid. (In this faust model higher TONE tilts DARKER, not brighter —
+    // probe-swept; 0.5 leaves the spectrum most open.)
+    r.set_param(0, 0, 0, 0.0).unwrap(); // LEVEL 0 dB
+    r.set_param(0, 0, 1, 0.5).unwrap(); // TONE neutral
+    r.set_param(0, 0, 2, 1.0).unwrap(); // DRIVE max
+    r.set_enabled(0, 0, true).unwrap();
+
+    // Loud drive: 0.8-amplitude 500 Hz sine (96 samples per period → the
+    // 30720-sample Goertzel window is exactly 320 periods, so 500/1000/
+    // 1500 Hz bins are leakage-free). The DS-1 diode stage runs 2x
+    // oversampled (96 kHz via zita), so aliasing cannot fake harmonics
+    // into the bins either. Saturation is odd-dominant (P2 stays ~0:
+    // deep in the tables both clip branches converge) — P3 is the
+    // honest carrier of the claim.
+    let loud_in = sine(500.0, 0.8, 1.5);
+    let loud_out = run_mono(&mut r, 0, &loud_in);
+    assert_finite(&loud_out, "distortion loud");
+    let m = loud_out.len() - 30720;
+    let win = &loud_out[m..];
+    let p1 = goertzel_f32(win, 500.0, FS as f64);
+    let p2 = goertzel_f32(win, 1000.0, FS as f64);
+    let p3 = goertzel_f32(win, 1500.0, FS as f64);
+    let peak = win.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+    let harm = (p2 + p3) / p1;
+    println!(
+        "bossds1: P1 {p1:.6} P2 {p2:.6} P3 {p3:.6} harm {harm:.3} peak {peak:.3} \
+         (clipper asymptote ~0.19)"
+    );
+    assert!(
+        harm > 0.05,
+        "PHYSICAL: the diode clipper at full drive must generate harmonic \
+         energy from a pure sine ((P2+P3)/P1 > 5 %); got {harm:.3}"
+    );
+    assert!(
+        peak < 0.25,
+        "PHYSICAL: the clip tables bound the output (saturating x/(3+x) \
+         curves — peak {peak:.3} must stay under the asymptote band)"
+    );
+
+    // Gain compression: same rack, a 40x quieter passage after settle —
+    // below the clipper's knee, so it rides the ~2x small-signal gain
+    // while the loud sine is squashed against the asymptote (probe:
+    // stage gain falls 1.9 → 0.22 as input rises 0.05 → 0.8).
+    let quiet_in = sine(500.0, 0.02, 1.5);
+    let quiet_out = run_mono(&mut r, 0, &quiet_in);
+    assert_finite(&quiet_out, "distortion quiet");
+    let rl = rms(&loud_out[loud_out.len() - samples(0.5)..]);
+    let rq = rms(&quiet_out[quiet_out.len() - samples(0.5)..]);
+    let ri_l = rms(&loud_in[loud_in.len() - samples(0.5)..]);
+    let ri_q = rms(&quiet_in[quiet_in.len() - samples(0.5)..]);
+    let in_ratio = ri_l / ri_q;
+    let out_ratio = rl / rq;
+    println!(
+        "bossds1: rms loud {rl:.5} quiet {rq:.5} out ratio {out_ratio:.2} (in ratio {in_ratio:.1})"
+    );
+    assert!(
+        out_ratio < in_ratio / 4.0,
+        "PHYSICAL: the drive nonlinearity must compress (output loud/quiet \
+         {out_ratio:.2} well below input {in_ratio:.1} — a linear/no-op effect \
+         would pass the ratio through)"
+    );
+
+    // FINDING (documented): unlike the ten earlier effects, bossds1 does
+    // not drain to exact digital silence. Its faust code has a
+    // signal-independent control-smoothing recursion
+    // (fRec1 = 0.007·DRIVE + 0.993·fRec1[1] — the "control voltage"
+    // charging to its operating point) whose zero-input steady state is
+    // a ~3e-7 DC offset (~-130 dBFS) on BOTH channels (the never-driven
+    // R output sits at exactly that floor). The signal-driven tail
+    // itself does decay onto that floor (L: 2.3e-5 after 1 s → 1.5e-7
+    // after 3 s, tone-stack pole τ ≈ 0.16 s). So the honest universal
+    // claim for this effect is: after drain, output < 1e-6 (< -120
+    // dBFS, inaudible by any margin) AND still decaying (late window
+    // under early window) — no ringing, no stuck signal, just the tiny
+    // model DC floor.
+    let z = zeros(3.0);
+    let (ol, or_) = run_pair(&mut r, 0, &z, &z);
+    // Floor claim on the final block (drain helper's convention); decay
+    // claim against the previous full second.
+    let w = samples(1.0);
+    let max_of = |x: &[f32]| x.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+    let early_l = max_of(&ol[ol.len() - 2 * w..ol.len() - w]);
+    let late_l = max_of(&ol[ol.len() - BS..]);
+    let early_r = max_of(&or_[or_.len() - 2 * w..or_.len() - w]);
+    let late_r = max_of(&or_[or_.len() - BS..]);
+    println!(
+        "bossds1: drain L {late_l:.3e} (early {early_l:.3e}), R {late_r:.3e} (early {early_r:.3e})"
+    );
+    assert!(
+        late_l < 1e-6 && late_r < 1e-6,
+        "PHYSICAL: silence-in must drain to the model's DC floor (< 1e-6, \
+         -120 dBFS); got L {late_l:.3e} R {late_r:.3e}"
+    );
+    assert!(
+        late_l <= early_l && late_r <= early_r,
+        "PHYSICAL: the tail must DECAY onto the floor, not ring (late \
+         L {late_l:.3e} vs early {early_l:.3e}, R {late_r:.3e} vs {early_r:.3e})"
+    );
+}
 // ===========================================================================
 // Compressor (id 3)
 // ===========================================================================

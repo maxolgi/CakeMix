@@ -1,0 +1,4 @@
+// Freestanding <iostream> shim: deliberately empty. gx_resampler.cc
+// includes it, but its only use is a commented-out debug print; no
+// declaration is ever referenced.
+#pragma once

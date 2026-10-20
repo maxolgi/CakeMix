@@ -1,0 +1,4 @@
+// Freestanding <cassert> shim: wraps the C header, as the standard does.
+// (Pulled in by zita's resampler.h; the asserts live in gx_resampler.cc.)
+#pragma once
+#include <assert.h>
