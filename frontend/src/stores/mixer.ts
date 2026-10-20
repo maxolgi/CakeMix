@@ -286,11 +286,70 @@ export function requestFxCatalog() {
   sendToWorklet({ type: "get-fx-catalog" });
 }
 
+/** An engine fx-op rejection relayed by the worklet (`fx-error`): which
+ *  op on which channel:slot failed, and the engine's (already descriptive)
+ *  message. */
+export interface FxErrorPayload {
+  op: "set-fx-slot" | "set-fx-enabled" | "set-fx-param" | "move-fx-slot";
+  ch: number; slot: number; msg: string;
+}
+
+/** Latest fx rejection, null when none — transient: App's toast surfaces
+ *  it and auto-clears after ~4s. */
+export const [fxLastError, setFxLastError] = createSignal<FxErrorPayload | null>(null);
+
+/** Pre-op snapshot of one in-flight fx mutation, keyed `${ch}:${slot}`
+ *  (ch = even pair-owner strip; slot = the slot the worklet names in its
+ *  fx-error reply — the FROM slot for moves). Per-slot ops snapshot just
+ *  the slot; a move snapshots the whole pair row, because the error reply
+ *  carries no `to` — rollback must be derivable from ch:slot alone. */
+type FxSnapshot = { kind: "slot"; state: FxSlotState } | { kind: "row"; states: FxSlotState[] };
+const fxPending = new Map<string, FxSnapshot>();
+
+function snapshotFxSlot(pair: number, slot: number): FxSlotState {
+  const s = fxChains[pair][slot];
+  return { fx: s.fx, enabled: s.enabled, params: [...s.params] };
+}
+
+function snapshotFxRow(pair: number): FxSlotState[] {
+  return fxChains[pair].map(s => ({ fx: s.fx, enabled: s.enabled, params: [...s.params] }));
+}
+
+/** Reconcile a rejected fx op (the worklet's `fx-error` reply, routed by
+ *  App): roll the slot — or the whole pair row, for moves — back to the
+ *  snapshot taken when the op was posted, drop the snapshot, and surface
+ *  the engine's message via `fxLastError`. The store is an optimistic
+ *  cache; this is what keeps it from showing state the engine refused.
+ *
+ *  Superseded ops: a NEW user op on the same ch:slot replaces the stored
+ *  snapshot, so at most one rollback state exists per slot — a late error
+ *  from the superseded op cannot restore the older pre-state; it consumes
+ *  the newest snapshot for that slot instead (and still toasts). Errors
+ *  with no snapshot at all (none in flight) only toast. */
+export function applyFxError(payload: FxErrorPayload) {
+  const pair = fxPairOf(payload.ch);
+  const key = `${payload.ch}:${payload.slot}`;
+  const snap = fxPending.get(key);
+  if (snap && pair !== null && payload.slot >= 0 && payload.slot < FX_SLOTS) {
+    if (snap.kind === "row") {
+      setFxChains(pair, snap.states.map(s => ({ fx: s.fx, enabled: s.enabled, params: [...s.params] })));
+    } else {
+      setFxChains(pair, payload.slot, { fx: snap.state.fx, enabled: snap.state.enabled, params: [...snap.state.params] });
+    }
+    fxPending.delete(key);
+  }
+  setFxLastError({ op: payload.op, ch: payload.ch, slot: payload.slot, msg: payload.msg });
+}
+
 // Store helpers — each updates store + sends worklet message. The wasm
 // is the source of truth; these mirror its exact semantics (param is
 // the catalog-row ORDINAL in ENGINE units, params rows live-trimmed) so
 // store and engine never disagree. Guards no-op WITHOUT posting — the
-// wasm rejects/ignores those calls and changes nothing engine-side.
+// wasm rejects/ignores those calls and changes nothing engine-side. The
+// engine can still reject a POSTED op (delay/echo/reverb instance cap,
+// not-yet-available effects), so each helper snapshots the affected
+// pre-op state into fxPending first; a rejection's fx-error reply rolls
+// it back via applyFxError above.
 export function setFxSlot(ch: number, slot: number, fxId: number) {
   const pair = fxPairOf(ch);
   if (pair === null || slot < 0 || slot >= FX_SLOTS) return;
@@ -299,6 +358,7 @@ export function setFxSlot(ch: number, slot: number, fxId: number) {
   // the defaults it would install, so don't post either).
   const fx = fxId >= 0 ? fxCatalog()?.effects[fxId] : undefined;
   if (fxId !== -1 && !fx) return;
+  fxPending.set(`${ch}:${slot}`, { kind: "slot", state: snapshotFxSlot(pair, slot) });
   setFxChains(pair, slot, { fx: fxId, enabled: false, params: fx ? fx.params.map(p => p.default) : [] });
   sendToWorklet({ type: "set-fx-slot", ch, slot, fxId });
 }
@@ -306,6 +366,7 @@ export function setFxEnabled(ch: number, slot: number, on: boolean) {
   const pair = fxPairOf(ch);
   if (pair === null || slot < 0 || slot >= FX_SLOTS) return;
   if (fxChains[pair][slot].fx < 0) return;  // wasm ignores empty slots
+  fxPending.set(`${ch}:${slot}`, { kind: "slot", state: snapshotFxSlot(pair, slot) });
   setFxChains(pair, slot, "enabled", on);
   sendToWorklet({ type: "set-fx-enabled", ch, slot, on });
 }
@@ -313,6 +374,7 @@ export function setFxParam(ch: number, slot: number, param: number, value: numbe
   const pair = fxPairOf(ch);
   if (pair === null || slot < 0 || slot >= FX_SLOTS) return;
   if (param < 0 || param >= fxChains[pair][slot].params.length) return;
+  fxPending.set(`${ch}:${slot}`, { kind: "slot", state: snapshotFxSlot(pair, slot) });
   setFxChains(pair, slot, "params", param, value);
   sendToWorklet({ type: "set-fx-param", ch, slot, param, value });
 }
@@ -320,9 +382,12 @@ export function moveFxSlot(ch: number, from: number, to: number) {
   const pair = fxPairOf(ch);
   if (pair === null) return;
   if (from < 0 || from >= FX_SLOTS || to < 0 || to >= FX_SLOTS) return;
+  // Whole-row snapshot under the from-slot key (fx-error replies name
+  // only the from slot); the array-move below must restore exactly.
+  fxPending.set(`${ch}:${from}`, { kind: "row", states: snapshotFxRow(pair) });
   // Array-move the whole row (fx id, params, enabled travel together),
   // same semantics as the wasm's fx_move_slot.
-  const rows = fxChains[pair].map(r => ({ fx: r.fx, enabled: r.enabled, params: [...r.params] }));
+  const rows = snapshotFxRow(pair);
   const [row] = rows.splice(from, 1);
   rows.splice(to, 0, row);
   setFxChains(pair, rows);

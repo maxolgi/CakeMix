@@ -1,4 +1,4 @@
-import { onMount, onCleanup, createSignal, createEffect, For } from "solid-js";
+import { onMount, onCleanup, createSignal, createEffect, For, Show } from "solid-js";
 import * as quicsrt from "./quicsrt/client";
 import * as quicsrtStore from "./quicsrt/store";
 import * as scenesStore from "./stores/scenes";
@@ -11,7 +11,8 @@ import { BusMasterStrip } from "./components/BusMasterStrip";
 import { BusManager } from "./components/BusManager";
 import { QuicSRTPanel } from "./components/QuicSRTPanel";
 import {
-  updateMeterData, applyConsoleParams, applyFxCatalog, requestFxCatalog,
+  updateMeterData, applyConsoleParams, applyFxCatalog, applyFxError, requestFxCatalog,
+  fxLastError, setFxLastError,
   wasmReady, setWasmReady, isRunning, setIsRunning,
   status, setStatus, setMixerNode, sendToWorklet,
   selectedBus, setSelectedBus, slotChannelIndex,
@@ -77,6 +78,9 @@ export default function App() {
         else if (msg.type === "scene-recalled") { sendToWorklet({ type: "get-params" }); }
         else if (msg.type === "console-params") { applyConsoleParams(msg.json); }
         else if (msg.type === "fx-catalog") { applyFxCatalog(msg.json); }
+        // An fx op the engine rejected (instance cap, unavailable effect):
+        // the store rolls its optimistic slot back and raises the toast.
+        else if (msg.type === "fx-error") { applyFxError(msg); }
         else if (msg.type === "pcm-dropped") { quicsrtStore.onWorkletPcmDropped(msg.total); }
         else if (msg.type === "pub-pcm") { relayPubPcm(msg.samples, msg.ptsUs, msg.channels); }
       };
@@ -92,6 +96,15 @@ export default function App() {
         setIsRunning(true);
       }
     }
+  });
+
+  // FX rejection toast lifetime: auto-clear the transient error ~4s after
+  // it lands. A newer rejection restarts the window — the effect re-runs,
+  // so the cleanup below clears the previous timer first.
+  createEffect(() => {
+    if (!fxLastError()) return;
+    const t = setTimeout(() => setFxLastError(null), 4000);
+    onCleanup(() => clearTimeout(t));
   });
 
   onCleanup(() => { quicsrtStore.disconnectQuicsrt(); audioCtx?.close(); });
@@ -148,6 +161,14 @@ export default function App() {
         {selectedBus() !== null && <BusMasterStrip bus={selectedBus()!} />}
         <MasterStrip />
       </div>
+      {/* FX rejection toast (transient — see the fxLastError effect above) */}
+      <Show when={fxLastError()}>
+        {(err) => (
+          <div class="fx-error-toast" title={err().msg}>
+            FX change rejected — {err().msg}
+          </div>
+        )}
+      </Show>
     </div>
   );
 }

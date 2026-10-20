@@ -196,18 +196,30 @@ class MixerProcessor extends AudioWorkletProcessor {
                 // (pair t = strips 2t/2t+1, 11 slots). fxId is a catalog
                 // id or -1 = empty; the wasm resets the slot's params
                 // to the new effect's defaults and clears its enabled
-                // flag. try/catch also covers wasm builds without the
-                // fx API (inert, like a stale set-comp-param call).
-                if (this._mixer) try { this._mixer.fx_set_slot(msg.ch, msg.slot, msg.fxId); } catch(e) {}
+                // flag. Unlike the console setters above, fx errors are
+                // NEVER swallowed: the engine rejects real user-reachable
+                // ops (delay/echo/reverb instance cap, not-yet-available
+                // effects), so the failure posts back as fx-error for the
+                // store to roll its optimistic slot back. The catch also
+                // covers wasm builds without the fx API (TypeError) —
+                // surfacing that is fine too.
+                if (this._mixer) try { this._mixer.fx_set_slot(msg.ch, msg.slot, msg.fxId); }
+                catch(e) { this.port.postMessage({ type: "fx-error", op: "set-fx-slot", ch: msg.ch, slot: msg.slot, msg: String(e) }); }
             } else if (msg.type === "set-fx-enabled") {
-                if (this._mixer) try { this._mixer.fx_set_enabled(msg.ch, msg.slot, msg.on); } catch(e) {}
+                if (this._mixer) try { this._mixer.fx_set_enabled(msg.ch, msg.slot, msg.on); }
+                catch(e) { this.port.postMessage({ type: "fx-error", op: "set-fx-enabled", ch: msg.ch, slot: msg.slot, msg: String(e) }); }
             } else if (msg.type === "set-fx-param") {
                 // param is the param ORDINAL (catalog row order) in
                 // engine units; value is unconstrained (clamping is
-                // the UI's job).
-                if (this._mixer) try { this._mixer.fx_set_param(msg.ch, msg.slot, msg.param, msg.value); } catch(e) {}
+                // the UI's job). Errors post back as fx-error (above).
+                if (this._mixer) try { this._mixer.fx_set_param(msg.ch, msg.slot, msg.param, msg.value); }
+                catch(e) { this.port.postMessage({ type: "fx-error", op: "set-fx-param", ch: msg.ch, slot: msg.slot, msg: String(e) }); }
             } else if (msg.type === "move-fx-slot") {
-                if (this._mixer) try { this._mixer.fx_move_slot(msg.ch, msg.from, msg.to); } catch(e) {}
+                // slot in an fx-error reply is the FROM slot — the store
+                // keys its rollback snapshot there (the payload carries
+                // no `to`).
+                if (this._mixer) try { this._mixer.fx_move_slot(msg.ch, msg.from, msg.to); }
+                catch(e) { this.port.postMessage({ type: "fx-error", op: "move-fx-slot", ch: msg.ch, slot: msg.from, msg: String(e) }); }
             } else if (msg.type === "get-fx-catalog") {
                 // FX catalog pull (request/reply like get-params): the
                 // catalog JSON is the FX UI's source of truth. Unlike
