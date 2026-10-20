@@ -1,3 +1,6 @@
 [submodule "vendor/QuicSRT-wasm"]
 	path = vendor/QuicSRT-wasm
 	url = https://github.com/maxolgi/QuicSRT-wasm
+[submodule "vendor/guitarix"]
+	path = vendor/guitarix
+	url = https://github.com/brummer10/guitarix
