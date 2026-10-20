@@ -577,7 +577,21 @@ impl MixerWasm {
         Ok(())
     }
     pub fn unmap_pid_keyed(&mut self, key: u32) {
-        self.pid_map.remove(&key);
+        let Some(m) = self.pid_map.remove(&key) else {
+            return;
+        };
+        // The stream that owned these channels is gone (session teardown):
+        // disarm the elastic bookkeeping — health gate included — so the
+        // queue's tail drains silently instead of starving into "degraded"
+        // GATED strips after a deliberate disconnect. A remap re-arms
+        // everything (map_pid_keyed resets anchors + health; the next
+        // feed re-arms elasticity via note_feed).
+        for i in 0..m.channel_count {
+            if let Some(fifo) = self.channel_inputs.get_mut(&(m.ch_start + i)) {
+                fifo.elastic = false;
+                fifo.reset_health();
+            }
+        }
     }
     pub fn pid_channel_keyed(&self, key: u32) -> i32 {
         self.pid_map

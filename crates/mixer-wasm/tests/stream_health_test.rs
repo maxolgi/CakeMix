@@ -229,6 +229,62 @@ fn insert_churn_gates_via_window_threshold() {
     );
 }
 
+/// Disconnect (unmap) must NOT gate the strips: the queue's tail drains
+/// and starves, but that is the end of a dead source, not delivery
+/// pathology. Remap re-arms the gate (a new stream can be pathological).
+#[test]
+fn unmapped_stream_never_gates_and_remap_rearms() {
+    let mut m = mixer();
+    let mut base = 0usize;
+
+    // Paced feed to establish the stream (1 window).
+    for _ in 0..2 {
+        let chunk = sine_chunk(base, 960);
+        base += 960;
+        m.feed_interleaved(0, &chunk, 2).expect("feed");
+    }
+    let mut fed = 960 * 2usize;
+    for block in 0..WINDOW_BLOCKS {
+        while fed < block * BLOCK as usize + 512 {
+            let chunk = sine_chunk(base, 960);
+            base += 960;
+            m.feed_interleaved(0, &chunk, 2).expect("feed");
+            fed += 960;
+        }
+        process(&mut m);
+    }
+    assert_eq!(m.degraded_channels(), 0);
+
+    // Teardown: unmap, then keep processing — the tail drains and the
+    // FIFOs starve for three windows. No strip may gate.
+    m.unmap_pid(100);
+    for _ in 0..3 * WINDOW_BLOCKS {
+        process(&mut m);
+    }
+    assert_eq!(
+        m.degraded_channels(),
+        0,
+        "a disconnected stream's drain tail must never gate its strips"
+    );
+
+    // Remap = a new stream on the same channels: bursty pathology must
+    // gate again (elasticity re-armed).
+    m.map_pid(100, 0, 2).expect("remap");
+    for _ in 0..2 {
+        let chunk = sine_chunk(base, 9000);
+        base += 9000;
+        m.feed_interleaved(0, &chunk, 2).expect("feed");
+        for _ in 0..WINDOW_BLOCKS {
+            process(&mut m);
+        }
+    }
+    assert_eq!(
+        m.degraded_channels(),
+        2,
+        "remap must re-arm the stream-health gate"
+    );
+}
+
 /// Net-fast backlog flush (the 120 ms+ latency failure mode): a burst
 /// after a stall overruns the 8192-frame cap, so audio is chopped from
 /// the head (drop-oldest + trim slips) with ZERO starvation. The
