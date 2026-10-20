@@ -228,3 +228,123 @@ fn insert_churn_gates_via_window_threshold() {
         "drift phase should be exercising the elastic path"
     );
 }
+
+/// Net-fast backlog flush (the 120 ms+ latency failure mode): a burst
+/// after a stall overruns the 8192-frame cap, so audio is chopped from
+/// the head (drop-oldest + trim slips) with ZERO starvation. The
+/// trim/overflow paths of the gate must catch it — the starve path
+/// never fires — and clean paced delivery must release it.
+#[test]
+fn netfast_backlog_flush_gates_without_starving() {
+    let mut m = mixer();
+    let mut base = 0usize;
+
+    // Anchor on clean paced delivery (2 windows + preload).
+    for _ in 0..2 {
+        let chunk = sine_chunk(base, 960);
+        base += 960;
+        m.feed_interleaved(0, &chunk, 2).expect("feed");
+    }
+    let mut fed = 960 * 2usize;
+    for block in 0..2 * WINDOW_BLOCKS {
+        while fed < block * BLOCK as usize + 512 {
+            let chunk = sine_chunk(base, 960);
+            base += 960;
+            m.feed_interleaved(0, &chunk, 2).expect("feed");
+            fed += 960;
+        }
+        process(&mut m);
+    }
+    assert_eq!(m.degraded_channels(), 0, "paced anchor phase must not gate");
+
+    // 2% net-fast: the standing depth climbs to the 8192 cap (~8 s),
+    // after which every chunk overflows at the head and trims churn.
+    // No starvation can occur in this regime.
+    let mut gated = false;
+    for block in 2 * WINDOW_BLOCKS..16 * WINDOW_BLOCKS {
+        while (fed as f64) < block as f64 * BLOCK as f64 * 1.02 + 512.0 {
+            let chunk = sine_chunk(base, 960);
+            base += 960;
+            m.feed_interleaved(0, &chunk, 2).expect("feed");
+            fed += 960;
+        }
+        process(&mut m);
+        if m.degraded_channels() == 2 {
+            gated = true;
+            break;
+        }
+    }
+    assert!(
+        gated,
+        "net-fast backlog churn must gate via the trim/overflow path"
+    );
+    assert_eq!(
+        m.starved_blocks(),
+        0,
+        "the net-fast regime never starves — proves the non-starve gate paths fire"
+    );
+    assert!(
+        m.channel_meters_json().contains("\"ov\":"),
+        "overflow drops must be reported in the meters JSON"
+    );
+
+    // Gated ⇒ silent even while the overfeed continues (fade completes
+    // within 512 samples; allow 8 blocks of ramp before measuring).
+    let baseline = fed;
+    let mut max_peak = 0.0f32;
+    for block in 0..2 * WINDOW_BLOCKS {
+        while (fed as f64) < baseline as f64 + block as f64 * BLOCK as f64 * 1.02 + 512.0 {
+            let chunk = sine_chunk(base, 960);
+            base += 960;
+            m.feed_interleaved(0, &chunk, 2).expect("feed");
+            fed += 960;
+        }
+        let out = m.process_block(BLOCK).expect("process");
+        if block > 8 {
+            for s in out.chunks(2) {
+                max_peak = max_peak.max(s[0].abs()).max(s[1].abs());
+            }
+        }
+    }
+    assert_eq!(
+        m.degraded_channels(),
+        2,
+        "sustained overfeed keeps the gate on"
+    );
+    assert!(
+        max_peak < 0.02,
+        "gated channel must be silent under sustained overfeed (peak {max_peak})"
+    );
+
+    // Clean paced delivery: the backlog drains via rate-limited trims
+    // (staying gated while it does), then the gate releases and audio
+    // fades back in.
+    for _ in 0..6 * WINDOW_BLOCKS {
+        let chunk = sine_chunk(base, BLOCK as usize);
+        base += BLOCK as usize;
+        m.feed_interleaved(0, &chunk, 2).expect("feed");
+        process(&mut m);
+        if m.degraded_channels() == 0 {
+            break;
+        }
+    }
+    assert_eq!(
+        m.degraded_channels(),
+        0,
+        "clean paced delivery must release the gate"
+    );
+    let mut peak = 0.0f32;
+    for _ in 0..8 {
+        let chunk = sine_chunk(base, BLOCK as usize);
+        base += BLOCK as usize;
+        m.feed_interleaved(0, &chunk, 2).expect("feed");
+        let out = m.process_block(BLOCK).expect("process");
+        for s in out.chunks(2) {
+            peak = peak.max(s[0].abs()).max(s[1].abs());
+        }
+    }
+    assert!(
+        peak > 0.2,
+        "recovered channel must pass audio again (peak {peak})"
+    );
+}

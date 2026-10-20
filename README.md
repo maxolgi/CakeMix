@@ -10,7 +10,7 @@ Complete through M5: multi-session QuicSRT PCM input, 128-strip console
 | Date | Milestone |
 |---|---|
 | 2026-10-19 | QuicSRT migration: replaced the Rust WebSRT stack with the C++ QuicSRT engine (`vendor/QuicSRT-wasm` submodule, emcc + pthreads), COOP/COEP on every response, embedded gateway removed in favor of the external QuicSRT-gateway |
-| 2026-10-19 | Stream-health gate: per-channel delivery-pathology protection (below) — a too-low-TSBPD-latency stream now fades its strips to silence (~40 ms worst-case blip) instead of blasting constant full-scale granular static |
+| 2026-10-19 | Stream-health gate: per-channel delivery-pathology protection (below) — lossy/bursty streams (any latency; jitter-tail events at 120 ms+ included) fade their strips to silence (~40 ms worst-case blip) instead of blasting constant full-scale granular static |
 
 ## Quick start
 
@@ -131,31 +131,37 @@ engine performs all summing.
 
 ### Stream-health gate (per-channel delivery protection)
 
-The elastic playout buffer reconciles clock *drift* (hundreds of ppm), but a
-pathologically gappy stream — TSBPD latency below the network's actual
-jitter, so SRT drops constantly — cannot be patched over: every starvation
-is a hole and every insert-slip a repeat, and at high rates the repair
-itself becomes constant full-scale granular static (the "loud static at low
-latency" failure; reproduced with `rxDropped` climbing and the starve/insert
-rates pegged). Each elastic FIFO therefore tracks its own delivery health
-(`crates/mixer-wasm/src/fifo.rs`):
+The elastic playout buffer reconciles clock *drift* (hundreds of ppm), but
+pathological delivery cannot be patched over, from either side: net-slow
+(TSBPD latency below the network's jitter tail → SRT drop storms) starves
+the FIFOs — every starvation a hole, every insert-slip a repeat — and
+net-fast (a post-stall backlog flush) pins the queue at the drop-oldest
+cap and chops audio from the head with no starvation at all. At high rates
+either "repair" becomes constant full-scale granular static (the "loud
+static at low latency" failure; reproduced live with `rxDropped` climbing
+and the starve/insert/overflow rates pegged). Each elastic FIFO therefore
+tracks its own delivery health (`crates/mixer-wasm/src/fifo.rs`):
 
-- **Degraded** = >8 starved blocks or >8 insert slips in one ~1 s
-  statistics window (window-boundary check), or ≥12 starved blocks
-  mid-window (fast path, ≈32 ms of holes — bounds the audible burst).
+- **Degraded** = >8 starved blocks or >8 insert slips per ~1 s
+  statistics window; >12 trim slips or >256 cap-dropped frames per
+  window; or the fast paths — ≥12 starved blocks (≈32 ms of holes),
+  ≥12 trims, or ≥1024 cap-dropped frames mid-window — which engage the
+  fade immediately instead of at the window boundary.
 - While degraded the channel **fades out over ≈5 ms** (per-sample ramp on
   the FIFO drain) and concealment inserts stop; it **fades back in over
   ≈11 ms** after two consecutive clean windows. The drain keeps running,
   so the FIFO stays rate-balanced and recovery is sample-accurate.
-- Telemetry rides the per-strip meters JSON (`dg`, `sb`, `ins`, `ov` — the
-  last counting drop-oldest overflow frames); the UI shows a red `GATED`
-  badge on affected strips (`ChannelDetailPanel`) with a tooltip pointing
-  at the latency knob.
+- Telemetry rides the per-strip meters JSON (`dg`, `sb`, `ins`, `ov` —
+  the last counting drop-oldest overflow frames); the UI shows a red
+  `GATED` badge on affected strips (`ChannelDetailPanel`) with a tooltip
+  pointing at the latency knob.
 
-Pinned by `tests/stream_health_test.rs`: bursty delivery gates fast and
-recovers; paced delivery never gates; 200 ppm drift reconciliation never
-gates. The remaining fix belongs in the QuicSRT repos (enforce a sane
-minimum TSBPD latency / surface the effective value), not here.
+Pinned by `tests/stream_health_test.rs`: bursty (net-slow) delivery gates
+fast and recovers; net-fast backlog churn gates with zero starvation
+(proving the trim/overflow paths); paced delivery never gates; 200 ppm
+drift reconciliation never gates. The remaining fix belongs in the
+QuicSRT repos (enforce a sane minimum TSBPD latency / surface the
+effective value), not here.
 
 ### Forks
 

@@ -64,27 +64,36 @@ pub(crate) const ANCHOR_INIT_WINDOWS: u32 = 2;
 // ── Stream-health gate ─────────────────────────────────────────────────
 //
 // A stream whose delivery is pathologically gappy (TSBPD latency below
-// the network's jitter → constant SRT drops; a source bursting far over
-// real-time then stalling) cannot be patched over by the elastic buffer:
-// every starvation is a hole and every insert a repeat, and at high rates
-// the "repair" itself becomes full-scale granular static — far worse for
-// ears and speakers than a brief dropout. Such streams are faded to
-// silence instead (a console protects the bus; the meters + UI surface
-// the state), and fade back in once delivery is clean again.
+// the network's jitter tail → constant SRT drops; a source bursting far
+// over real-time then stalling) cannot be patched over by the elastic
+// buffer: every starvation is a hole and every insert a repeat, and at
+// high rates the "repair" itself becomes full-scale granular static —
+// far worse for ears and speakers than a brief dropout. The same holds
+// for the net-fast mirror: a backlog flush pins the queue at the
+// drop-oldest cap and the audio is chopped from the head (overflow
+// drops + trim slips), with no starvation at all. Such streams are
+// faded to silence instead (a console protects the bus; the meters +
+// UI surface the state), and fade back in once delivery is clean again.
 //
-// Degraded = more than HEALTH_STARVE_MAX starved blocks or
-// HEALTH_INSERT_MAX inserts in one statistics window (~1 s), or
-// HEALTH_FAST_STARVE_BLOCKS starved blocks mid-window (≈85 ms of holes —
-// engages the fade immediately rather than at the next window boundary).
+// Degraded = more than HEALTH_STARVE_MAX starved blocks, more than
+// HEALTH_INSERT_MAX inserts, more than HEALTH_SLIP_MAX trims, or more
+// than HEALTH_OVERFLOW_MAX_FRAMES cap-dropped in one statistics window
+// (~1 s) — or the corresponding FAST thresholds hit mid-window (engages
+// the fade immediately rather than at the next window boundary).
 // Recovery requires HEALTH_RECOVERY_WINDOWS consecutive clean windows.
 pub(crate) const HEALTH_STARVE_MAX: u32 = 8;
 pub(crate) const HEALTH_INSERT_MAX: u32 = 8;
-/// Mid-window fast-path threshold: engage the fade immediately instead
-/// of at the next window boundary. 12 starved blocks ≈ 32 ms of holes.
-/// (Inserts have no fast path — analysis in the gate notes: any deficit
-/// large enough to burst inserts drains the queue to this starve gate
-/// first, so the window-level HEALTH_INSERT_MAX is sufficient there.)
+pub(crate) const HEALTH_SLIP_MAX: u32 = 12;
+/// Cap-dropped frames per window that constitute pathology (0.5% of a
+/// 48 k window; the drift regime drops none by construction).
+pub(crate) const HEALTH_OVERFLOW_MAX_FRAMES: u64 = 256;
+/// Mid-window fast-path thresholds. 12 starved blocks ≈ 32 ms of holes;
+/// 12 trims ≈ 1.6% of a window chopped; 1024 cap-dropped frames ≈ 21 ms
+/// skipped outright. (Inserts have no fast path — any deficit large
+/// enough to burst inserts drains the queue to the starve gate first.)
 pub(crate) const HEALTH_FAST_STARVE_BLOCKS: u32 = 12;
+pub(crate) const HEALTH_FAST_SLIPS: u32 = 12;
+pub(crate) const HEALTH_FAST_OVERFLOW_FRAMES: u64 = 1024;
 pub(crate) const HEALTH_RECOVERY_WINDOWS: u32 = 2;
 /// Per-sample fade rates (asymmetric): OUT fast to protect the output
 /// (≈5.3 ms full swing @ 48 k), IN slower to avoid pumping (≈10.7 ms).
@@ -106,6 +115,10 @@ pub(crate) struct ChannelFifo {
     pub(crate) window_starved_blocks: u32,
     /// Inserts applied in the current window (stream-health statistic).
     pub(crate) window_inserts: u32,
+    /// Trim slips applied in the current window (stream-health statistic).
+    pub(crate) window_slips: u32,
+    /// Cap-dropped frames in the current window (stream-health statistic).
+    pub(crate) window_overflow_frames: u64,
     /// Smoothed window-min depth; negative = not yet initialized.
     pub(crate) ewma: f32,
     /// Consecutive windows with feed activity (anchor initialization).
@@ -139,6 +152,8 @@ impl ChannelFifo {
             window_starved: false,
             window_starved_blocks: 0,
             window_inserts: 0,
+            window_slips: 0,
+            window_overflow_frames: 0,
             ewma: -1.0,
             fed_windows: 0,
             anchor: None,
@@ -169,7 +184,10 @@ impl ChannelFifo {
         } else {
             self.ewma += EWMA_ALPHA * (m as f32 - self.ewma);
         }
-        if self.window_starved_blocks > HEALTH_STARVE_MAX || self.window_inserts > HEALTH_INSERT_MAX
+        if self.window_starved_blocks > HEALTH_STARVE_MAX
+            || self.window_inserts > HEALTH_INSERT_MAX
+            || self.window_slips > HEALTH_SLIP_MAX
+            || self.window_overflow_frames > HEALTH_OVERFLOW_MAX_FRAMES
         {
             self.degraded = true;
             self.clean_windows = 0;
@@ -183,6 +201,8 @@ impl ChannelFifo {
         self.window_starved = false;
         self.window_starved_blocks = 0;
         self.window_inserts = 0;
+        self.window_slips = 0;
+        self.window_overflow_frames = 0;
     }
 
     /// Reset the stream-health gate (a remap is a new stream).
@@ -192,6 +212,8 @@ impl ChannelFifo {
         self.health_gain = 1.0;
         self.window_starved_blocks = 0;
         self.window_inserts = 0;
+        self.window_slips = 0;
+        self.window_overflow_frames = 0;
     }
 }
 

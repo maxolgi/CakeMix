@@ -486,7 +486,14 @@ impl MixerWasm {
             let overflow = slot.q.len().saturating_sub(MAX_QUEUE_FRAMES);
             if overflow > 0 {
                 slot.overflow_drops += overflow as u64;
+                slot.window_overflow_frames += overflow as u64;
                 slot.q.drain(0..overflow);
+                // Fast-path gate: cap-dropped frames mean the stream is
+                // being chopped from the head right now — fade immediately.
+                if slot.window_overflow_frames >= fifo::HEALTH_FAST_OVERFLOW_FRAMES {
+                    slot.degraded = true;
+                    slot.clean_windows = 0;
+                }
             }
         }
         Ok(())
@@ -1810,7 +1817,14 @@ impl MixerWasm {
                 // trim the head back toward the anchor.
                 slip_trim(&mut fifo.q);
                 fifo.slips += 1;
+                fifo.window_slips += 1;
                 fifo.cooldown = SLIP_COOLDOWN_BLOCKS;
+                // Fast-path gate: a burst of head-chops inside one window
+                // IS the granular-static pathology — fade now.
+                if fifo.window_slips >= fifo::HEALTH_FAST_SLIPS {
+                    fifo.degraded = true;
+                    fifo.clean_windows = 0;
+                }
             } else if fed_recent
                 && !fifo.degraded
                 && depth >= SLIP_FRAMES + SLIP_XFADE
