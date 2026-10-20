@@ -7,7 +7,8 @@ import {
   setGateEnabled, setGateThreshold, setGateHysteresis, setGateAttack, setGateRelease, setGateHold,
   setExpanderEnabled, setExpanderThreshold, setExpanderRatio, setExpanderAttack, setExpanderRelease,
   setMainAssign,
-  busChannels, setBusSource, clearBusSource, NUM_CHANNELS,
+  busChannels, setBusSource, clearBusSource, NUM_CHANNELS, FX_SLOTS,
+  fxChains, fxCatalog, setFxSlot, setFxEnabled, setFxParam, moveFxSlot, type FxParamDef,
   faderToGain, gainToFader, formatGainDb,
   setChannels, sendToWorklet,
 } from "../stores/mixer";
@@ -33,6 +34,23 @@ const fmtDb = (v: number) => v.toFixed(1);
 const fmtRatio = (v: number) => (v >= 20 ? "20:1" : v.toFixed(1) + ":1");
 const fmtHz = (v: number) => (v >= 1000 ? (v / 1000).toFixed(1) + "k" : v.toFixed(0));
 const fmtMs = (v: number) => (v < 1 ? v.toFixed(2) : v < 10 ? v.toFixed(1) : v.toFixed(0));
+const fmtFx = (v: number) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2));
+
+// TEMPORARY GUARD: distortion (catalog id 2) stays disabled in the FX
+// picker — its C++ TU has not landed yet and the engine rejects the id.
+// TODO: remove every use of FX_ID_DISTORTION when the distortion TU lands.
+const FX_ID_DISTORTION = 2;
+
+/** Snap a knob's raw drag output onto the catalog param's step/integer
+ *  grid and clamp to [min, max] — the worklet treats clamping as the
+ *  UI's job (no stepped knob control exists in the repo yet, so a plain
+ *  numeric snap at the call site is the convention). */
+function snapFxParam(p: FxParamDef, v: number): number {
+  let out = v;
+  if (p.integer) out = Math.round(out);
+  else if (p.step > 0) out = Math.round(out / p.step) * p.step;
+  return Math.max(p.min, Math.min(p.max, out));
+}
 
 export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: number; slot: number } }) {
   const idx = props.channelIndex;
@@ -40,7 +58,7 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
 
   // Section collapse state (default some to collapsed)
   const [collapsed, setCollapsed] = createSignal<Record<string, boolean>>({
-    INPUT: true, EQ: true,
+    INPUT: true, EQ: true, FX: true,
   });
   const toggle = (s: string) => setCollapsed(c => ({ ...c, [s]: !c[s] }));
   const isCollapsed = (s: string) => !!collapsed()[s];
@@ -51,7 +69,34 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
     let w = 100; // minimum
     if (!isCollapsed("INPUT")) w = Math.max(w, 360); // 6 comp knobs + labels + GR meter
     if (!isCollapsed("EQ")) w = Math.max(w, 230);
+    if (!isCollapsed("FX")) w = Math.max(w, 300); // fx chain rows (reorder + toggle + picker)
     return w;
+  };
+
+  // ── FX chain (pair-owned rack) ─────────────────────────────────────
+  // Even input strips own the 2t/2t+1 pair's chain (store fxChains
+  // [pair][slot], helpers take the EVEN ch = idx); odd strips show a
+  // pointer to the owner instead, bus slots (>= 128) get no chain at all.
+  const fxPair = idx < NUM_CHANNELS && idx % 2 === 0 ? idx / 2 : null;
+
+  // UI-local: which chain slot the edit area shows. Follows the first
+  // enabled slot until the user picks one explicitly (OctOBX semantics).
+  const [fxSlotSel, setFxSlotSel] = createSignal<number | null>(null);
+  const selectedFxSlot = () => {
+    if (fxSlotSel() !== null) return fxSlotSel()!;
+    for (let s = 0; s < FX_SLOTS; s++) {
+      const st = fxChains[fxPair!][s];
+      if (st.fx >= 0 && st.enabled) return s;
+    }
+    return 0;
+  };
+
+  // Dropdown category order — derived from the catalog (first appearance
+  // in id order), never hardcoded.
+  const fxCategories = () => {
+    const cats: string[] = [];
+    for (const fx of fxCatalog()?.effects ?? []) if (!cats.includes(fx.category)) cats.push(fx.category);
+    return cats;
   };
 
   // Fader / pan / mute / solo have no dedicated store helpers, so they reuse
@@ -284,6 +329,116 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
         </>
         )}
       </div>
+
+      {/* ── FX CHAIN (pair-owned; even input strips only) ── */}
+      {idx < NUM_CHANNELS && idx % 2 === 1 && (
+        <div
+          class="fx-pair-hint"
+          title={`FX chains are pair-owned: strips 2t/2t+1 form one L/R pair and the pair's chain is owned and edited on the L strip (channel ${idx - 1}, "${channels[idx - 1].name}").`}
+        >FX CHAIN → {channels[idx - 1].name}</div>
+      )}
+      {fxPair !== null && (
+      <div class="detail-section">
+        <div class="detail-section-divider collapsible" onClick={() => toggle("FX")} title="FX chain of this stereo pair — click to expand/collapse">
+          <span class="detail-section-label">FX CHAIN</span>
+        </div>
+        {/* LED chain summary (control-rate — DOM, not canvas): hollow =
+            empty, dim category color = loaded but BYP, lit = IN. */}
+        <div class="detail-fx-leds">
+          {fxChains[fxPair].map((st, s) => {
+            const fx = st.fx >= 0 ? fxCatalog()?.effects[st.fx] : undefined;
+            return (
+              <span
+                class={`fx-led${st.fx >= 0 ? ` loaded${fx ? ` cat-${fx.category}` : ""}${st.enabled ? " on" : ""}` : ""}`}
+                title={fx ? `${s + 1}. ${fx.label} — ${st.enabled ? "IN" : "BYP"}` : `${s + 1}. (empty)`}
+              />
+            );
+          })}
+        </div>
+        {!isCollapsed("FX") && (
+          fxCatalog() === null ? (
+            <div class="fx-unavailable" title="The engine FX catalog has not loaded — the wasm may not be ready, or the build predates the FX API.">
+              FX unavailable — catalog not loaded
+            </div>
+          ) : (
+          <>
+            <div class="fx-chain-list">
+              {fxChains[fxPair].map((st, s) => (
+                <div
+                  class={`fx-row${s === selectedFxSlot() ? " selected" : ""}`}
+                  onClick={() => setFxSlotSel(s)}
+                  title={`Chain slot ${s + 1} — click to edit its parameters below`}
+                >
+                  <button
+                    class="fx-row-btn"
+                    disabled={s === 0}
+                    onClick={(e) => { e.stopPropagation(); moveFxSlot(idx, s, s - 1); }}
+                    title="Move earlier in chain"
+                  >▲</button>
+                  <button
+                    class="fx-row-btn"
+                    disabled={s === FX_SLOTS - 1}
+                    onClick={(e) => { e.stopPropagation(); moveFxSlot(idx, s, s + 1); }}
+                    title="Move later in chain"
+                  >▼</button>
+                  <button
+                    class={`detail-toggle ${st.enabled ? "active" : "bypassed"}`}
+                    disabled={st.fx < 0}
+                    onClick={(e) => { e.stopPropagation(); setFxEnabled(idx, s, !st.enabled); }}
+                    title={st.fx >= 0 ? `${fxCatalog()?.effects[st.fx]?.label ?? "?"} in / bypass` : "Empty slot"}
+                  >{st.enabled && st.fx >= 0 ? "IN" : "BYP"}</button>
+                  <select
+                    class="fx-slot-select"
+                    value={st.fx}
+                    onInput={(e) => setFxSlot(idx, s, parseInt(e.currentTarget.value))}
+                    title={`Effect in chain slot ${s + 1}`}
+                  >
+                    <option value={-1}>(empty)</option>
+                    {fxCategories().map((cat) => (
+                      <optgroup label={cat.charAt(0).toUpperCase() + cat.slice(1)}>
+                        {fxCatalog()!.effects.filter((f) => f.category === cat).map((f) => (
+                          // TEMPORARY GUARD (see FX_ID_DISTORTION above):
+                          // distortion stays visible-but-disabled until its
+                          // C++ TU lands.
+                          <option value={f.id} disabled={f.id === FX_ID_DISTORTION}>
+                            {f.label}{f.id === FX_ID_DISTORTION ? " (unavailable)" : ""}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+            <div class="fx-edit-area">
+              {(() => {
+                const s = selectedFxSlot();
+                const st = fxChains[fxPair!][s];
+                const fx = st.fx >= 0 ? fxCatalog()?.effects[st.fx] : undefined;
+                if (!fx) return <div class="fx-edit-title">empty slot</div>;
+                return (
+                  <>
+                    <div class="fx-edit-title">{fx.label} · {fx.stereo ? "stereo" : "mono"}</div>
+                    <div class="knob-row">
+                      {fx.params.map((p, pi) => (
+                        <Knob
+                          label={p.name}
+                          value={st.params[pi] ?? p.default}
+                          min={p.min} max={p.max} defaultValue={p.default}
+                          format={fmtFx} size={28}
+                          onChange={(v) => setFxParam(idx, s, pi, snapFxParam(p, v))}
+                        />
+                      ))}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          </>
+          )
+        )}
+      </div>
+      )}
 
       {/* ── PAN ───────────────────────────────────────── */}
       <div class="detail-section">

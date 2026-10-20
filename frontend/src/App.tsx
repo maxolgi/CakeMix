@@ -11,7 +11,7 @@ import { BusMasterStrip } from "./components/BusMasterStrip";
 import { BusManager } from "./components/BusManager";
 import { QuicSRTPanel } from "./components/QuicSRTPanel";
 import {
-  updateMeterData, applyConsoleParams,
+  updateMeterData, applyConsoleParams, applyFxCatalog, requestFxCatalog,
   wasmReady, setWasmReady, isRunning, setIsRunning,
   status, setStatus, setMixerNode, sendToWorklet,
   selectedBus, setSelectedBus, slotChannelIndex,
@@ -55,7 +55,14 @@ export default function App() {
       node.port.onmessage = (e: MessageEvent) => {
         const msg = e.data;
         if (msg.type === "ready") { loadWasm(); }
-        else if (msg.type === "wasm-ready") { setWasmReady(true); setStatus("Ready"); }
+        else if (msg.type === "wasm-ready") {
+          setWasmReady(true);
+          setStatus("Ready");
+          // One-shot pulls once the wasm can answer (same lifecycle point
+          // as every other initial request): the FX catalog drives the FX
+          // rack UI. The worklet ALWAYS replies, even without the fx API.
+          requestFxCatalog();
+        }
         else if (msg.type === "error") { setStatus("Error: " + msg.msg); console.error("worklet:", msg.msg); }
         else if (msg.type === "meter") {
           updateMeterData(msg);
@@ -69,6 +76,7 @@ export default function App() {
         // next interaction writes stale values over the recalled scene).
         else if (msg.type === "scene-recalled") { sendToWorklet({ type: "get-params" }); }
         else if (msg.type === "console-params") { applyConsoleParams(msg.json); }
+        else if (msg.type === "fx-catalog") { applyFxCatalog(msg.json); }
         else if (msg.type === "pcm-dropped") { quicsrtStore.onWorkletPcmDropped(msg.total); }
         else if (msg.type === "pub-pcm") { relayPubPcm(msg.samples, msg.ptsUs, msg.channels); }
       };

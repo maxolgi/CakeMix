@@ -298,6 +298,63 @@ body {
 .eq-band-knobs { display: flex; gap: 4px; align-items: center; }
 .detail-eq-curve { width: 100%; padding: 2px; background: rgba(0,0,0,0.3); border-radius: 3px; margin: 2px 0; }
 
+/* ── FX Chain (pair-owned rack) ──────── */
+.fx-pair-hint {
+    font-size: 10px; color: #555; padding: 3px 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: help;
+}
+.fx-unavailable { font-size: 10px; color: #555; font-style: italic; padding: 4px 0; }
+/* LED chain summary: hollow = empty, dim category color = loaded but
+ * BYP, lit (+ glow) = IN. Unknown categories fall back to grey. */
+.detail-fx-leds { display: flex; align-items: center; gap: 2px; padding: 3px 0 1px; }
+.fx-led {
+    width: 5px; height: 5px; border-radius: 50%; flex: none;
+    background: transparent; border: 1px solid #26262f;
+}
+.fx-led.loaded { border-color: transparent; background: #3a3a45; }
+.fx-led.loaded.on { background: #9a9aa8; box-shadow: 0 0 4px rgba(154,154,168,0.5); }
+.fx-led.loaded.cat-wah { background: #3a2438; }
+.fx-led.loaded.cat-wah.on { background: #d070d0; box-shadow: 0 0 4px rgba(208,112,208,0.5); }
+.fx-led.loaded.cat-drive { background: #3a1c1c; }
+.fx-led.loaded.cat-drive.on { background: #e05050; box-shadow: 0 0 4px rgba(224,80,80,0.5); }
+.fx-led.loaded.cat-dynamics { background: #3a2f14; }
+.fx-led.loaded.cat-dynamics.on { background: #e0b050; box-shadow: 0 0 4px rgba(224,176,80,0.5); }
+.fx-led.loaded.cat-modulation { background: #1c2a42; }
+.fx-led.loaded.cat-modulation.on { background: #4a8fdd; box-shadow: 0 0 4px rgba(74,143,221,0.5); }
+.fx-led.loaded.cat-delay { background: #16301c; }
+.fx-led.loaded.cat-delay.on { background: #4ade80; box-shadow: 0 0 4px rgba(74,222,128,0.5); }
+.fx-led.loaded.cat-reverb { background: #2a2038; }
+.fx-led.loaded.cat-reverb.on { background: #a080e0; box-shadow: 0 0 4px rgba(160,128,224,0.5); }
+.fx-chain-list { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; }
+.fx-row {
+    display: flex; align-items: center; gap: 4px;
+    padding: 1px 2px; border: 1px solid transparent; border-radius: 3px;
+    cursor: pointer;
+}
+.fx-row:hover { background: rgba(255,255,255,0.03); }
+.fx-row.selected { background: #142031; border-color: #2a4a6a; }
+.fx-row-btn {
+    width: 16px; height: 16px; font-size: 9px; line-height: 1;
+    border: 1px solid #2a2a30; border-radius: 2px; background: #16161e;
+    color: #666; cursor: pointer; padding: 0; transition: all 0.1s; flex: none;
+}
+.fx-row-btn:hover { border-color: #444; color: #aaa; }
+.fx-row-btn:disabled { opacity: 0.3; cursor: default; }
+.fx-row .detail-toggle { padding: 1px 4px; flex: none; }
+.fx-row .detail-toggle:disabled { opacity: 0.35; cursor: default; }
+.fx-slot-select {
+    flex: 1; min-width: 0;
+    background: #11111a; border: 1px solid #222230; border-radius: 3px;
+    color: #ccc; font-size: 11px; padding: 1px 4px; outline: none;
+    cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.fx-slot-select:hover { border-color: #33333f; }
+.fx-slot-select:focus { border-color: #2a4a6a; }
+.fx-row.selected .fx-slot-select { color: #8ab4f8; border-color: #2a4a6a; }
+.fx-edit-area { border-top: 1px solid #1a1a25; margin-top: 2px; padding-top: 4px; }
+.fx-edit-area .knob-row { flex-wrap: wrap; }
+.fx-edit-title { font-size: 11px; color: #888; font-weight: 700; letter-spacing: 1px; padding: 2px 0; }
+
 /* ── Main / Feeds-Main toggles ───────── */
 .btn-main.active { background: #1a3a5a; color: #8ab4f8; border-color: #2a5a8a; box-shadow: 0 0 5px rgba(138,180,248,0.3); }
 .feeds-main { white-space: nowrap; }
