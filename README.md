@@ -31,7 +31,8 @@ make test-all
 
 Prerequisites: the pinned Rust toolchain with `wasm32-unknown-unknown`.
 Building mixer-wasm compiles the gxfx guitarix C++ DSP freestanding —
-that needs `clang++` and `ar` on PATH plus the vendored sources:
+that needs `clang++` and an archiver on PATH (`ar`, else `llvm-ar`, else
+`$AR`) plus the vendored sources:
 `git submodule update --init vendor/guitarix`. The QuicSRT engine step
 (`make serve`) additionally needs emsdk (below).
 

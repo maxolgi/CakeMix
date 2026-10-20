@@ -30,14 +30,15 @@ jobs:
           submodules: recursive
 
       # mixer-wasm's build.rs compiles the gxfx guitarix C++ DSP with
-      # clang++/ar (vendor/guitarix is initialized by the recursive
-      # checkout above). Ubuntu runners ship LLVM; fail fast with a
-      # clear message if the toolchain is missing.
+      # clang++ and an archiver — ar, falling back to llvm-ar or $AR
+      # (vendor/guitarix is initialized by the recursive checkout above).
+      # The hosted runners ship a toolchain providing these; fail fast
+      # with a clear message if it is missing.
       - name: Check gxfx toolchain (clang++ / ar)
         shell: bash
         run: |
           command -v clang++ >/dev/null || { echo "::error::clang++ not found on PATH — building mixer-wasm requires the clang/LLVM toolchain (gxfx C++ DSP)"; exit 1; }
-          command -v ar >/dev/null || { echo "::error::ar not found on PATH — building mixer-wasm requires ar (binutils or LLVM) for the gxfx static library"; exit 1; }
+          command -v ar >/dev/null || command -v llvm-ar >/dev/null || { echo "::error::neither ar nor llvm-ar found on PATH — building mixer-wasm requires an archiver (binutils or LLVM) for the gxfx static library"; exit 1; }
 
       # Match rust-toolchain.toml so rustfmt output is reproducible.
       - uses: dtolnay/rust-toolchain@1.95
@@ -76,14 +77,15 @@ jobs:
           submodules: recursive
 
       # mixer-wasm's build.rs compiles the gxfx guitarix C++ DSP with
-      # clang++/ar (vendor/guitarix is initialized by the recursive
-      # checkout above). Ubuntu runners ship LLVM; fail fast with a
-      # clear message if the toolchain is missing.
+      # clang++ and an archiver — ar, falling back to llvm-ar or $AR
+      # (vendor/guitarix is initialized by the recursive checkout above).
+      # The hosted runners ship a toolchain providing these; fail fast
+      # with a clear message if it is missing.
       - name: Check gxfx toolchain (clang++ / ar)
         shell: bash
         run: |
           command -v clang++ >/dev/null || { echo "::error::clang++ not found on PATH — building mixer-wasm requires the clang/LLVM toolchain (gxfx C++ DSP)"; exit 1; }
-          command -v ar >/dev/null || { echo "::error::ar not found on PATH — building mixer-wasm requires ar (binutils or LLVM) for the gxfx static library"; exit 1; }
+          command -v ar >/dev/null || command -v llvm-ar >/dev/null || { echo "::error::neither ar nor llvm-ar found on PATH — building mixer-wasm requires an archiver (binutils or LLVM) for the gxfx static library"; exit 1; }
 
       - uses: dtolnay/rust-toolchain@1.95
         with:
@@ -141,15 +143,16 @@ jobs:
           submodules: recursive
 
       # mixer-wasm's build.rs compiles the gxfx guitarix C++ DSP with
-      # clang++/ar (vendor/guitarix is initialized by the recursive
-      # checkout above). Linux/macOS runners ship a toolchain providing
-      # both; fail fast with a clear message anywhere they are missing
-      # instead of failing deep inside the build.
+      # clang++ and an archiver — ar, falling back to llvm-ar or $AR
+      # (vendor/guitarix is initialized by the recursive checkout above).
+      # Linux/macOS runners ship both ar and llvm-ar; windows-latest ships
+      # LLVM's llvm-ar without binutils ar. Fail fast with a clear message
+      # anywhere the toolchain is missing instead of deep inside the build.
       - name: Check gxfx toolchain (clang++ / ar)
         shell: bash
         run: |
           command -v clang++ >/dev/null || { echo "::error::clang++ not found on PATH — building mixer-wasm requires the clang/LLVM toolchain (gxfx C++ DSP)"; exit 1; }
-          command -v ar >/dev/null || { echo "::error::ar not found on PATH — building mixer-wasm requires ar (binutils or LLVM) for the gxfx static library"; exit 1; }
+          command -v ar >/dev/null || command -v llvm-ar >/dev/null || { echo "::error::neither ar nor llvm-ar found on PATH — building mixer-wasm requires an archiver (binutils or LLVM) for the gxfx static library"; exit 1; }
 
       - uses: dtolnay/rust-toolchain@1.95
         with:
