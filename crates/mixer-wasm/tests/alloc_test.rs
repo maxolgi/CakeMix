@@ -12,7 +12,8 @@
 //! `Meter::process` — ~95k allocs/s at 30 stereo tracks. This test pins
 //! the steady state at ZERO allocations per block with the full console
 //! active (60 input channels of EQ, limiter, metering, 2 buses × 4 slots,
-//! 16-channel direct-out tap armed).
+//! 16-channel direct-out tap armed, an enabled gxfx FX chain — its DSP
+//! and tapes are created at set-up, outside the counted window).
 //!
 //! A timed scene cross-fade (`recall_scene_fade`) also runs ACROSS the
 //! measured window: the two scene snapshots are allocated once at recall
@@ -75,6 +76,13 @@ fn process_block_is_alloc_free_steady_state() {
         }
     }
     m.set_channel_tap(16);
+    // An ENABLED gxfx chain (stereo echo on pair 0 = strips 0/1): DSP
+    // creation and the first-activate tape allocation happen at
+    // set_slot/set_enabled time — SETUP, outside the counted window —
+    // and the per-block FX pass must then be allocation-free like the
+    // rest of process_block.
+    m.fx_set_slot(0, 0, 9).expect("fx set slot");
+    m.fx_set_enabled(0, 0, true).expect("fx enable");
 
     // Interleaved ramp chunk per PID.
     let chunk: Vec<f32> = (0..CHUNK)

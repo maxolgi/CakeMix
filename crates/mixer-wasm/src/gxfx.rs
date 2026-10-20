@@ -26,9 +26,11 @@
 //! * MONO effects get TWO instances (L and R, dual-mono); STEREO
 //!   effects get ONE instance run across the pair.
 //!
-//! Integration into the `MixerWasm` staging loop, the wasm-bindgen
-//! surface and scenes/console JSON is a LATER task; this module only
-//! owns the state and the FFI.
+//! The `MixerWasm` integration lives in `lib.rs` (construction, the
+//! FX pass inside `process_block`, the `fx_*` wasm setters), with
+//! scene capture/recall in `scene.rs`/`lib.rs` and the console-JSON
+//! fx block in `console_json.rs`; this module only owns the state and
+//! the FFI.
 
 use std::ffi::{c_char, c_int};
 use std::fmt;
@@ -114,8 +116,10 @@ pub fn effect_count() -> i16 {
     unsafe { ffi::gxfx_effect_count() as i16 }
 }
 
-/// Live param count of `fx` (0 for an unknown id).
-fn param_count(fx: i16) -> usize {
+/// Live param count of `fx` (0 for an unknown id). `pub(crate)`: the
+/// binding needs it to bound scene-recall param writes and the JSON
+/// serializer to emit only the live params.
+pub(crate) fn param_count(fx: i16) -> usize {
     unsafe { ffi::gxfx_param_count(fx as c_int).max(0) as usize }
 }
 
@@ -265,6 +269,15 @@ impl FxSlot {
 /// One stereo pair's FX chain: 11 slots in chain order.
 struct GxFxChain {
     slots: [FxSlot; CHAIN_SLOTS],
+}
+
+/// Plain-data copy of one pair's whole chain (effect ids, enabled
+/// flags, padded param rows) — the scene-capture read returned by
+/// [`GxFxRack::chain_snapshot`].
+pub struct FxChainState {
+    pub fx: [i16; CHAIN_SLOTS],
+    pub enabled: [bool; CHAIN_SLOTS],
+    pub params: [[f32; SLOT_PARAMS]; CHAIN_SLOTS],
 }
 
 /// The whole board: 64 pair-owned chains plus the memory budget.
@@ -459,6 +472,37 @@ impl GxFxRack {
     /// Currently created memory-class DSP instances (budget readback).
     pub fn memory_class_instances(&self) -> u32 {
         self.mem_class_instances
+    }
+
+    /// Whether any pair's chain holds a created+enabled effect — the
+    /// exact complement of `process_pair`'s per-slot skip condition
+    /// (`fx < 0 || !enabled`), so the whole FX pass can be skipped at
+    /// zero cost when no chain is active.
+    pub fn any_active(&self) -> bool {
+        self.chains
+            .iter()
+            .any(|c| c.slots.iter().any(|s| s.fx >= 0 && s.enabled))
+    }
+
+    /// Whole-chain state read for scene capture (see
+    /// `MixerWasm::console_snapshot`): effect ids, enabled flags and
+    /// the full padded param rows, copied out of pair `pair`.
+    /// Padded entries beyond a slot's live param count are zero
+    /// (empty slots are zeroed by teardown; `set_slot` fills only the
+    /// live ordinals).
+    pub fn chain_snapshot(&self, pair: usize) -> Result<FxChainState, GxFxError> {
+        let c = self.chain(pair)?;
+        let mut st = FxChainState {
+            fx: [-1; CHAIN_SLOTS],
+            enabled: [false; CHAIN_SLOTS],
+            params: [[0.0; SLOT_PARAMS]; CHAIN_SLOTS],
+        };
+        for s in 0..CHAIN_SLOTS {
+            st.fx[s] = c.slots[s].fx;
+            st.enabled[s] = c.slots[s].enabled;
+            st.params[s] = c.slots[s].params;
+        }
+        Ok(st)
     }
 
     /// Enable/disable chain slot `(pair, slot)` (OctOBX `fx_set_enabled`
@@ -670,11 +714,11 @@ static EFFECT_META: [(&str, &str, &str); 11] = [
     ("reverb", "Reverb", "reverb"),
 ];
 
-/// Serialize the effect CATALOG as JSON for the FX-chain UI (a later
-/// task exposes this through wasm-bindgen; the frontend builds its
-/// editor from this document). Hand-rolled string building in the
-/// crate's console_json style — the catalog is static data, so there
-/// is nothing to escape beyond the belt-and-braces `json_escape`.
+/// Serialize the effect CATALOG as JSON for the FX-chain UI (exposed
+/// through wasm-bindgen as `MixerWasm::fx_catalog_json`; the frontend
+/// builds its editor from this document). Hand-rolled string building
+/// in the crate's console_json style — the catalog is static data, so
+/// there is nothing to escape beyond the belt-and-braces `json_escape`.
 /// Everything but the three display columns is read through the C ABI
 /// (the catalog header is the single source of truth).
 pub fn catalog_json() -> String {

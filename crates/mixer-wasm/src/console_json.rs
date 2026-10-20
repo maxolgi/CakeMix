@@ -1,6 +1,7 @@
 //! Console-state JSON serialization for the scene-recall UI loop.
 use crate::effects::{CompressorEffect, ExpanderEffect, GateEffect};
-use crate::scene::{BusScene, CompScene, ExpanderScene, GateScene};
+use crate::gxfx;
+use crate::scene::{BusScene, CompScene, ConsoleScene, ExpanderScene, GateScene};
 
 // ── Console-state JSON (scene-recall UI loop) ─────────────────────────
 //
@@ -90,5 +91,50 @@ pub(crate) fn bus_params_json(b: &BusScene) -> String {
         }
     }
     j.push_str("]}");
+    j
+}
+
+/// The `fxChains` block of the console JSON document (same chain
+/// shape the scene stores): one entry per stereo pair whose chain
+/// holds any effect — an absent pair IS an empty chain, exactly like
+/// an absent bus source is `null`. Each entry carries every slot's
+/// effect id (-1 = empty), enabled flag (set-but-disabled slots
+/// serialize too, so a recall sync never loses them) and LIVE param
+/// row in ENGINE units — the 48-wide padded row is a storage
+/// artifact; the wire carries only the effect's live params.
+pub(crate) fn fx_chains_json(scene: &ConsoleScene) -> String {
+    let mut j = String::from("\"fxChains\":[");
+    let mut first = true;
+    for (p, chain) in scene.fx_chains.iter().enumerate() {
+        if chain.iter().all(|s| s.fx < 0) {
+            continue;
+        }
+        if !first {
+            j.push(',');
+        }
+        first = false;
+        j.push_str(&format!("{{\"pair\":{p},\"slots\":["));
+        for (si, s) in chain.iter().enumerate() {
+            if si > 0 {
+                j.push(',');
+            }
+            j.push_str(&format!("{{\"fx\":{},\"enabled\":{}", s.fx, s.enabled));
+            j.push_str(",\"params\":[");
+            let n = if s.fx >= 0 {
+                gxfx::param_count(s.fx)
+            } else {
+                0
+            };
+            for pi in 0..n {
+                if pi > 0 {
+                    j.push(',');
+                }
+                j.push_str(&s.params[pi].to_string());
+            }
+            j.push_str("]}");
+        }
+        j.push_str("]}");
+    }
+    j.push(']');
     j
 }

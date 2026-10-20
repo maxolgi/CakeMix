@@ -20,8 +20,8 @@ mod meter;
 mod scene;
 
 use console_json::{
-    bus_params_json, comp_enable_defaults, expander_enable_defaults, gate_enable_defaults,
-    json_escape,
+    bus_params_json, comp_enable_defaults, expander_enable_defaults, fx_chains_json,
+    gate_enable_defaults, json_escape,
 };
 use fifo::{
     slip_insert, slip_trim, ChannelFifo, ANCHOR_INIT_WINDOWS, DRIFT_WINDOW_BLOCKS,
@@ -29,12 +29,14 @@ use fifo::{
     SLIP_XFADE,
 };
 use meter::MasterMeter;
-use scene::{lerp_bool, lerp_gain_db, lerp_lin, lerp_log2, pan_law_to_wire, scene_err, FadeState};
+use scene::{js_err, lerp_bool, lerp_gain_db, lerp_lin, lerp_log2, pan_law_to_wire, FadeState};
 pub use scene::{
-    BusScene, CompScene, ConsoleScene, EqBandScene, ExpanderScene, GateScene, StripScene,
+    BusScene, CompScene, ConsoleScene, EqBandScene, ExpanderScene, FxChainScene, FxSlotScene,
+    GateScene, StripScene,
 };
 
 use effects::{CompressorEffect, EqEffect, ExpanderEffect, GateEffect};
+use gxfx::{GxFxRack, CHAIN_PAIRS, CHAIN_SLOTS};
 
 /// Gain-stage parameters for one channel, snapshotted once per block.
 #[derive(Clone, Copy)]
@@ -105,7 +107,7 @@ const NULL_PROCESS_PARAMS: ChannelProcessParams = ChannelProcessParams {
 
 /// WASM binding for the oximedia-mixer audio engine.
 ///
-/// # Architecture per block (staging → 9 engine instances → bus tail)
+/// # Architecture per block (staging → FX → 9 engine instances → bus tail)
 ///
 /// 1. FIFO drain: elastic per-channel input FIFOs → `block_inputs`
 ///    (raw mono rows, 128 × bs; starvation = zeros).
@@ -116,22 +118,28 @@ const NULL_PROCESS_PARAMS: ChannelProcessParams = ChannelProcessParams {
 ///    (128-255) stage the RAW row of their assigned source channel —
 ///    a parallel raw tap, so the source strip's mute/fader/EQ/dynamics
 ///    have ZERO effect on the bus path (pinned by tests/bus_parallel_test.rs).
-/// 3. Per-channel metering (post-dynamics/EQ, pre-fader) and the
+/// 3. FX PASS: each input-strip stereo pair's gxfx chain (pair t =
+///    strips 2t/2t+1, owned by the even strip) runs across the pair's
+///    two staged rows — post dynamics/EQ, pre meter and every gain
+///    stage. Chains run regardless of mute/solo (tails ring out while
+///    unheard); the pass is skipped entirely when no chain holds a
+///    created+enabled effect. Bus-slot rows are never touched.
+/// 4. Per-channel metering (post-dynamics/EQ/FX, pre-fader) and the
 ///    channel direct-out tap (staged × input gain × phase × fader × VCA,
 ///    pre-pan; muted/solo-gated strips tap silence).
-/// 4. NINE engine instances perform ALL summing via `process_mix_rt`
+/// 5. NINE engine instances perform ALL summing via `process_mix_rt`
 ///    (input gain/phase → effects → fader × VCA → pan → PDC → sends →
 ///    routing): `main` mixes strips 0-127 that exist, are not
 ///    effectively muted, and have `main_assign`; bus engine i mixes its
 ///    16 slots under the same rules.
-/// 5. BUS TAIL: each bus's engine output × bus gain (mute → silence) →
+/// 6. BUS TAIL: each bus's engine output × bus gain (mute → silence) →
 ///    `bus_pub` (the bus's own published stereo output); buses with
 ///    `feeds_main` && !bus_muted accumulate into master.
-/// 6. Master gain → master limiter (L/R) → interleave → MasterMeter.
+/// 7. Master gain → master limiter (L/R) → interleave → MasterMeter.
 ///
 /// Channel direct-out tap: `set_channel_tap()` captures each input
 /// channel's MONO signal at the pan-stage input (post input gain/phase,
-/// post gate/comp/EQ, post fader) during `process()` for external
+/// post gate/comp/EQ/FX, post fader) during `process()` for external
 /// publishing (QuicSRT Nch out).
 #[wasm_bindgen]
 pub struct MixerWasm {
@@ -158,7 +166,9 @@ pub struct MixerWasm {
     /// Staged per-strip working buffer: flat [strip][frame]
     /// (256 strips × buffer_size). After the STAGING pass each row holds
     /// the strip's raw source signal processed through its own dynamics
-    /// and EQ; the engine call lists below point into these rows.
+    /// and EQ; input strips' rows (0-127) then additionally run their
+    /// pair's gxfx FX chain (the FX pass). The engine call lists below
+    /// point into these rows.
     staged: Vec<f32>,
     /// PID → channel mapping, keyed by an opaque u32: the JS side encodes
     /// `(sessionId << 16) | pid` so multiple QuicSRT sessions can reuse
@@ -186,6 +196,13 @@ pub struct MixerWasm {
     user_muted: HashSet<u32>,
     eq_chains: HashMap<u32, EqEffect>,
     dynamics_chains: HashMap<u32, ChannelDynamics>,
+    // ── gxfx FX chains (pair-owned, input strips only) ──
+    // One owned rack for all 64 stereo pairs of the 128 input strips
+    // (pair t = strips 2t/2t+1, owned/addressed by the EVEN strip —
+    // unlike the per-strip HashMaps above, chains belong to pairs and
+    // the rack owns every chain's state and C++ DSP instances). Bus
+    // slots (128-255) have no FX. See src/gxfx.rs.
+    gxfx: GxFxRack,
     // ── Master limiter (stereo: independent L/R) ──
     limiter_l: OversampledLimiter,
     limiter_r: OversampledLimiter,
@@ -316,6 +333,7 @@ impl MixerWasm {
             user_muted: HashSet::new(),
             eq_chains: HashMap::new(),
             dynamics_chains: HashMap::new(),
+            gxfx: GxFxRack::new(sample_rate, bs),
             limiter_l: OversampledLimiter::new(-0.3, 50.0, 4, sample_rate as f32),
             limiter_r: OversampledLimiter::new(-0.3, 50.0, 4, sample_rate as f32),
             limiter_enabled: true,
@@ -873,6 +891,117 @@ impl MixerWasm {
         Ok(())
     }
 
+    // ── FX chains (gxfx, per input-strip stereo pair) ──
+    //
+    // Pair t's chain covers input strips 2t/2t+1 and is addressed by
+    // its OWNER, the even strip. The chain is pair-owned console
+    // state: it does not require the strips to exist (the FX pass
+    // skips pairs whose owner doesn't), and — like every other
+    // console setter — user writes cancel an in-progress scene
+    // cross-fade.
+
+    /// Validate an fx_* channel argument: an EVEN input strip below
+    /// 128 (the pair owner). Returns the pair index.
+    fn fx_pair(ch: u32) -> Result<usize, JsValue> {
+        if ch >= 128 {
+            return Err(js_err(format!("fx channel must be below 128 (got {ch})")));
+        }
+        if !ch.is_multiple_of(2) {
+            return Err(js_err(format!(
+                "fx channel must be an even strip (pair owner, got {ch})"
+            )));
+        }
+        Ok((ch / 2) as usize)
+    }
+
+    /// Validate an fx_* slot argument (slot 0..CHAIN_SLOTS).
+    fn fx_slot(slot: u32) -> Result<usize, JsValue> {
+        if slot >= CHAIN_SLOTS as u32 {
+            return Err(js_err(format!(
+                "fx slot out of range (max {CHAIN_SLOTS}, got {slot})"
+            )));
+        }
+        Ok(slot as usize)
+    }
+
+    /// Map a rack error onto the wire with the calling operation's
+    /// name (surfaces the rack's unavailable-effect and memory-cap
+    /// failures verbatim).
+    fn fx_err(op: &str, e: gxfx::GxFxError) -> JsValue {
+        js_err(format!("{op}: {e}"))
+    }
+
+    /// Set the effect (`fx_id`, -1 = empty) in chain slot `slot` of
+    /// the stereo pair owned by even strip `ch` (0-126). The slot is
+    /// torn down, its params reset to the new effect's catalog
+    /// defaults and its enabled flag cleared; the DSP is created
+    /// eagerly HERE (message time) so the render path never creates
+    /// or destroys DSP. Errors leave the slot in a clean state (see
+    /// `GxFxRack::set_slot`).
+    pub fn fx_set_slot(&mut self, ch: u32, slot: u32, fx_id: i32) -> Result<(), JsValue> {
+        self.cancel_fade();
+        let pair = Self::fx_pair(ch)?;
+        let slot = Self::fx_slot(slot)?;
+        if fx_id < -1 || fx_id >= gxfx::effect_count() as i32 {
+            return Err(js_err(format!(
+                "fx id outside the catalog (-1..={}, got {fx_id})",
+                gxfx::effect_count() - 1
+            )));
+        }
+        self.gxfx
+            .set_slot(pair, slot, fx_id as i16)
+            .map_err(|e| Self::fx_err("fx_set_slot", e))
+    }
+
+    /// Enable/disable chain slot `slot` of the pair owned by `ch`.
+    /// The DSP is (de)activated eagerly here; enabling an empty slot
+    /// is a no-op.
+    pub fn fx_set_enabled(&mut self, ch: u32, slot: u32, on: bool) -> Result<(), JsValue> {
+        self.cancel_fade();
+        let pair = Self::fx_pair(ch)?;
+        let slot = Self::fx_slot(slot)?;
+        self.gxfx
+            .set_enabled(pair, slot, on)
+            .map_err(|e| Self::fx_err("fx_set_enabled", e))
+    }
+
+    /// Plain control-rate param write into `(ch, slot)`'s storage —
+    /// `param` is the param ORDINAL (catalog row order) in ENGINE
+    /// units, `value` unconstrained (clamping is the UI's job).
+    pub fn fx_set_param(
+        &mut self,
+        ch: u32,
+        slot: u32,
+        param: u32,
+        value: f32,
+    ) -> Result<(), JsValue> {
+        self.cancel_fade();
+        let pair = Self::fx_pair(ch)?;
+        let slot = Self::fx_slot(slot)?;
+        self.gxfx
+            .set_param(pair, slot, param as usize, value)
+            .map_err(|e| Self::fx_err("fx_set_param", e))
+    }
+
+    /// Array-move a whole chain slot (id, params, enabled flag and
+    /// DSP handles travel together) from position `from` to `to`;
+    /// shifted slots' DSP are re-pointed at their moved param rows.
+    pub fn fx_move_slot(&mut self, ch: u32, from: u32, to: u32) -> Result<(), JsValue> {
+        self.cancel_fade();
+        let pair = Self::fx_pair(ch)?;
+        let from = Self::fx_slot(from)?;
+        let to = Self::fx_slot(to)?;
+        self.gxfx
+            .move_slot(pair, from, to)
+            .map_err(|e| Self::fx_err("fx_move_slot", e))
+    }
+
+    /// The gxfx effect CATALOG as JSON (the FX-chain UI's source of
+    /// truth: effects, stereo flags, param ranges in ENGINE units).
+    pub fn fx_catalog_json(&self) -> String {
+        gxfx::catalog_json()
+    }
+
     // ── Channel-level controls ─────────────────────────
 
     pub fn set_channel_input_gain(&mut self, ch: u32, gain_db: f32) -> Result<(), JsValue> {
@@ -1091,7 +1220,7 @@ impl MixerWasm {
     /// over). Unknown id → Err.
     pub fn recall_scene(&mut self, id: u32) -> Result<(), JsValue> {
         let Some(scene) = self.scenes.get(&id) else {
-            return Err(scene_err(format!("unknown scene id {id}")));
+            return Err(js_err(format!("unknown scene id {id}")));
         };
         let scene = scene.clone();
         self.fade = None;
@@ -1118,15 +1247,18 @@ impl MixerWasm {
     ///   never grow them on the audio thread); the per-block
     ///   interpolation is allocation-free (pinned by alloc_test).
     /// * Non-audio state snaps immediately: strip NAMES (String clones
-    ///   are control-plane-only work; the RT path never touches them).
+    ///   are control-plane-only work; the RT path never touches them)
+    ///   and the FX CHAINS (DSP re-creation is message-time work and
+    ///   a half-interpolated delay line is meaningless — see
+    ///   `apply_scene_fx`).
     /// * Replaces any fade already in progress (from-state = whatever
     ///   the console holds at call time).
     pub fn recall_scene_fade(&mut self, id: u32, fade_ms: f64) -> Result<(), JsValue> {
         let Some(scene) = self.scenes.get(&id) else {
-            return Err(scene_err(format!("unknown scene id {id}")));
+            return Err(js_err(format!("unknown scene id {id}")));
         };
         if fade_ms.is_nan() || fade_ms < 0.0 {
-            return Err(scene_err(format!("fade_ms must be >= 0 (got {fade_ms})")));
+            return Err(js_err(format!("fade_ms must be >= 0 (got {fade_ms})")));
         }
         if fade_ms == 0.0 {
             return self.recall_scene(id);
@@ -1140,6 +1272,11 @@ impl MixerWasm {
                 let _ = self.set_channel_name(i as u32, s.name.clone());
             }
         }
+        // FX chains snap NOW as well — they never interpolate (see
+        // `apply_scene_fx`). The fx_* setters' cancel-on-set is
+        // harmless here: any previous fade is being replaced by this
+        // one anyway.
+        self.apply_scene_fx(&to);
         // The mute/solo boolean snap (t >= 0.5) can INSERT keys on the
         // audio thread. Reserving the full console up front means those
         // inserts can never grow (allocate) the sets mid-fade.
@@ -1211,7 +1348,7 @@ impl MixerWasm {
 
     /// Enable the per-channel direct-out tap: during `process()`, channels
     /// `0..channels` are captured MONO at the pan-stage input — post input
-    /// gain and phase inversion, post gate/comp/EQ chain, post fader gain,
+    /// gain and phase inversion, post gate/comp/EQ/FX chain, post fader gain,
     /// PRE pan (pan is a stereo-bus concept; direct outs are mono per
     /// channel). Drain the captured block with `take_channel_tap()`.
     ///
@@ -1383,6 +1520,28 @@ impl MixerWasm {
             bs.muted = self.bus_muted[b];
             bs.feeds_main = self.feeds_main[b];
         }
+        // FX chains: pair-owned console state, captured per pair. Only
+        // pairs whose OWNER strip (the even strip) exists are captured:
+        // a chain without its owner never runs (the FX pass gates on
+        // the owner), so both snapshot and recall skip it — the same
+        // existence rule the per-strip state follows (a scene has no
+        // opinion about pairs it never saw).
+        for p in 0..CHAIN_PAIRS {
+            if !scene.strips[p * 2].exists {
+                continue;
+            }
+            let st = self
+                .gxfx
+                .chain_snapshot(p)
+                .expect("pair index bounded by CHAIN_PAIRS");
+            for s in 0..CHAIN_SLOTS {
+                scene.fx_chains[p][s] = FxSlotScene {
+                    fx: st.fx[s],
+                    enabled: st.enabled[s],
+                    params: st.params[s],
+                };
+            }
+        }
         scene.master_gain = self.master_gain;
         scene
     }
@@ -1430,7 +1589,9 @@ impl MixerWasm {
             }
             j.push_str(&bus_params_json(bus));
         }
-        j.push_str("]}");
+        j.push_str("],");
+        j.push_str(&fx_chains_json(scene));
+        j.push('}');
         j
     }
 
@@ -1507,14 +1668,59 @@ impl MixerWasm {
     /// Reapply a scene exactly — the instant-recall path. Names are
     /// String clones (control-plane-only work), so they are applied
     /// here and NOT in `apply_scene_interp`; `recall_scene_fade` snaps
-    /// them at fade start instead.
+    /// them at fade start instead. FX chains snap here too (same
+    /// rationale — see [`Self::apply_scene_fx`]).
     fn apply_scene(&mut self, scene: &ConsoleScene) {
         for (i, s) in scene.strips.iter().enumerate() {
             if s.exists {
                 let _ = self.set_channel_name(i as u32, s.name.clone());
             }
         }
+        self.apply_scene_fx(scene);
         self.apply_scene_interp(scene, scene, 1.0);
+    }
+
+    /// Snap `scene`'s FX chains onto the rack. FX NEVER interpolates
+    /// (unlike every domain in `apply_scene_interp`): chains snap
+    /// once the moment a recall begins — instant recall applies them
+    /// here, `recall_scene_fade` applies them at fade start — because
+    /// recalling a slot may tear down and re-create C++ DSP
+    /// (message-time work; the render path must never create or
+    /// destroy DSP) and because a half-interpolated delay line is
+    /// meaningless.
+    ///
+    /// * Existence rule (the same one the per-strip state follows):
+    ///   only pairs whose OWNER strip (the even strip) existed at save
+    ///   time are applied; pairs the scene never saw keep their
+    ///   current chain.
+    /// * A slot already holding the scene's effect id keeps its DSP
+    ///   instance (params and the enabled flag still reapply
+    ///   verbatim), so recalling a scene over itself never chops
+    ///   ringing tails.
+    fn apply_scene_fx(&mut self, scene: &ConsoleScene) {
+        for p in 0..CHAIN_PAIRS {
+            if !scene.strips[p * 2].exists {
+                continue;
+            }
+            let owner = (p * 2) as u32;
+            for slot in 0..CHAIN_SLOTS {
+                let s = &scene.fx_chains[p][slot];
+                // set_slot tears the slot down, restores catalog
+                // defaults and clears enabled; params + enabled then
+                // reapply on top. Skipping the identical id keeps the
+                // live DSP (and its tail) when the chain already
+                // matches.
+                if self.gxfx.slot_effect(p, slot) != Ok(s.fx) {
+                    let _ = self.fx_set_slot(owner, slot as u32, s.fx as i32);
+                }
+                if s.fx >= 0 {
+                    for i in 0..gxfx::param_count(s.fx) {
+                        let _ = self.fx_set_param(owner, slot as u32, i as u32, s.params[i]);
+                    }
+                    let _ = self.fx_set_enabled(owner, slot as u32, s.enabled);
+                }
+            }
+        }
     }
 
     /// Reapply scene state through the SAME code paths the per-parameter
@@ -1535,6 +1741,10 @@ impl MixerWasm {
     ///   t >= 0.5 (the engine mix_scene lerp convention); a dynamics
     ///   module enabled on only one side applies that side's params
     ///   verbatim while it is the active side
+    /// - FX CHAINS are not applied here AT ALL: they snap once when
+    ///   the recall begins (see `apply_scene_fx`) — DSP re-creation is
+    ///   message-time work and delay/reverb state cannot meaningfully
+    ///   interpolate
     ///
     /// Mute/solo stay LAST, as USER intent, behind the foreign-solo
     /// guard — their setters recompute the derived engine mute (user
@@ -1699,9 +1909,10 @@ impl MixerWasm {
     /// next call.
     ///
     /// Flow per block (see the struct docs for the full architecture):
-    /// FIFO drain → STAGING (dynamics + EQ per strip) → metering + tap →
-    /// nine `process_mix_rt` engine calls → bus tail → master gain →
-    /// limiter → interleave → master meter.
+    /// FIFO drain → STAGING (dynamics + EQ per strip) → FX pass (per
+    /// input-strip pair) → metering + tap → nine `process_mix_rt` engine
+    /// calls → bus tail → master gain → limiter → interleave → master
+    /// meter.
     ///
     /// Zero-allocation in the steady state: every heap buffer is
     /// pre-allocated and reused, and the engine call lists live on the
@@ -1869,10 +2080,11 @@ impl MixerWasm {
         // first so starvation and clear_bus_source can't replay stale
         // audio. The strip's own dynamics (gate → expander → compressor)
         // then EQ run in place — same order and math as before the
-        // engine pivot. Unlike the old pass structure this runs for
-        // muted strips too, so meters and compressor GR readback stay
-        // live while muted (muted strips are excluded from the engine
-        // call lists below and contribute to no mix).
+        // engine pivot. This runs for muted strips too, so meters and
+        // compressor GR readback stay live while muted (muted strips are
+        // excluded from the engine call lists below and contribute to no
+        // mix). Metering is NOT done here: the FX pass below must land
+        // between staging and the meters.
         for idx in 0..self.channel_ids.len() {
             if self.channel_ids[idx].is_none() {
                 continue;
@@ -1909,10 +2121,60 @@ impl MixerWasm {
                     eq.process(&mut row[..bs]);
                 }
             }
+        }
 
-            // Per-channel metering (post-dynamics, post-EQ, pre-fader)
-            let peak = row[..bs].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-            let sq_sum: f32 = row[..bs].iter().map(|s| s * s).sum();
+        // ── FX pass: per-pair gxfx chains over the staged input rows ──
+        // The INSERT POINT: after the strip's own dynamics + EQ, before
+        // metering and every gain stage — the even strip's chain runs
+        // across BOTH rows of its pair (stereo effects native stereo,
+        // mono effects dual-mono; the rack's helper handles it). Chains
+        // run regardless of mute/solo so tails ring out while unheard
+        // (exactly as dynamics/EQ do above), but only for pairs whose
+        // OWNER (even) strip exists — the owner's row is the chain's L
+        // input, and a pair the console never created stays untouched
+        // (its rows are and remain zero). Bus-slot rows (128-255) are
+        // never touched: they stage from `block_inputs` (RAW tap), not
+        // from these rows. Zero-cost when idle: `any_active` is the
+        // exact complement of the per-slot skip inside `process_pair`,
+        // so a console with no created+enabled effect skips the whole
+        // pass. Allocation-free (see GxFxRack::process_pair).
+        if self.gxfx.any_active() {
+            for pair in 0..CHAIN_PAIRS {
+                let even = pair * 2;
+                if self.channel_ids[even].is_none() {
+                    continue;
+                }
+                let base = even * buf;
+                if self.channel_ids[even + 1].is_some() {
+                    let rows = &mut self.staged[base..base + 2 * buf];
+                    let (l, r) = rows.split_at_mut(buf);
+                    self.gxfx
+                        .process_pair(pair, &mut l[..bs], Some(&mut r[..bs]));
+                } else {
+                    // The odd strip of the pair never existed: its row
+                    // stays untouched (zero) — the chain runs the
+                    // rack's single-channel degrade path on the
+                    // owner's row alone.
+                    let l = &mut self.staged[base..base + bs];
+                    self.gxfx.process_pair(pair, l, None);
+                }
+            }
+        }
+
+        // ── Per-channel metering (post-dynamics/EQ, post-FX, pre-fader) ──
+        // Same math and destination state as when this lived inside the
+        // staging loop; hoisted out so input-strip meters observe the
+        // post-FX signal. Non-existent strips keep their zero rows and
+        // their absence from the meter maps.
+        for idx in 0..self.channel_ids.len() {
+            if self.channel_ids[idx].is_none() {
+                continue;
+            }
+            let strip = idx as u32;
+            let base = idx * buf;
+            let row = &self.staged[base..base + bs];
+            let peak = row.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            let sq_sum: f32 = row.iter().map(|s| s * s).sum();
             let rms = (sq_sum / bs as f32).sqrt();
             self.channel_peak.insert(
                 strip,
@@ -1946,7 +2208,7 @@ impl MixerWasm {
         }
 
         // ── Direct-out tap: capture the pan-stage input ──
-        // staged holds the post gate/comp/EQ signal; apply the same
+        // staged holds the post gate/comp/EQ/FX signal; apply the same
         // input gain × phase × fader × VCA the owning engine applies,
         // but NOT pan → the classic post-fader mono direct out.
         // (Muted/solo-gated strips skip; their slots stay zeroed above.)

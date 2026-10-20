@@ -1,6 +1,7 @@
 //! Console scenes: snapshot/restore types + fade interpolation helpers.
 use wasm_bindgen::prelude::*;
 
+use crate::gxfx;
 use oximedia_mixer::channel::{db_to_linear, PanLaw};
 
 // ── Scenes ─────────────────────────────────────────────────────────────
@@ -57,6 +58,37 @@ pub struct ExpanderScene {
     pub attack_ms: f32,
     pub release_ms: f32,
 }
+
+/// One FX-chain slot's scene state: effect id (-1 = empty), enabled
+/// flag and the full padded param row in ENGINE units. Entries beyond
+/// the effect's live param count are always zero — only live ordinals
+/// are ever written (catalog defaults at `set_slot`, user writes at
+/// `set_param`) — so a snapshot/apply/snapshot round-trip is exact.
+///
+/// FX chains are PAIR-owned (pair t's chain covers input strips
+/// 2t/2t+1; the even strip is the owner the `fx_*` setters address),
+/// so this state hangs off [`ConsoleScene`] per pair, not off
+/// [`StripScene`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct FxSlotScene {
+    pub fx: i16,
+    pub enabled: bool,
+    pub params: [f32; gxfx::SLOT_PARAMS],
+}
+
+impl Default for FxSlotScene {
+    fn default() -> Self {
+        Self {
+            fx: -1,
+            enabled: false,
+            params: [0.0; gxfx::SLOT_PARAMS],
+        }
+    }
+}
+
+/// One stereo pair's FX-chain scene state: 11 slots in chain order
+/// (the slot index IS the chain position).
+pub type FxChainScene = [FxSlotScene; gxfx::CHAIN_SLOTS];
 
 /// One strip's scene state — everything the per-strip setters touch,
 /// for input strips (0-127) and bus slots (128-255) alike. `mute` and
@@ -129,14 +161,23 @@ impl Default for BusScene {
     }
 }
 
-/// A full console snapshot: all 256 strips, all 8 buses, master gain.
-/// Plain Rust (not wasm-exported) — the JS surface is
-/// save_scene/recall_scene; the struct is public so native tests can
-/// verify scene round-trips field by field.
+/// A full console snapshot: all 256 strips, all 8 buses, the 64
+/// pair-owned gxfx FX chains, master gain. Plain Rust (not
+/// wasm-exported) — the JS surface is save_scene/recall_scene; the
+/// struct is public so native tests can verify scene round-trips
+/// field by field.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConsoleScene {
     pub strips: [StripScene; 256],
     pub buses: [BusScene; 8],
+    /// Per-pair gxfx FX chains (pair t = input strips 2t/2t+1). Boxed
+    /// because the padded param rows make this block ~140 KB and
+    /// `FadeState` holds TWO scenes that `process_block` moves out
+    /// and back every block during a fade — boxing keeps that move a
+    /// pointer copy (the box itself is allocated once per snapshot,
+    /// control-plane only). FX never interpolates: recall snaps the
+    /// chains once at start (see `MixerWasm::apply_scene_fx`).
+    pub fx_chains: Box<[FxChainScene; gxfx::CHAIN_PAIRS]>,
     pub master_gain: f32,
 }
 
@@ -145,6 +186,7 @@ impl Default for ConsoleScene {
         Self {
             strips: std::array::from_fn(|_| StripScene::default()),
             buses: std::array::from_fn(|_| BusScene::default()),
+            fx_chains: Box::new(std::array::from_fn(|_| FxChainScene::default())),
             master_gain: 1.0,
         }
     }
@@ -247,11 +289,12 @@ pub(crate) fn pan_law_to_wire(law: PanLaw) -> u32 {
     }
 }
 
-/// Scene-recall error. `JsValue::from_str` is a wasm-only intrinsic
-/// (it panics "function not implemented on non-wasm32 targets" on
-/// native builds), and native tests DO exercise the Err path — so on
-/// native targets return a bare NULL (callers only observe Ok/Err).
-pub(crate) fn scene_err(msg: String) -> JsValue {
+/// Native-safe `JsValue` error. `JsValue::from_str` is a wasm-only
+/// intrinsic (it panics "function not implemented on non-wasm32
+/// targets" on native builds), and native tests DO exercise Err paths
+/// (scene recall AND the fx_* setter validation) — so on native
+/// targets return a bare NULL (callers only observe Ok/Err).
+pub(crate) fn js_err(msg: String) -> JsValue {
     #[cfg(target_arch = "wasm32")]
     {
         JsValue::from_str(&msg)
