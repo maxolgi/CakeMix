@@ -782,6 +782,15 @@ fn params_json_reflects_recalled_scene() {
     let s2 = &v["strips"].as_array().unwrap()[2];
     assert!(s2["soloed"].as_bool().unwrap(), "scene A's solo restored");
 
+    // Regression (live E2E bug): lazily created strips — the bus-3 slot
+    // strips 176/181 are never explicitly named — must carry the SAME
+    // 1-based default as the frontend store (`ch{index+1}`,
+    // mixer.ts defaultChannel), and keep it through save/recall, so a
+    // recalled scene cannot shift the UI's default names by one.
+    let s176 = &v["strips"].as_array().unwrap()[3];
+    assert_eq!(s176["ch"].as_i64(), Some(176));
+    assert_eq!(s176["name"].as_str().unwrap(), "ch177");
+
     // Fade recall: the TARGET serializes the moment the fade starts —
     // not the still-current from-state.
     set_mutated_state(&mut m);

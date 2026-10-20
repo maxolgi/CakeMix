@@ -400,7 +400,11 @@ impl MixerWasm {
                 .owning_engine_mut(idx)
                 .expect("idx < channel_ids.len() always has an owning instance");
             let id = engine
-                .add_channel(format!("ch{idx}"), ChannelType::Mono, ChannelLayout::Mono)
+                .add_channel(
+                    format!("ch{}", idx + 1),
+                    ChannelType::Mono,
+                    ChannelLayout::Mono,
+                )
                 .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
             if let Ok(ch) = engine.get_channel_mut(id) {
                 ch.set_pan_law(PanLaw::Linear);
