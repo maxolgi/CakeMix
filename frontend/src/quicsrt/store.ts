@@ -263,6 +263,7 @@ function teardownSession(id: number, finalStatus: QuicsrtStatus, finalDetail: st
   unmapSessionPids(s);
   sendToWorklet({ type: "pcm-port", port: null, sessionId: id });
   s.worker?.terminate();
+  rxRateBase.delete(id);
   setSessions((list) => list.filter((x) => x.id !== id));
   if (wasPrimary) {
     setIdleStatus(finalStatus);
@@ -274,6 +275,24 @@ function unmapSessionPids(s: QuicsrtSession): void {
   for (const p of s.pids) {
     if (p.chStart >= 0) sendToWorklet({ type: "unmap-pid", pid: p.pid, sessionId: s.id });
   }
+}
+
+// Actual receive-rate accounting: SRT's `bandwidthBps` is the estimated
+// PATH capacity (mbpsBandwidth), not the stream's data rate — showing it
+// bare read as if the audio flowed at that rate. Derive the true flow
+// rate from cumulative rxBytes deltas between stats samples. Keyed by
+// session id; torn down with the session.
+const rxRateBase = new Map<number, { bytes: number; t: number }>();
+
+function receiveRateMb_s(id: number, rxBytes: number): number | null {
+  const now = performance.now();
+  const prev = rxRateBase.get(id);
+  rxRateBase.set(id, { bytes: rxBytes, t: now });
+  if (!prev) return null; // first sample — no delta yet
+  const dt = (now - prev.t) / 1000;
+  const dBytes = rxBytes - prev.bytes;
+  if (dt <= 0.2 || dBytes < 0) return null; // too close / counter reset
+  return (dBytes * 8) / dt / 1e6;
 }
 
 function onWorkerMsg(msg: WorkerMsg, id: number): void {
@@ -289,12 +308,17 @@ function onWorkerMsg(msg: WorkerMsg, id: number): void {
     case "log":
       patchSession(id, { statusDetail: msg.msg });
       break;
-    case "stats":
+    case "stats": {
+      const rate = receiveRateMb_s(id, msg.stats.rxBytes);
+      const path = (msg.stats.bandwidthBps / 1e6).toFixed(0);
       patchSession(id, {
         statusDetail:
-          `rtt ${msg.stats.rttMs.toFixed(0)} ms · loss ${msg.stats.rxLoss} · dropped ${msg.stats.rxDropped} · ${(msg.stats.bandwidthBps / 1e6).toFixed(2)} Mb/s`,
+          `rtt ${msg.stats.rttMs.toFixed(0)} ms · loss ${msg.stats.rxLoss} · dropped ${msg.stats.rxDropped}` +
+          (rate !== null ? ` · rate ${rate.toFixed(1)} Mb/s` : "") +
+          ` · path ~${path} Mb/s`,
       });
       break;
+    }
     case "wtReady":
       patchSession(id, { status: "connected", statusDetail: "WebTransport ready — awaiting stream" });
       break;
