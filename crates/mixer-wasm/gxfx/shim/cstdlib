@@ -1,0 +1,8 @@
+// Freestanding <cstdlib> shim: just the allocation pair the gxfx global
+// operator new/delete overloads route to (size_t for their signatures).
+#pragma once
+typedef __SIZE_TYPE__ size_t;
+extern "C" {
+void* malloc(size_t size);
+void free(void* ptr);
+}

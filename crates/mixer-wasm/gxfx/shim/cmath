@@ -1,0 +1,74 @@
+// Freestanding <cmath> shim: the libm subset the faust-generated classes
+// call (sin/cos/exp/pow/log family and float variants), declared extern "C"
+// so the object's undefined symbols are the plain C names the Rust/wasm
+// link is expected to resolve; std:: aliases cover the std::-qualified
+// calls the generated code makes.
+#pragma once
+extern "C" {
+double sin(double x);
+double cos(double x);
+double tan(double x);
+double asin(double x);
+double acos(double x);
+double atan(double x);
+double atan2(double y, double x);
+double exp(double x);
+double log(double x);
+double log10(double x);
+double pow(double x, double y);
+double sqrt(double x);
+double fabs(double x);
+double floor(double x);
+double ceil(double x);
+double fmod(double x, double y);
+float sinf(float x);
+float cosf(float x);
+float tanf(float x);
+float asinf(float x);
+float acosf(float x);
+float atanf(float x);
+float atan2f(float y, float x);
+float expf(float x);
+float logf(float x);
+float log10f(float x);
+float powf(float x, float y);
+float sqrtf(float x);
+float fabsf(float x);
+float floorf(float x);
+float ceilf(float x);
+float fmodf(float x, float y);
+}
+namespace std {
+using ::sin;
+using ::cos;
+using ::tan;
+using ::asin;
+using ::acos;
+using ::atan;
+using ::atan2;
+using ::exp;
+using ::log;
+using ::log10;
+using ::pow;
+using ::sqrt;
+using ::fabs;
+using ::floor;
+using ::ceil;
+using ::fmod;
+using ::sinf;
+using ::cosf;
+using ::tanf;
+using ::asinf;
+using ::acosf;
+using ::atanf;
+using ::atan2f;
+using ::expf;
+using ::logf;
+using ::log10f;
+using ::powf;
+using ::sqrtf;
+using ::fabsf;
+using ::floorf;
+using ::ceilf;
+using ::fmodf;
+}

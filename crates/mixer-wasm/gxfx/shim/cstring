@@ -1,0 +1,13 @@
+// Freestanding <cstring> shim: minimal byte/string family. The gxfx prelude
+// includes <cstring> for parity with the guitarix include chain; none of the
+// ten effects in gxfx_dsp_eleven.cpp call these (uncalled declarations emit
+// no undefined symbols).
+#pragma once
+typedef __SIZE_TYPE__ size_t;
+extern "C" {
+void* memcpy(void* dest, const void* src, size_t n);
+void* memmove(void* dest, const void* src, size_t n);
+void* memset(void* dest, int value, size_t n);
+int memcmp(const void* a, const void* b, size_t n);
+size_t strlen(const char* s);
+}

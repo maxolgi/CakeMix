@@ -1,0 +1,10 @@
+// Freestanding <algorithm> shim: std::min/std::max are the only algorithm
+// facilities the faust-generated classes use (the gxfx prelude also exposes
+// them unqualified at global scope via using-declarations). Semantics match
+// the standard single-argument versions (libstdc++): min returns b when
+// b < a else a; max returns b when a < b else a.
+#pragma once
+namespace std {
+template <class T> constexpr const T& min(const T& a, const T& b) { return b < a ? b : a; }
+template <class T> constexpr const T& max(const T& a, const T& b) { return a < b ? b : a; }
+}
