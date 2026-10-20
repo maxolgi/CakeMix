@@ -4,6 +4,9 @@ import { createStore } from "solid-js/store";
 export const NUM_CHANNELS = 128;
 export const NUM_SLOTS = 128;
 export const SLOT_BASE = 128;
+/** FX chains are pair-owned: pair t = strips 2t/2t+1, 11 slots each. */
+export const FX_PAIRS = 64;
+export const FX_SLOTS = 11;
 
 export interface EqBand { gainDb: number; freqHz: number; q: number; }
 export interface ChannelMeter {
@@ -45,6 +48,25 @@ export interface ChannelState {
    *  strip is auto-faded to silence; recovers when delivery is clean). */
   degraded: boolean;
 }
+
+export interface FxParamDef {
+  port: number; symbol: string; name: string;
+  default: number; min: number; max: number; step: number; integer: boolean;
+}
+
+export interface FxEffectDef {
+  id: number; key: string; label: string; category: string; stereo: boolean;
+  params: FxParamDef[];
+}
+
+export interface FxCatalog {
+  slots: number; slotParams: number; effects: FxEffectDef[];
+}
+
+/** One chain slot: catalog effect id (-1 = empty), enabled flag, and
+ *  the LIVE param row in ENGINE units — trimmed to the effect's param
+ *  count (the 48-wide padded row is a wasm storage artifact). */
+export interface FxSlotState { fx: number; enabled: boolean; params: number[]; }
 
 export interface MeterData {
   peakL: number; peakR: number; rmsL: number; rmsR: number;
@@ -95,6 +117,16 @@ export const [busChannels, setBusChannels] = createStore<BusState[]>(
   Array.from({ length: 8 }, (_, i) => defaultBus(i))
 );
 export const [selectedBus, setSelectedBus] = createSignal<number | null>(null);
+
+function defaultFxSlot(): FxSlotState { return { fx: -1, enabled: false, params: [] }; }
+
+/** Per-pair FX chains: fxChains[pair][slot]. pair = ch/2 for the even
+ *  strip ch owning the stereo pair (see the fx* helpers below). */
+export const [fxChains, setFxChains] = createStore<FxSlotState[][]>(
+  Array.from({ length: FX_PAIRS }, () => Array.from({ length: FX_SLOTS }, defaultFxSlot))
+);
+/** The worklet's `fx-catalog` reply, parsed (null until loaded). */
+export const [fxCatalog, setFxCatalogState] = createSignal<FxCatalog | null>(null);
 
 export const [meterData, setMeterData] = createSignal<MeterData>({
   peakL: -Infinity, peakR: -Infinity, rmsL: -Infinity, rmsR: -Infinity,
@@ -229,12 +261,81 @@ export function slotChannelIndex(bus: number, slot: number): number {
   return SLOT_BASE + bus * 16 + slot;
 }
 
+// ── FX chain helpers ──────────────────────────────────────────────────────────
+
+/** Pair index of even strip `ch`, or null when ch is not an even input
+ *  strip (0-126). All fx helpers take the EVEN strip of a stereo pair —
+ *  exactly the ch the worklet's set-fx-* messages expect. */
+function fxPairOf(ch: number): number | null {
+  return ch >= 0 && ch < NUM_CHANNELS && ch % 2 === 0 ? ch / 2 : null;
+}
+
+/** Store the worklet's `fx-catalog` reply (the App router passes the
+ *  reply's json string, same flow as applyConsoleParams). Parses
+ *  defensively: a malformed payload leaves the catalog untouched. */
+export function applyFxCatalog(json: string) {
+  try {
+    const c = JSON.parse(json);
+    if (c && typeof c === "object" && Array.isArray(c.effects)) setFxCatalogState(c);
+  } catch { /* malformed payload: catalog stays as-is */ }
+}
+
+/** Ask the worklet for the FX catalog (request/reply like get-params);
+ *  its `fx-catalog` reply routes to `applyFxCatalog`. */
+export function requestFxCatalog() {
+  sendToWorklet({ type: "get-fx-catalog" });
+}
+
+// Store helpers — each updates store + sends worklet message. The wasm
+// is the source of truth; these mirror its exact semantics (param is
+// the catalog-row ORDINAL in ENGINE units, params rows live-trimmed) so
+// store and engine never disagree. Guards no-op WITHOUT posting — the
+// wasm rejects/ignores those calls and changes nothing engine-side.
+export function setFxSlot(ch: number, slot: number, fxId: number) {
+  const pair = fxPairOf(ch);
+  if (pair === null || slot < 0 || slot >= FX_SLOTS) return;
+  // -1 empties the slot; any other id must resolve in the catalog (the
+  // wasm rejects ids outside it — and without a catalog we cannot know
+  // the defaults it would install, so don't post either).
+  const fx = fxId >= 0 ? fxCatalog()?.effects[fxId] : undefined;
+  if (fxId !== -1 && !fx) return;
+  setFxChains(pair, slot, { fx: fxId, enabled: false, params: fx ? fx.params.map(p => p.default) : [] });
+  sendToWorklet({ type: "set-fx-slot", ch, slot, fxId });
+}
+export function setFxEnabled(ch: number, slot: number, on: boolean) {
+  const pair = fxPairOf(ch);
+  if (pair === null || slot < 0 || slot >= FX_SLOTS) return;
+  if (fxChains[pair][slot].fx < 0) return;  // wasm ignores empty slots
+  setFxChains(pair, slot, "enabled", on);
+  sendToWorklet({ type: "set-fx-enabled", ch, slot, on });
+}
+export function setFxParam(ch: number, slot: number, param: number, value: number) {
+  const pair = fxPairOf(ch);
+  if (pair === null || slot < 0 || slot >= FX_SLOTS) return;
+  if (param < 0 || param >= fxChains[pair][slot].params.length) return;
+  setFxChains(pair, slot, "params", param, value);
+  sendToWorklet({ type: "set-fx-param", ch, slot, param, value });
+}
+export function moveFxSlot(ch: number, from: number, to: number) {
+  const pair = fxPairOf(ch);
+  if (pair === null) return;
+  if (from < 0 || from >= FX_SLOTS || to < 0 || to >= FX_SLOTS) return;
+  // Array-move the whole row (fx id, params, enabled travel together),
+  // same semantics as the wasm's fx_move_slot.
+  const rows = fxChains[pair].map(r => ({ fx: r.fx, enabled: r.enabled, params: [...r.params] }));
+  const [row] = rows.splice(from, 1);
+  rows.splice(to, 0, row);
+  setFxChains(pair, rows);
+  sendToWorklet({ type: "move-fx-slot", ch, from, to });
+}
+
 // ── Scene recall apply ──────────────────────────────────────────────────────
 
 /** Apply a console-params document (the worklet's `console-params` reply,
  *  pulled after `scene-recalled`) to the UI stores so every control
  *  reflects the recalled console. Field names mirror `ChannelState` /
- *  `BusState` exactly — the wasm serializes them in lockstep.
+ *  `BusState` exactly — the wasm serializes them in lockstep. `fxChains`
+ *  syncs the FX pair store the same way.
  *
  *  Writes the stores DIRECTLY, never through the sendToWorklet helpers
  *  above: the mixer already holds these values, and echoing them back
@@ -287,6 +388,21 @@ export function applyConsoleParams(json: string) {
     setBusChannels(b, "feedsMain", bus.feedsMain);
     for (let slot = 0; slot < bus.sources.length; slot++) {
       setBusChannels(b, "sources", slot, bus.sources[slot]);
+    }
+  }
+  // FX chains: fxChains carries NON-EMPTY pairs only — an absent pair is
+  // an empty chain (reset to default). Entries hold all 11 slots; a
+  // set-but-disabled slot still carries fx + params (a recall sync must
+  // not lose them). Same write-directly-never-echo rule as above.
+  const fxDocs: (any | undefined)[] = Array.from({ length: FX_PAIRS }, () => undefined);
+  for (const c of p.fxChains ?? []) fxDocs[c.pair] = c;
+  for (let pair = 0; pair < FX_PAIRS; pair++) {
+    const slots = fxDocs[pair]?.slots ?? [];
+    for (let slot = 0; slot < FX_SLOTS; slot++) {
+      const s = slots[slot];
+      setFxChains(pair, slot, s && s.fx >= 0
+        ? { fx: s.fx, enabled: !!s.enabled, params: s.params ?? [] }
+        : defaultFxSlot());
     }
   }
   setMasterGainState(p.masterGain);
