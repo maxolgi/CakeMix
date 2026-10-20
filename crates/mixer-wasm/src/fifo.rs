@@ -61,6 +61,36 @@ pub(crate) const FEED_RECENCY_WINDOWS: u64 = 2;
 /// Consecutive fed windows required before the anchor is set.
 pub(crate) const ANCHOR_INIT_WINDOWS: u32 = 2;
 
+// ── Stream-health gate ─────────────────────────────────────────────────
+//
+// A stream whose delivery is pathologically gappy (TSBPD latency below
+// the network's jitter → constant SRT drops; a source bursting far over
+// real-time then stalling) cannot be patched over by the elastic buffer:
+// every starvation is a hole and every insert a repeat, and at high rates
+// the "repair" itself becomes full-scale granular static — far worse for
+// ears and speakers than a brief dropout. Such streams are faded to
+// silence instead (a console protects the bus; the meters + UI surface
+// the state), and fade back in once delivery is clean again.
+//
+// Degraded = more than HEALTH_STARVE_MAX starved blocks or
+// HEALTH_INSERT_MAX inserts in one statistics window (~1 s), or
+// HEALTH_FAST_STARVE_BLOCKS starved blocks mid-window (≈85 ms of holes —
+// engages the fade immediately rather than at the next window boundary).
+// Recovery requires HEALTH_RECOVERY_WINDOWS consecutive clean windows.
+pub(crate) const HEALTH_STARVE_MAX: u32 = 8;
+pub(crate) const HEALTH_INSERT_MAX: u32 = 8;
+/// Mid-window fast-path threshold: engage the fade immediately instead
+/// of at the next window boundary. 12 starved blocks ≈ 32 ms of holes.
+/// (Inserts have no fast path — analysis in the gate notes: any deficit
+/// large enough to burst inserts drains the queue to this starve gate
+/// first, so the window-level HEALTH_INSERT_MAX is sufficient there.)
+pub(crate) const HEALTH_FAST_STARVE_BLOCKS: u32 = 12;
+pub(crate) const HEALTH_RECOVERY_WINDOWS: u32 = 2;
+/// Per-sample fade rates (asymmetric): OUT fast to protect the output
+/// (≈5.3 ms full swing @ 48 k), IN slower to avoid pumping (≈10.7 ms).
+pub(crate) const HEALTH_FADE_OUT_STEP: f32 = 1.0 / 256.0;
+pub(crate) const HEALTH_FADE_IN_STEP: f32 = 1.0 / 512.0;
+
 /// Per-channel elastic input FIFO with drift bookkeeping.
 pub(crate) struct ChannelFifo {
     pub(crate) q: VecDeque<f32>,
@@ -72,6 +102,10 @@ pub(crate) struct ChannelFifo {
     pub(crate) window_min: usize,
     /// Any block starved (queue empty mid-drain) in the current window.
     pub(crate) window_starved: bool,
+    /// Starved blocks in the current window (stream-health statistic).
+    pub(crate) window_starved_blocks: u32,
+    /// Inserts applied in the current window (stream-health statistic).
+    pub(crate) window_inserts: u32,
     /// Smoothed window-min depth; negative = not yet initialized.
     pub(crate) ewma: f32,
     /// Consecutive windows with feed activity (anchor initialization).
@@ -82,9 +116,17 @@ pub(crate) struct ChannelFifo {
     pub(crate) last_fed_window: u64,
     /// Blocks remaining before the next correction may fire.
     pub(crate) cooldown: u32,
+    /// Stream-health gate active (fade this channel to silence).
+    pub(crate) degraded: bool,
+    /// Consecutive clean windows while degraded (recovery count).
+    pub(crate) clean_windows: u32,
+    /// Live fade gain toward 0 (degraded) or 1 (healthy), per sample.
+    pub(crate) health_gain: f32,
     /// Diagnostics: total trim / insert corrections applied.
     pub(crate) slips: u64,
     pub(crate) inserts: u64,
+    /// Diagnostics: frames dropped by the MAX_QUEUE_FRAMES overflow guard.
+    pub(crate) overflow_drops: u64,
 }
 
 impl ChannelFifo {
@@ -95,13 +137,19 @@ impl ChannelFifo {
             window_id: 0,
             window_min: usize::MAX,
             window_starved: false,
+            window_starved_blocks: 0,
+            window_inserts: 0,
             ewma: -1.0,
             fed_windows: 0,
             anchor: None,
             last_fed_window: 0,
             cooldown: 0,
+            degraded: false,
+            clean_windows: 0,
+            health_gain: 1.0,
             slips: 0,
             inserts: 0,
+            overflow_drops: 0,
         }
     }
 
@@ -112,7 +160,8 @@ impl ChannelFifo {
     }
 
     /// Close the statistics window that just ended: fold `window_min`
-    /// into the EWMA and initialize the anchor once the feed is stable.
+    /// into the EWMA, initialize the anchor once the feed is stable, and
+    /// apply the stream-health decision (see the gate notes above).
     pub(crate) fn finalize_window(&mut self) {
         let m = self.window_min;
         if self.ewma < 0.0 {
@@ -120,8 +169,29 @@ impl ChannelFifo {
         } else {
             self.ewma += EWMA_ALPHA * (m as f32 - self.ewma);
         }
+        if self.window_starved_blocks > HEALTH_STARVE_MAX || self.window_inserts > HEALTH_INSERT_MAX
+        {
+            self.degraded = true;
+            self.clean_windows = 0;
+        } else if self.degraded {
+            self.clean_windows += 1;
+            if self.clean_windows >= HEALTH_RECOVERY_WINDOWS {
+                self.degraded = false;
+            }
+        }
         self.window_min = usize::MAX;
         self.window_starved = false;
+        self.window_starved_blocks = 0;
+        self.window_inserts = 0;
+    }
+
+    /// Reset the stream-health gate (a remap is a new stream).
+    pub(crate) fn reset_health(&mut self) {
+        self.degraded = false;
+        self.clean_windows = 0;
+        self.health_gain = 1.0;
+        self.window_starved_blocks = 0;
+        self.window_inserts = 0;
     }
 }
 

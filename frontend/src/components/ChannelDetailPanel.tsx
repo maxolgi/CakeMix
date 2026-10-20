@@ -307,6 +307,10 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
         <div class="detail-meter-fader">
           <MeterCanvas peakDb={ch().peakDb} rmsDb={ch().rmsDb} width={14} height={160} />
           <div class="fader-col">
+            <span
+              class={`strip-gated ${ch().degraded ? "on" : ""}`}
+              title="Stream health gate: this strip's delivery is pathologically lossy/bursty (e.g. TSBPD latency below the network's jitter, constant SRT drops) — the mixer faded it to silence to protect the output. Raise the receive latency or fix the connection; the strip returns automatically once delivery is clean."
+            >GATED</span>
             <span class="fader-val">{formatGainDb(ch().gain)}</span>
             <div class="fader-wrap">
               <input

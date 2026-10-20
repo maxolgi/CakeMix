@@ -319,6 +319,17 @@ body {
 .master-detail .detail-meter-fader canvas { position: static; }
 .fader-col { display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .fader-col .fader-val { font-size: 0.95em; color: #aaa; width: 50px; text-align: center; }
+
+/* Stream-health gate badge: visible only while the strip is auto-faded
+ * out by the mixer's stream-health gate (see fifo.rs). Fixed height so
+ * toggling never shifts the fader layout. */
+.strip-gated {
+  font-size: 0.72em; letter-spacing: 0.08em;
+  color: #ff6b6b; text-align: center; width: 50px;
+  height: 1.2em; line-height: 1.2em;
+  visibility: hidden;
+}
+.strip-gated.on { visibility: visible; }
 .detail-controls { display: flex; gap: 6px; justify-content: center; padding-top: 4px; }
 .detail-controls .btn-sm { width: 36px; height: 26px; font-size: 0.8em; }
 

@@ -6,7 +6,13 @@ export const NUM_SLOTS = 128;
 export const SLOT_BASE = 128;
 
 export interface EqBand { gainDb: number; freqHz: number; q: number; }
-export interface ChannelMeter { ch: number; peak: number; rms: number; gr?: number; }
+export interface ChannelMeter {
+  ch: number; peak: number; rms: number; gr?: number;
+  /** Stream-health telemetry from the wasm FIFO layer: dg = 1 while the
+   *  gate holds the strip (auto-faded to silence), sb/ins = starved
+   * blocks / inserts this window, ov = cumulative overflow-dropped frames. */
+  dg?: number; sb?: number; ins?: number; ov?: number;
+}
 
 export interface BusState {
   name: string;
@@ -35,6 +41,9 @@ export interface ChannelState {
   mainAssigned: boolean;
   peakDb: number; rmsDb: number;
   compGrDb: number;
+  /** Stream-health gate active (delivery pathologically lossy — the
+   *  strip is auto-faded to silence; recovers when delivery is clean). */
+  degraded: boolean;
 }
 
 export interface MeterData {
@@ -65,6 +74,7 @@ function defaultChannel(index: number): ChannelState {
     mainAssigned: true,
     peakDb: -Infinity, rmsDb: -Infinity,
     compGrDb: 0,
+    degraded: false,
   };
 }
 
@@ -127,12 +137,14 @@ export function updateMeterData(msg: MeterData) {
       setChannels(cm.ch, "peakDb", cm.peak);
       setChannels(cm.ch, "rmsDb", cm.rms);
       setChannels(cm.ch, "compGrDb", cm.gr ?? 0);
+      setChannels(cm.ch, "degraded", cm.dg === 1);
     }
   } else {
     for (let i = 0; i < channels.length; i++) {
       setChannels(i, "peakDb", -Infinity);
       setChannels(i, "rmsDb", -Infinity);
       setChannels(i, "compGrDb", 0);
+      setChannels(i, "degraded", false);
     }
   }
   if (msg.buses && msg.buses.length) {

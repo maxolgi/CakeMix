@@ -485,6 +485,7 @@ impl MixerWasm {
             slot.q.extend(self.deinterleave_scratch[c].iter().copied());
             let overflow = slot.q.len().saturating_sub(MAX_QUEUE_FRAMES);
             if overflow > 0 {
+                slot.overflow_drops += overflow as u64;
                 slot.q.drain(0..overflow);
             }
         }
@@ -546,7 +547,8 @@ impl MixerWasm {
         }
         // A (re)map is a new stream: drop the elastic anchors on its
         // channels so the standing depth re-anchors at the new source's
-        // natural level instead of correcting toward the old stream's.
+        // natural level instead of correcting toward the old stream's,
+        // and reset the stream-health gate (fresh stream, fresh stats).
         for i in 0..channel_count {
             if let Some(fifo) = self.channel_inputs.get_mut(&(ch_start + i)) {
                 fifo.anchor = None;
@@ -554,6 +556,7 @@ impl MixerWasm {
                 fifo.fed_windows = 0;
                 fifo.window_min = usize::MAX;
                 fifo.window_starved = false;
+                fifo.reset_health();
             }
         }
         self.pid_map.insert(
@@ -932,8 +935,21 @@ impl MixerWasm {
             first = false;
             let rms = self.channel_rms.get(&ch).copied().unwrap_or(-200.0);
             let gr = self.channel_comp_gr_db(ch);
+            // Stream-health telemetry (fields ride the per-strip meters):
+            // dg = health gate active (channel faded out), sb/ins = this
+            // window's starved blocks / inserts, ov = frames dropped by
+            // the queue cap. Absent on channels without a PCM FIFO.
+            let (dg, sb, ins, ov) = match self.channel_inputs.get(&ch) {
+                Some(f) => (
+                    if f.degraded { 1 } else { 0 },
+                    f.window_starved_blocks,
+                    f.window_inserts,
+                    f.overflow_drops,
+                ),
+                None => (0, 0, 0, 0),
+            };
             s.push_str(&format!(
-                "{{\"ch\":{ch},\"peak\":{peak:.1},\"rms\":{rms:.1},\"gr\":{gr:.1}}}"
+                "{{\"ch\":{ch},\"peak\":{peak:.1},\"rms\":{rms:.1},\"gr\":{gr:.1},\"dg\":{dg},\"sb\":{sb},\"ins\":{ins},\"ov\":{ov}}}"
             ));
         }
         s.push(']');
@@ -1726,9 +1742,19 @@ impl MixerWasm {
             }
             let base = ch_idx as usize * bs;
             let mut starved = false;
+            let target_gain = if fifo.degraded { 0.0 } else { 1.0 };
             for d in self.block_inputs[base..base + bs].iter_mut() {
                 if let Some(s) = fifo.q.pop_front() {
-                    *d = s;
+                    // Stream-health fade: asymmetric per-sample ramp toward
+                    // the target (fast out, slower in — see fifo.rs).
+                    if fifo.health_gain < target_gain {
+                        fifo.health_gain =
+                            (fifo.health_gain + fifo::HEALTH_FADE_IN_STEP).min(target_gain);
+                    } else if fifo.health_gain > target_gain {
+                        fifo.health_gain =
+                            (fifo.health_gain - fifo::HEALTH_FADE_OUT_STEP).max(target_gain);
+                    }
+                    *d = s * fifo.health_gain;
                 } else {
                     starved = true;
                     break;
@@ -1740,6 +1766,13 @@ impl MixerWasm {
             if starved {
                 self.starved_channel_blocks += 1;
                 fifo.window_starved = true;
+                fifo.window_starved_blocks += 1;
+                // Fast-path gate: ≈32 ms of holes inside one window is
+                // already pathology — fade now, not at the window edge.
+                if fifo.window_starved_blocks >= fifo::HEALTH_FAST_STARVE_BLOCKS {
+                    fifo.degraded = true;
+                    fifo.clean_windows = 0;
+                }
             }
             // Window rollover: fold the finished window's minimum into the
             // EWMA and, once feeding steadily, establish the anchor.
@@ -1779,6 +1812,7 @@ impl MixerWasm {
                 fifo.slips += 1;
                 fifo.cooldown = SLIP_COOLDOWN_BLOCKS;
             } else if fed_recent
+                && !fifo.degraded
                 && depth >= SLIP_FRAMES + SLIP_XFADE
                 && (fifo.window_starved || fifo.ewma < anchor_half)
                 && (depth as f32) < anchor_half + (2.0 * SLIP_FRAMES as f32)
@@ -1786,9 +1820,12 @@ impl MixerWasm {
                 // Sustained net-slow delivery (or live starvation): the
                 // queue would run dry — stretch the tail. The depth cap
                 // just above the trigger bounds the burst against a
-                // between-windows stale statistic.
+                // between-windows stale statistic. Skipped while the
+                // stream-health gate holds the channel (concealing a
+                // pathological stream just re-chops the holes).
                 slip_insert(&mut fifo.q);
                 fifo.inserts += 1;
+                fifo.window_inserts += 1;
                 fifo.cooldown = SLIP_COOLDOWN_BLOCKS;
             }
         }
@@ -2082,6 +2119,11 @@ impl MixerWasm {
     /// Channel-blocks that drained an empty FIFO (starvation events).
     pub fn starved_blocks(&self) -> u64 {
         self.starved_channel_blocks
+    }
+    /// Channels currently held silent by the stream-health gate
+    /// (pathologically gappy delivery — see the gate notes in fifo.rs).
+    pub fn degraded_channels(&self) -> u32 {
+        self.channel_inputs.values().filter(|f| f.degraded).count() as u32
     }
     /// Deepest current FIFO depth across all channels (frames).
     pub fn fifo_max_depth(&self) -> u32 {
