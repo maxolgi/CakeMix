@@ -9,6 +9,7 @@ Complete through M5: multi-session QuicSRT PCM input, 128-strip console
 
 | Date | Milestone |
 |---|---|
+| 2026-10-20 | gxfx E2E stall investigation: engine exonerated by measurement (native/wasm/live-Chrome, numbers in the FX section); regression gates added — `gxfx_timing_test` (release wall-time budgets per interactive op) and `gxfx_alloc_wasm` (wasm zero-allocation steady state + param writes; exact tape-set churn). Reproduced stall is a renderer-level main-thread seizure during FX knob drags, frontend/Chrome layer (survives with all set-fx-* messages dropped); dropped-pcm/AudioContext error in the severe E2E variant = the same seizure process-wide on the loaded tester machine |
 | 2026-10-20 | Per-pair guitarix FX insert chains: the real faust C++ DSP compiled freestanding from `vendor/guitarix` (`crates/mixer-wasm/gxfx/`), 11 effects honesty-tested and live (wah, overdrive, distortion — bossds1 via the gx_resampler/zita oversampling TU — compressor, chorus, flanger, phaser, tremolo, delay, echo, reverb), 11 slots per stereo pair post-EQ, FX rack UI, scene snap, engine-sourced catalog |
 | 2026-10-19 | QuicSRT migration: replaced the Rust WebSRT stack with the C++ QuicSRT engine (`vendor/QuicSRT-wasm` submodule, emcc + pthreads), COOP/COEP on every response, embedded gateway removed in favor of the external QuicSRT-gateway |
 | 2026-10-19 | Stream-health gate: per-channel delivery-pathology protection (below) — lossy/bursty streams (any latency; jitter-tail events at 120 ms+ included) fade their strips to silence (~40 ms worst-case blip) instead of blasting constant full-scale granular static |
@@ -114,6 +115,20 @@ the engine caps concurrently created memory-class instances at 96
 (~384 MiB worst case); rejections surface in the UI (fx-error toast +
 store rollback). Scene recall snaps FX state — never interpolates,
 even mid-cross-fade — and muted chains keep running so tails ring out.
+
+Measured interactive-op costs (2026-10-20 E2E investigation, pinned by
+`tests/gxfx_timing_test.rs` native-release and
+`tests/gxfx_alloc_wasm.rs` wasm-node): worst `set_slot` 0.27 ms
+(chorus), worst first-enable 1.5 ms (delay: 2×2 MiB tapes + 1M-float
+clear), param writes ≤0.04 ms (float stores — 0 allocations on wasm),
+steady `process_block` with a full enabled chain 0 allocations/block,
+bypass churn re-allocates exactly the tape set. That investigation
+exonerated the engine for the reported "FX knob drag stalls meters"
+E2E bug: the stall reproduced only as a renderer-level main-thread
+seizure (3×~3 s longtasks) during knob drags with all `set-fx-*`
+messages dropped before the worklet — i.e. a frontend/Chrome-layer
+interaction, with the audio render thread never missing a quantum
+under the same workload.
 
 ### PCM-only
 

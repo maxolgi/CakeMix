@@ -65,6 +65,12 @@ jobs:
       - name: cargo test (glitch_sim timing gate, release)
         run: cargo test -p mixer-wasm --release --test glitch_sim
 
+      # gxfx interactive-op wall-time gate (same release-only pattern):
+      # set_slot/enable/param-write budgets per effect — pins the
+      # message-time costs measured in the 2026-10-20 E2E investigation.
+      - name: cargo test (gxfx timing gate, release)
+        run: cargo test -p mixer-wasm --release --test gxfx_timing_test
+
   # ---------------------------------------------------------------------------
   # 2. WASM tests — the known-answer DSP suite under wasm (node).
   # ---------------------------------------------------------------------------
