@@ -1,0 +1,99 @@
+// Freestanding <vector> shim (wasm32-unknown-unknown, -nostdinc/
+// -nostdinc++), added for gxfx_mb.cpp: gx_barkgraphiceq.lv2/
+// orfanidis_eq.h (unpatchable vendor code) includes <vector> and uses
+// the minimal surface below. Nothing else in the gxfx tree includes it,
+// so on the freestanding target this header is private to gxfx_mb.cpp;
+// natively the system libstdc++ vector serves unchanged.
+//
+// Semantics kept where they matter for the solver: copy construction and
+// copy assignment are deep copies, push_back grows geometrically,
+// clear() keeps capacity, operator[] is unchecked. Allocation rides the
+// archive's GLOBAL operator new/delete pair (defined in
+// gxfx_dsp_eleven.cpp, -> malloc/free) so the TU's undefined-symbol
+// surface stays within the allowed malloc/free + new/delete mangled
+// names; the declarations below match those definitions exactly. On
+// allocation failure the global new returns null (the archive's own
+// posture — unchecked) and this shim keeps the same convention.
+#pragma once
+#include <cstdlib> // size_t
+
+void* operator new(size_t);
+void operator delete(void*) noexcept;
+void operator delete(void*, size_t) noexcept;
+// The standard library's reserved placement form, inlined here because
+// <new> does not exist on this target. Identical inline definition in
+// every TU that includes this header — no ODR hazard.
+inline void* operator new(size_t, void* ptr) noexcept { return ptr; }
+
+namespace std {
+
+template <typename T>
+class vector {
+    T* data_;
+    T* end_;
+    T* cap_;
+
+    void destroy_range(T* first, T* last) {
+        for (T* p = first; p != last; ++p)
+            p->~T();
+    }
+
+    void place_copy(const vector& o, size_t n) {
+        for (size_t i = 0; i < n; ++i)
+            new (static_cast<void*>(data_ + i)) T(o.data_[i]);
+        end_ = data_ + n;
+    }
+
+public:
+    vector() : data_(0), end_(0), cap_(0) {}
+    vector(const vector& o) : data_(0), end_(0), cap_(0) {
+        size_t n = o.size();
+        if (n) {
+            data_ = static_cast<T*>(::operator new(n * sizeof(T)));
+            cap_ = data_ + n;
+        }
+        place_copy(o, n);
+    }
+    vector& operator=(const vector& o) {
+        if (this != &o) {
+            destroy_range(data_, end_);
+            if (o.size() > static_cast<size_t>(cap_ - data_)) {
+                ::operator delete(data_);
+                size_t n = o.size();
+                data_ = n ? static_cast<T*>(::operator new(n * sizeof(T))) : 0;
+                cap_ = data_ + n;
+            }
+            place_copy(o, o.size());
+        }
+        return *this;
+    }
+    ~vector() {
+        destroy_range(data_, end_);
+        ::operator delete(data_);
+    }
+    void push_back(const T& v) {
+        if (end_ == cap_) {
+            size_t old = size();
+            size_t n = old ? old * 2 : 4;
+            T* grown = static_cast<T*>(::operator new(n * sizeof(T)));
+            for (size_t i = 0; i < old; ++i)
+                new (static_cast<void*>(grown + i)) T(data_[i]);
+            destroy_range(data_, end_);
+            ::operator delete(data_);
+            data_ = grown;
+            end_ = grown + old;
+            cap_ = grown + n;
+        }
+        new (static_cast<void*>(end_)) T(v);
+        ++end_;
+    }
+    void clear() {
+        destroy_range(data_, end_);
+        end_ = data_;
+    }
+    size_t size() const { return static_cast<size_t>(end_ - data_); }
+    T& operator[](size_t i) { return data_[i]; }
+    const T& operator[](size_t i) const { return data_[i]; }
+};
+
+} // namespace std
