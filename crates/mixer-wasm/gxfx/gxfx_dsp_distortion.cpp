@@ -1,11 +1,11 @@
-// gxfx_dsp_distortion.cpp — distortion (gxfx catalog id 2): the guitarix
-// bossds1 (BOSS DS-1 style) faust class as freestanding object code for
-// the CakeMix mixer engine (crates/mixer-wasm).
+// gxfx_dsp_distortion.cpp — distortion (gxfx catalog id 2: bossds1) and
+// bigmuffpi (id 71: bmp) as freestanding object code for the CakeMix
+// mixer engine (crates/mixer-wasm).
 //
 // Provenance: productionized port of OctOBX wasm/obxd/gxfx_dsp.cpp (the
-// authoritative wrapper TU); the resampler chain includes and the
-// PortIndex enum below are transcribed from it VERBATIM (paths adapted
-// to this repo's layout). bossds1 oversamples via
+// authoritative wrapper TU); the resampler chain includes and both
+// PortIndex enums below are transcribed from it VERBATIM (paths adapted
+// to this repo's layout). Both classes oversample via
 // gx_resample::FixedRateResampler, so — exactly as in OctOBX — this TU
 // also pulls the real resampler implementation link-complete into
 // itself: gx_resampler.cc plus zita's resampler-table.cc and
@@ -38,6 +38,18 @@ typedef enum { EFFECTS_OUTPUT, EFFECTS_INPUT, LEVEL, TONE, DRIVE, BYPASS } PortI
 #include "bossds1.cc" // via -I vendor/guitarix/trunk/src/LV2/faust-generated
 }
 
-// Factory (OctOBX naming; C++ linkage — gxfx_dsp_eleven.cpp's factory
+// gx_bmp.lv2 — "GxBigMuffPi" (catalog id 71): the full Big Muff PI
+// circuit with the SUSTAIN stage — NOT the gx_fuzz composite's bmfp
+// part, and distinct from gx_muff (id 15). Rides THIS TU because bmp.cc
+// uses gx_resample::FixedRateResampler like bossds1 (OctOBX carries it
+// in gxfx_dsp.cpp for the same reason). PortIndex from
+// gx_bmp.lv2/gx_bmp.h (audio pair first, params at ttl indexes 2..4).
+namespace gxfx_bmp {
+typedef enum { EFFECTS_OUTPUT, EFFECTS_INPUT, SUSTAIN, TONE, VOLUME } PortIndex;
+#include "bmp.cc" // via -I vendor/guitarix/trunk/src/LV2/faust-generated
+}
+
+// Factories (OctOBX naming; C++ linkage — gxfx_dsp_eleven.cpp's factory
 // table is the consumer).
 PluginLV2* gxfx_create_distortion() { return gxfx_distortion::bossds1::plugin(); }
+PluginLV2* gxfx_create_bigmuffpi() { return gxfx_bmp::bmp::plugin(); }

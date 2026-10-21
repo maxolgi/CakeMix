@@ -1,5 +1,5 @@
-// gxfx_dsp_time.cpp — the delay/time family (gxfx catalog ids 45..48 and
-// 53..56) as freestanding object code for the CakeMix mixer engine
+// gxfx_dsp_time.cpp — the delay/time family (gxfx catalog ids 45..56) as
+// freestanding object code for the CakeMix mixer engine
 // (crates/mixer-wasm).
 //
 // Provenance: productionized port of OctOBX wasm/obxd/gxfx_dsp_time.cpp
@@ -10,47 +10,43 @@
 // these ids) and a wrong enum silently routes params to the wrong
 // controls. Factory order matches the manifest order (OctOBX
 // src/gxfx-params.ts rows 45..56): duck_delay, duck_delay_st,
-// digital_delay, digital_delay_st, [gxtape, gxtape_st, gxechocat,
-// gxtubedelay — BLOCKED, see below], ts9, oc_2, classic_delay,
-// classic_echo.
+// digital_delay, digital_delay_st, gxtape, gxtape_st, gxechocat,
+// gxtubedelay, ts9, oc_2, classic_delay, classic_echo.
 //
 // Adapted from OctOBX, same rules as gxfx_dsp_distortion.cpp /
 // gxfx_dsp_drive.cpp:
 //  - all guitarix sources are included via RELATIVE paths from this
 //    dir into ../../../vendor/guitarix/trunk/... so build.rs needs no
-//    new include dirs;
+//    per-TU include dirs;
 //  - beat.h (B2N note-value→ms helper, included by both digital_delay
 //    .cc files) is staged at GLOBAL scope first — the include-once
 //    trick — so both namespaces see ::B2N; it is `static inline`, so
 //    per-TU linkage means no cross-TU ODR exposure.
 //
-// BLOCKED ids 49..52 (gxtape, gxtape_st, gxechocat, gxtubedelay): each
-// of those faust .cc files #includes bare-named circuit-table headers
-// (input12au7*, output12au7*, the seven copicat*, input/output12ax7*)
-// that exist ONLY in vendor/guitarix/trunk/src/LV2/DSP/circuit_tables/
-// — a directory on NO include path of build.rs (verified empirically:
-// gxtape.cc fails with 'input12au7_neg_table.h' file not found under
-// build.rs's exact flag set). A #include directive naming an unfindable
-// file is a hard preprocessor error, so no in-TU staging (the trick
-// gxfx_dsp_drive.cpp uses for trany.h) can reach them — there the
-// wrapper header itself was findable in DSP/ and only its nested table
-// includes needed redirecting; here the table headers themselves are
-// the unfindable files. Unlock (either, in a follow-up task with the
-// rights to do it): add `-I vendor/guitarix/trunk/src/LV2/DSP/
-// circuit_tables` to build.rs's include set (exactly what OctOBX's
-// documented compile line for this TU passes), or stage copies of the
-// 16 table headers in this dir (which IS on the include path) the way
-// the amps WIP does for the alembic/w20 tables. Until then this TU
-// ships the other eight effects and the four stay null factories.
+// Circuit tables (ids 49..52): gxtape/gxtape_st #include the four
+// DSP/circuit_tables/ 12au7 headers, gxechocat the seven copicat
+// headers, gxtubedelay the four 12ax7 headers — build.rs puts
+// vendor/guitarix/trunk/src/LV2/DSP/circuit_tables on the include path
+// (exactly what OctOBX's documented compile line for this TU passes),
+// so the bare table includes resolve directly to the vendor submodule's
+// single copies. Like the modulation family's 12ax7 tables these
+// headers carry NO include guard, so each namespace embeds its own copy
+// (~32 KB static float data per namespace) — mirroring upstream's
+// one-copy-per-bundle layout. (gxtubedelay's 12ax7 pair reaches the
+// vendor headers through the guard-less gxfx/input12ax7_*/output12ax7_*
+// redirect shims — same destination.)
 //
-// MEMORY (memory-class, catalog memory=1 for 45..48, 55, 56): the four
-// bundle classes carry a `double fVec0/fVec2[524288]` class member —
-// 4 MB per object at CREATION, not lazy (mono effects cost 8 MB per
-// slot dual-mono, the _st ones 4 MB as one stereo instance); the
-// classic delay/echo orphans lazily `new float[524288]` (2 MB) in
-// activate(true). The engine already caps concurrently created
-// memory-class instances (gxfx_catalog.h flags them); DSP create/
-// activate stays eager at message time, never inside process().
+// MEMORY (memory-class, catalog memory=1 for 45..52, 55, 56): the four
+// digital-delay bundle classes carry a `double fVec0/fVec2[524288]`
+// class member — 4 MB per object at CREATION, not lazy (mono effects
+// cost 8 MB per slot dual-mono, the _st ones 4 MB as one stereo
+// instance); the classic delay/echo orphans lazily `new float[524288]`
+// (2 MB) in activate(true); gxtape/gxtape_st/gxechocat/gxtubedelay keep
+// bounded tape/delay lines (8192-frame and smaller vectors) inside the
+// object but are still memory-flagged with the family. The engine
+// already caps concurrently created memory-class instances
+// (gxfx_catalog.h flags them); DSP create/activate stays eager at
+// message time, never inside process().
 //
 // ODR: gxfx_dsp_eleven.cpp owns the global operator new/delete
 // overloads and the memset definition for the whole gxfx archive (the
@@ -59,10 +55,9 @@
 // extern "C", no emscripten.
 //
 // Statelessness: all param storage and strip state live on the Rust
-// side; this is only the DSP classes + factories. These ids stay
-// unavailable (null factories in gxfx_dsp_eleven.cpp's table) until a
-// follow-up task flips those rows — this TU enters the archive
-// unlinked until then.
+// side; this is only the DSP classes + factories. The factory-table
+// rows for ids 45..56 in gxfx_dsp_eleven.cpp are the consumer (flipped
+// in the same wave as this TU's honesty tests, per the AGENTS.md rule).
 
 #include "gxfx_prelude.h"
 #include <math.h> // C-scope libm: ts9nonlin.h (gxts9) calls bare copysign()
@@ -70,6 +65,16 @@
                   // includer's declarations. Same as gxfx_dsp_drive.cpp for
                   // clipping.h: the prelude's <cmath> is covered natively,
                   // but the wasm shim declares copysign only in <math.h>.
+#ifdef __wasm__
+// The freestanding shim math.h carries no signbit: gxtape/gxtape_st's
+// tube-clip branch picks its table via a bare signbit(double) call
+// (emscripten's math.h makes signbit a macro, which is why OctOBX never
+// hit this). Declared over the clang builtins — folded inline, no
+// libcall, no state — same adaptation as gxfx_dsp_mod.cpp /
+// gxfx_dsp_amps.cpp.
+inline bool signbit(double x) { return __builtin_signbit(x); }
+inline bool signbit(float x) { return __builtin_signbitf(x); }
+#endif
 #include "../../../vendor/guitarix/trunk/src/LV2/DSP/gx_pluginlv2.h"
 
 // Include-once trick: both digital_delay .cc files #include "beat.h"
@@ -129,6 +134,56 @@ typedef enum {
     DD_CONTROL, DD_NOTIFY, SYNC, HOSTBPM, BYPASS,
 } PortIndex;
 #include "../../../vendor/guitarix/trunk/src/LV2/gx_digital_delay_st.lv2/digital_delay_st.cc"
+}
+
+// --- gxtape.lv2 / gxtape_st.lv2 (faust-generated classes) -------------------
+// Tape machine simulator (12au7 tube tables, wow/flutter/hiss). PortIndex
+// from gxtape.h / gxtape_st.h — control ports FIRST (ttl indexes 0..9),
+// audio at 10/11 (mono) resp. 10..13 (stereo), METERLEVEL last (declared
+// out_port in the spec, connection unwired per Phase 0 policy). The
+// TAPEHISS generator is signal-INDEPENDENT (an LCG noise source scaled
+// by the hiss knob): the honest silence-drain claim for these two ids is
+// made with TAPEHISS parked at 0 (see the smoke suite).
+namespace gxfx_gxtape {
+typedef enum {
+    ON, DRIVE, WOWDEPTH, WOWFREQ, FLUTTERDEPTH, FLUTTERFREQ,
+    TAPEHISS, TAPETYPE, SPEED, GAIN,
+    EFFECTS_OUTPUT, EFFECTS_INPUT, METERLEVEL,
+} PortIndex;
+#include "../../../vendor/guitarix/trunk/src/LV2/faust-generated/gxtape.cc"
+}
+
+namespace gxfx_gxtape_st {
+typedef enum {
+    ON, DRIVE, WOWDEPTH, WOWFREQ, FLUTTERDEPTH, FLUTTERFREQ,
+    TAPEHISS, TAPETYPE, SPEED, GAIN,
+    EFFECTS_OUTPUT_L, EFFECTS_OUTPUT_R, EFFECTS_INPUT_L, EFFECTS_INPUT_R,
+    METERLEVEL,
+} PortIndex;
+#include "../../../vendor/guitarix/trunk/src/LV2/faust-generated/gxtape_st.cc"
+}
+
+// --- gxechocat.lv2 (faust-generated class) ----------------------------------
+// Watkins Copicat tape-echo circuit sim (copicat* circuit tables).
+// PortIndex from gxechocat.h (= ttl indexes; audio out/in are 8/9, AFTER
+// the eight control ports).
+namespace gxfx_gxechocat {
+typedef enum {
+    AUDIO_IN, SWELL, SUSTAIN, OUTPUT, BPM, HEAD1, HEAD2, HEAD3,
+    EFFECTS_OUTPUT, EFFECTS_INPUT,
+} PortIndex;
+#include "../../../vendor/guitarix/trunk/src/LV2/faust-generated/gxechocat.cc"
+}
+
+// --- gxtubedelay.lv2 (faust-generated class) --------------------------------
+// 12ax7 tube-modelled delay (no include guards on the 12ax7 table headers
+// — per-namespace embed, same as the modulation family's tube trem/vib).
+namespace gxfx_gxtubedelay {
+typedef enum {
+    DRIVE, DELAY, FEEDBACK, LEVEL, OUTPUT,
+    EFFECTS_OUTPUT, EFFECTS_INPUT,
+} PortIndex;
+#include "../../../vendor/guitarix/trunk/src/LV2/faust-generated/gxtubedelay.cc"
 }
 
 // --- gxts9.lv2 (bundle-local ts9sim.cc + ts9nonlin.h/.cc) -------------------
@@ -226,8 +281,7 @@ typedef enum { PERCENT, TIME } PortIndex;
 }
 
 // namespace paths: gxfx_duck_delay::duck_delay::plugin() etc. Factory
-// order MUST match the generator manifest order (ids 45..48, 53..56;
-// 49..52 ride the circuit_tables blocker noted in the header comment).
+// order MUST match the generator manifest order (ids 45..56).
 typedef PluginLV2* (*gxfx_factory)();
 PluginLV2* gxfx_create_duck_delay() { return gxfx_duck_delay::duck_delay::plugin(); }
 PluginLV2* gxfx_create_duck_delay_st() { return gxfx_duck_delay_st::duck_delay_st::plugin(); }
@@ -252,6 +306,10 @@ PluginLV2* gxfx_create_digital_delay() {
 }
 
 PluginLV2* gxfx_create_digital_delay_st() { return gxfx_digital_delay_st::digital_delay_st::plugin(); }
+PluginLV2* gxfx_create_gxtape() { return gxfx_gxtape::gxtape::plugin(); }
+PluginLV2* gxfx_create_gxtape_st() { return gxfx_gxtape_st::gxtape_st::plugin(); }
+PluginLV2* gxfx_create_gxechocat() { return gxfx_gxechocat::gxechocat::plugin(); }
+PluginLV2* gxfx_create_gxtubedelay() { return gxfx_gxtubedelay::gxtubedelay::plugin(); }
 PluginLV2* gxfx_create_ts9() { return new gxfx_ts9::Ts9Dsp(); }
 PluginLV2* gxfx_create_oc_2() { return gxfx_oc_2::oc_2::plugin(); }
 PluginLV2* gxfx_create_classic_delay() { return gxfx_classic_delay::delay::plugin(); }

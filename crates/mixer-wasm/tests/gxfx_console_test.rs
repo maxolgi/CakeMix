@@ -51,7 +51,8 @@ fn fx_api_validates_channel_slot_and_effect() {
     assert!(m.fx_set_slot(0, 99, 0).is_err(), "slot 99 rejected");
     // Effect id range -1..=82; ids past the catalog are rejected before
     // the i16 cast, and in-catalog ids whose DSP is not ported yet
-    // (fuzzface, id 11 — null factory) fail as "effect unavailable".
+    // (cabinet, id 76 — the convolver family is a future wave) fail as
+    // "effect unavailable".
     assert!(m.fx_set_slot(0, 0, 83).is_err(), "fx id 83 rejected");
     assert!(m.fx_set_slot(0, 0, -2).is_err(), "fx id -2 rejected");
     assert!(
@@ -59,8 +60,8 @@ fn fx_api_validates_channel_slot_and_effect() {
         "huge fx id rejected before the i16 cast"
     );
     assert!(
-        m.fx_set_slot(0, 0, 11).is_err(),
-        "not-yet-ported fx id 11 rejected (null factory)"
+        m.fx_set_slot(0, 0, 76).is_err(),
+        "not-yet-ported fx id 76 rejected (null factory)"
     );
     // Distortion (id 2) landed with its TU: it sets like any effect
     // (then cleared, so the untouched-chain sweep below stays uniform).

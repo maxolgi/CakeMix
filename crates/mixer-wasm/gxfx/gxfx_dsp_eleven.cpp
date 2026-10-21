@@ -1,5 +1,7 @@
-// gxfx_dsp_eleven.cpp — ten guitarix faust DSP effects as freestanding
-// object code for the CakeMix mixer engine (crates/mixer-wasm).
+// gxfx_dsp_eleven.cpp — the v1 "eleven" guitarix faust DSP effects as
+// freestanding object code for the CakeMix mixer engine
+// (crates/mixer-wasm), plus the archive-wide factory table wiring every
+// ported family's rows (ids 0..75 live; 76..82 await their TUs).
 //
 // Provenance: productionized port of OctOBX wasm/obxd/gxfx_dsp.cpp (the
 // authoritative wrapper TU). Each faust class is pulled into its own
@@ -13,11 +15,11 @@
 // wasm32-unknown-unknown over gxfx/shim/) lands in a separate task.
 //
 // bossds1.cc/bmp.cc are intentionally NOT here: they depend on
-// gx_resample/zita (resampler) and distortion rides its own TU,
-// gxfx_dsp_distortion.cpp. THIS is the only TU that may define the global
-// operator new/delete overloads and memset (there is no C++ runtime on the
-// freestanding target — they route to C malloc/free); gxfx_dsp_distortion.cpp
-// must not.
+// gx_resample/zita (resampler) and distortion + bigmuffpi ride their own
+// TU, gxfx_dsp_distortion.cpp. THIS is the only TU that may define the
+// global operator new/delete overloads and memset (there is no C++
+// runtime on the freestanding target — they route to C malloc/free);
+// gxfx_dsp_distortion.cpp must not.
 //
 // This TU is a stateless factory + per-instance dispatcher: ALL param
 // storage, chaining, pair logic and strip state live on the Rust side.
@@ -123,18 +125,102 @@ PluginLV2* gxfx_create_echo() { return gxfx_echo::stereoecho::plugin(); }
 PluginLV2* gxfx_create_reverb() { return gxfx_reverb::stereoverb::plugin(); }
 
 // Distortion (catalog id 2) rides gxfx_dsp_distortion.cpp (same archive,
-// separate TU: it alone pulls gx_resampler/zita link-complete).
+// separate TU: it alone pulls gx_resample/zita link-complete — which is
+// also why bigmuffpi, id 71, lives there).
 PluginLV2* gxfx_create_distortion();
+PluginLV2* gxfx_create_bigmuffpi();
 
-// Effect id (gxfx_catalog.h row order) → factory. Rows 0..10.
+// Drive + dynamics family (ids 11..27): gxfx_dsp_drive.cpp.
+PluginLV2* gxfx_create_fuzzface();
+PluginLV2* gxfx_create_fuzzfacefm();
+PluginLV2* gxfx_create_fumaster();
+PluginLV2* gxfx_create_hornet();
+PluginLV2* gxfx_create_muff();
+PluginLV2* gxfx_create_cstb();
+PluginLV2* gxfx_create_aclipper();
+PluginLV2* gxfx_create_mxrdist();
+PluginLV2* gxfx_create_rangem();
+PluginLV2* gxfx_create_mole();
+PluginLV2* gxfx_create_hfb();
+PluginLV2* gxfx_create_hogsfoot();
+PluginLV2* gxfx_create_softclip();
+PluginLV2* gxfx_create_bassbooster();
+PluginLV2* gxfx_create_highbooster();
+PluginLV2* gxfx_create_expander();
+PluginLV2* gxfx_create_susta();
+
+// EQ family (ids 28..33): gxfx_dsp_eq.cpp.
+PluginLV2* gxfx_create_graphiceq();
+PluginLV2* gxfx_create_selecteq();
+PluginLV2* gxfx_create_tonecontroll();
+PluginLV2* gxfx_create_moog();
+PluginLV2* gxfx_create_low_high_pass();
+PluginLV2* gxfx_create_noise_shaper();
+
+// Wah family (ids 34..37): gxfx_dsp_wah.cpp.
+PluginLV2* gxfx_create_wahmodel();
+PluginLV2* gxfx_create_crybaby();
+PluginLV2* gxfx_create_autowah();
+PluginLV2* gxfx_create_dunwah();
+
+// Modulation family (ids 38..44): gxfx_dsp_mod.cpp.
+PluginLV2* gxfx_create_vibe();
+PluginLV2* gxfx_create_tubetremelo();
+PluginLV2* gxfx_create_tubevibrato();
+PluginLV2* gxfx_create_switched_tremolo();
+PluginLV2* gxfx_create_phaser_st();
+PluginLV2* gxfx_create_flanger_st();
+PluginLV2* gxfx_create_chorus_mono();
+
+// Time/delay family (ids 45..56): gxfx_dsp_time.cpp.
+PluginLV2* gxfx_create_duck_delay();
+PluginLV2* gxfx_create_duck_delay_st();
+PluginLV2* gxfx_create_digital_delay();
+PluginLV2* gxfx_create_digital_delay_st();
+PluginLV2* gxfx_create_gxtape();
+PluginLV2* gxfx_create_gxtape_st();
+PluginLV2* gxfx_create_gxechocat();
+PluginLV2* gxfx_create_gxtubedelay();
+PluginLV2* gxfx_create_ts9();
+PluginLV2* gxfx_create_oc_2();
+PluginLV2* gxfx_create_classic_delay();
+PluginLV2* gxfx_create_classic_echo();
+
+// Reverb family (ids 57..60): gxfx_dsp_reverb.cpp.
+PluginLV2* gxfx_create_zita_rev1();
+PluginLV2* gxfx_create_freeverb();
+PluginLV2* gxfx_create_room_simulator();
+PluginLV2* gxfx_create_shimmizita();
+
+// Amp + tonestack family (ids 61..65, 75): gxfx_dsp_amps.cpp (the
+// tonestack row consumes the TU's tonemodel aggregate factory).
+PluginLV2* gxfx_create_ampmodel();
+PluginLV2* gxfx_create_tonemodel();
+PluginLV2* gxfx_create_studiopre();
+PluginLV2* gxfx_create_alembic();
+PluginLV2* gxfx_create_w20();
+PluginLV2* gxfx_create_ampmodul();
+
+// Multiband + utility family (ids 66..70, 72..74): gxfx_mb.cpp.
+PluginLV2* gxfx_create_mbcompressor();
+PluginLV2* gxfx_create_mbdelay();
+PluginLV2* gxfx_create_mbdistortion();
+PluginLV2* gxfx_create_mbecho();
+PluginLV2* gxfx_create_barkgraphiceq();
+PluginLV2* gxfx_create_balance();
+PluginLV2* gxfx_create_outputlevel();
+PluginLV2* gxfx_create_ampout();
+
+// Effect id (gxfx_catalog.h row order) → factory. Rows 0..75.
 // INCREMENTAL-PORT MODEL: the catalog (generated, 83 ids) is the complete
-// menu; availability is honest per id. Ids 11..82 are NULL factories —
-// their DSP TUs have not been ported yet, so gxfx_create returns null,
-// gxfx_effect_info reports available=0 and the engine's set_slot rejects
-// them as "effect unavailable" (the frontend greys them out as
-// "(not ported)"). Each port wave replaces a run of nulls with real
-// factories — flip the rows here, nothing else; the catalog header and
-// its JSON surface never change.
+// menu; availability is honest per id. Ids 76..82 are NULL factories —
+// their DSP TUs (cabinet/redeye/metalamp/metalhead convolver wrappers,
+// detune, tuner, livelooper) have not been ported yet, so gxfx_create
+// returns null, gxfx_effect_info reports available=0 and the engine's
+// set_slot rejects them as "effect unavailable" (the frontend greys them
+// out as "(not ported)"). Each port wave replaces a run of nulls with
+// real factories — flip the rows here, nothing else; the catalog header
+// and its JSON surface never change.
 static const gxfx_factory GXFX_FACTORIES[GXFX_EFFECT_COUNT] = {
     gxfx_create_wah,         /*  0 wah            */
     gxfx_create_overdrive,   /*  1 overdrive      */
@@ -147,43 +233,76 @@ static const gxfx_factory GXFX_FACTORIES[GXFX_EFFECT_COUNT] = {
     gxfx_create_delay,       /*  8 delay          */
     gxfx_create_echo,        /*  9 echo           */
     gxfx_create_reverb,      /* 10 reverb         */
-    /* 11..82: not yet ported (null factories — see the comment above) */
-    0, /* 11 fuzzface         */ 0, /* 12 fuzzfacefm     */
-    0, /* 13 fumaster         */ 0, /* 14 hornet         */
-    0, /* 15 muff             */ 0, /* 16 cstb           */
-    0, /* 17 aclipper         */ 0, /* 18 mxrdist        */
-    0, /* 19 rangem           */ 0, /* 20 mole           */
-    0, /* 21 hfb              */ 0, /* 22 hogsfoot       */
-    0, /* 23 softclip         */ 0, /* 24 bassbooster    */
-    0, /* 25 highbooster      */ 0, /* 26 expander       */
-    0, /* 27 susta            */ 0, /* 28 graphiceq      */
-    0, /* 29 selecteq         */ 0, /* 30 tonecontroll   */
-    0, /* 31 moog             */ 0, /* 32 low_high_pass  */
-    0, /* 33 noise_shaper     */ 0, /* 34 wahmodel       */
-    0, /* 35 crybaby          */ 0, /* 36 autowah        */
-    0, /* 37 dunwah           */ 0, /* 38 vibe           */
-    0, /* 39 tubetremelo      */ 0, /* 40 tubevibrato    */
-    0, /* 41 switched_tremolo */ 0, /* 42 phaser_st      */
-    0, /* 43 flanger_st       */ 0, /* 44 chorus_mono    */
-    0, /* 45 duck_delay       */ 0, /* 46 duck_delay_st  */
-    0, /* 47 digital_delay    */ 0, /* 48 digital_delay_st */
-    0, /* 49 gxtape           */ 0, /* 50 gxtape_st      */
-    0, /* 51 gxechocat        */ 0, /* 52 gxtubedelay    */
-    0, /* 53 ts9              */ 0, /* 54 oc_2           */
-    0, /* 55 classic_delay    */ 0, /* 56 classic_echo   */
-    0, /* 57 zita_rev1        */ 0, /* 58 freeverb       */
-    0, /* 59 room_simulator   */ 0, /* 60 shimmizita     */
-    0, /* 61 ampmodel         */ 0, /* 62 tonestack      */
-    0, /* 63 studiopre        */ 0, /* 64 alembic        */
-    0, /* 65 w20              */ 0, /* 66 mbcompressor   */
-    0, /* 67 mbdelay          */ 0, /* 68 mbdistortion   */
-    0, /* 69 mbecho           */ 0, /* 70 barkgraphiceq  */
-    0, /* 71 bigmuffpi        */ 0, /* 72 balance        */
-    0, /* 73 outputlevel      */ 0, /* 74 ampout         */
-    0, /* 75 ampmodul         */ 0, /* 76 cabinet        */
-    0, /* 77 redeye           */ 0, /* 78 metalamp       */
-    0, /* 79 metalhead        */ 0, /* 80 detune         */
-    0, /* 81 tuner            */ 0, /* 82 livelooper     */
+    gxfx_create_fuzzface,    /* 11 fuzzface       */
+    gxfx_create_fuzzfacefm,  /* 12 fuzzfacefm     */
+    gxfx_create_fumaster,    /* 13 fumaster       */
+    gxfx_create_hornet,      /* 14 hornet         */
+    gxfx_create_muff,        /* 15 muff           */
+    gxfx_create_cstb,        /* 16 cstb           */
+    gxfx_create_aclipper,    /* 17 aclipper       */
+    gxfx_create_mxrdist,     /* 18 mxrdist        */
+    gxfx_create_rangem,      /* 19 rangem         */
+    gxfx_create_mole,        /* 20 mole           */
+    gxfx_create_hfb,         /* 21 hfb            */
+    gxfx_create_hogsfoot,    /* 22 hogsfoot       */
+    gxfx_create_softclip,    /* 23 softclip       */
+    gxfx_create_bassbooster, /* 24 bassbooster    */
+    gxfx_create_highbooster, /* 25 highbooster    */
+    gxfx_create_expander,    /* 26 expander       */
+    gxfx_create_susta,       /* 27 susta          */
+    gxfx_create_graphiceq,   /* 28 graphiceq      */
+    gxfx_create_selecteq,    /* 29 selecteq       */
+    gxfx_create_tonecontroll,/* 30 tonecontroll   */
+    gxfx_create_moog,        /* 31 moog           */
+    gxfx_create_low_high_pass, /* 32 low_high_pass */
+    gxfx_create_noise_shaper,/* 33 noise_shaper   */
+    gxfx_create_wahmodel,    /* 34 wahmodel       */
+    gxfx_create_crybaby,     /* 35 crybaby        */
+    gxfx_create_autowah,     /* 36 autowah        */
+    gxfx_create_dunwah,      /* 37 dunwah         */
+    gxfx_create_vibe,        /* 38 vibe           */
+    gxfx_create_tubetremelo, /* 39 tubetremelo    */
+    gxfx_create_tubevibrato, /* 40 tubevibrato    */
+    gxfx_create_switched_tremolo, /* 41 switched_tremolo */
+    gxfx_create_phaser_st,   /* 42 phaser_st      */
+    gxfx_create_flanger_st,  /* 43 flanger_st     */
+    gxfx_create_chorus_mono, /* 44 chorus_mono    */
+    gxfx_create_duck_delay,  /* 45 duck_delay     */
+    gxfx_create_duck_delay_st, /* 46 duck_delay_st */
+    gxfx_create_digital_delay, /* 47 digital_delay */
+    gxfx_create_digital_delay_st, /* 48 digital_delay_st */
+    gxfx_create_gxtape,      /* 49 gxtape         */
+    gxfx_create_gxtape_st,   /* 50 gxtape_st      */
+    gxfx_create_gxechocat,   /* 51 gxechocat      */
+    gxfx_create_gxtubedelay, /* 52 gxtubedelay    */
+    gxfx_create_ts9,         /* 53 ts9            */
+    gxfx_create_oc_2,        /* 54 oc_2           */
+    gxfx_create_classic_delay, /* 55 classic_delay */
+    gxfx_create_classic_echo, /* 56 classic_echo   */
+    gxfx_create_zita_rev1,   /* 57 zita_rev1      */
+    gxfx_create_freeverb,    /* 58 freeverb       */
+    gxfx_create_room_simulator, /* 59 room_simulator */
+    gxfx_create_shimmizita,  /* 60 shimmizita     */
+    gxfx_create_ampmodel,    /* 61 ampmodel       */
+    gxfx_create_tonemodel,   /* 62 tonestack      */
+    gxfx_create_studiopre,   /* 63 studiopre      */
+    gxfx_create_alembic,     /* 64 alembic        */
+    gxfx_create_w20,         /* 65 w20            */
+    gxfx_create_mbcompressor, /* 66 mbcompressor  */
+    gxfx_create_mbdelay,     /* 67 mbdelay        */
+    gxfx_create_mbdistortion, /* 68 mbdistortion  */
+    gxfx_create_mbecho,      /* 69 mbecho         */
+    gxfx_create_barkgraphiceq, /* 70 barkgraphiceq */
+    gxfx_create_bigmuffpi,   /* 71 bigmuffpi      */
+    gxfx_create_balance,     /* 72 balance        */
+    gxfx_create_outputlevel, /* 73 outputlevel    */
+    gxfx_create_ampout,      /* 74 ampout         */
+    gxfx_create_ampmodul,    /* 75 ampmodul       */
+    /* 76..82: not yet ported (null factories — see the comment above) */
+    0, /* 76 cabinet        */ 0, /* 77 redeye         */
+    0, /* 78 metalamp       */ 0, /* 79 metalhead      */
+    0, /* 80 detune         */ 0, /* 81 tuner          */
+    0, /* 82 livelooper     */
 };
 
 static bool gxfx_id_ok(int fx)

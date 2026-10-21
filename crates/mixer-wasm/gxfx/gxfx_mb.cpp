@@ -43,10 +43,10 @@
 // way). orfanidis_eq.h (the bark-band EQ solver, `using namespace std` —
 // scoped by including it inside our namespace) must be visible before
 // the .cc, exactly like the LV2 wrapper's include order. orfanidis_eq.h
-// needs <vector>: on the freestanding target that resolves to
-// gxfx/shim/vector (added with this TU — the minimal std::vector subset
-// the solver uses, allocating through the archive's global operator
-// new/delete); natively libstdc++'s real vector serves.
+// needs <vector>: the shim's minimal std::vector serves on BOTH targets
+// (see the include block below — natively, libstdc++'s real vector would
+// drag in link-time internals the freestanding Rust build never
+// provides, and the vendor code needs only the shim's surface).
 //
 // ODR: gxfx_dsp_eleven.cpp owns the global operator new/delete overloads
 // and the memset definition for the whole gxfx archive (the solver's
@@ -56,15 +56,34 @@
 // factory functions below.
 //
 // Statelessness: as with the other gxfx TUs, all param storage and strip
-// state live on the Rust side; flipping these factories into
-// gxfx_dsp_eleven.cpp's factory table (nulls at rows 66..70 / 72..74
-// today) is a separate wiring step, deliberately not done in this
-// self-contained port.
+// state live on the Rust side; the factory rows for ids 66..70 / 72..74
+// in gxfx_dsp_eleven.cpp are the consumer (flipped in the wave that
+// landed this family's tiered honesty tests, per the AGENTS.md rule).
 
 #include "gxfx_prelude.h"
 #include "gx_pluginlv2.h" // via -I vendor/guitarix/trunk/src/LV2/DSP
-#include <iostream> // neuter barkgraphiceq.cc's in-namespace include (see header)
-#include <vector> // global-scope pre-include, same neutering for orfanidis_eq.h (below)
+#ifdef __wasm__
+#include <iostream> // gxfx/shim/iostream: empty — neuters the in-namespace include
+#include <vector> // gxfx/shim/vector: the minimal std::vector (header note)
+#else
+// Native builds get the SAME neutering, minus libstdc++'s real headers:
+// those compile fine but reference internals the freestanding Rust link
+// never provides (-nodefaultlibs, no libstdc++) — std::ios_base_library_
+// init() from <iostream>, std::__throw_length_error() from <vector>'s
+// growth path. This TU is the archive's only consumer of either header,
+// and the vendor code uses neither: barkgraphiceq.cc's <iostream> is a
+// vestigial dsp2cc include (no stream object is ever touched) and the
+// orfanidis solver needs exactly the shim's minimal vector surface.
+// Pre-defining libstdc++'s include guards makes the vendor code's own
+// <iostream>/<vector> includes no-ops, and the shims are pulled by
+// relative path — one std::vector definition on BOTH targets (this TU
+// flipped live in the wave that wired rows 66..74; until then mb.o was
+// never archive-linked and the gap was invisible).
+#define _GLIBCXX_IOSTREAM 1
+#define _GLIBCXX_VECTOR 1
+#include "shim/iostream"
+#include "shim/vector"
+#endif
 // <vector> at GLOBAL scope BEFORE orfanidis_eq.h for the same reason:
 // orfanidis_eq.h includes it from inside the namespace below, and a
 // system <vector> re-opened there would declare gxfx_barkgraphiceq::std
@@ -198,15 +217,82 @@ typedef enum {
 } PortIndex;
 #include "../../../vendor/guitarix/trunk/src/LV2/gx_barkgraphiceq.lv2/barkgraphiceq.cc"
 
-static float g_meter_scratch[24];
-PluginLV2* create() {
-    PluginLV2* p = barkgraphiceq::plugin();
-    if (p && p->connect_ports) {
-        for (int i = V1; i <= V24; ++i)
-            p->connect_ports((uint32_t)i, &g_meter_scratch[i - V1], p);
+// Host-side adapter (Ts9Dsp/WahModelDsp precedent): barkgraphiceq's
+// Dsp::init() — its set_samplerate — ends with clear_state_f(), which
+// NULLS every fslider/fbargraph port pointer, and the ctor does the
+// same. Any connection made BEFORE the sample rate is set is therefore
+// wiped: this TU's original factory parked the V-meters inside create()
+// (pre-rate, OctOBX style), gxfx_create then ran set_samplerate, the
+// parking vanished and compute()'s unconditional `*fbargraph[j] = ...`
+// wrote through NULL — hard SIGSEGV on BOTH targets (found by the smoke
+// suite; OctOBX carries the same latent bug, its factory parking is
+// equally pre-rate). The wrapper records every port connection and
+// RE-APPLIES the full set after each set_samplerate/clear_state, so the
+// meters stay parked on TU-local scratch and the host's param pointers
+// survive (re)initialization at any point of the lifecycle.
+static float g_meter_scratch[BARK_NUMBER_OF_BANDS];
+
+class BarkDsp : public PluginLV2 {
+private:
+    barkgraphiceq::Dsp dsp_;
+    float* ports_[BARK_NUMBER_OF_BANDS * 2]; // G1..G24, then V1..V24
+
+    static BarkDsp* self(PluginLV2* p) { return static_cast<BarkDsp*>(p); }
+    void reapply() {
+        for (uint32_t i = 0; i < BARK_NUMBER_OF_BANDS * 2; ++i) {
+            if (ports_[i] && dsp_.connect_ports)
+                dsp_.connect_ports(i, ports_[i], &dsp_);
+        }
     }
-    return p;
-}
+
+public:
+    BarkDsp() : PluginLV2(), dsp_() {
+        for (int i = 0; i < BARK_NUMBER_OF_BANDS; ++i) {
+            ports_[i] = 0; // gains: the host connects these
+            ports_[BARK_NUMBER_OF_BANDS + i] = &g_meter_scratch[i]; // meters parked
+        }
+        version = PLUGINLV2_VERSION;
+        id = "barkgraphiceq";
+        name = N_("Bark Grid EQ");
+        mono_audio = compute_fwd;
+        stereo_audio = 0;
+        set_samplerate = init_fwd;
+        activate_plugin = 0; // the wrapped class has none either
+        connect_ports = connect_fwd;
+        clear_state = clear_fwd;
+        delete_instance = del_instance;
+    }
+
+    static void init_fwd(uint32_t rate, PluginLV2* p) {
+        BarkDsp* s = self(p);
+        if (s->dsp_.set_samplerate)
+            s->dsp_.set_samplerate(rate, &s->dsp_);
+        s->reapply(); // init()'s clear_state_f() just nulled the pointers
+    }
+    static void connect_fwd(uint32_t port, void* data, PluginLV2* p) {
+        BarkDsp* s = self(p);
+        if (port < BARK_NUMBER_OF_BANDS * 2)
+            s->ports_[port] = static_cast<float*>(data);
+        if (s->dsp_.connect_ports)
+            s->dsp_.connect_ports(port, data, &s->dsp_);
+    }
+    static void clear_fwd(PluginLV2* p) {
+        BarkDsp* s = self(p);
+        if (s->dsp_.clear_state)
+            s->dsp_.clear_state(&s->dsp_);
+        s->reapply(); // clear_state_f() nulls the pointers again
+    }
+    static void compute_fwd(int count, float* input, float* output, PluginLV2* p) {
+        BarkDsp* s = self(p);
+        if (s->dsp_.mono_audio)
+            s->dsp_.mono_audio(count, input, output, &s->dsp_);
+        else if (output != input)
+            memcpy(output, input, count * sizeof(float)); // fail-open passthrough
+    }
+    static void del_instance(PluginLV2* p) { delete self(p); }
+};
+
+PluginLV2* create() { return new BarkDsp(); }
 }
 
 // --- utility orphans (no .lv2 bundle; enums from the .cc PortIndex

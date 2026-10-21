@@ -21,9 +21,13 @@ void* operator new(size_t);
 void operator delete(void*) noexcept;
 void operator delete(void*, size_t) noexcept;
 // The standard library's reserved placement form, inlined here because
-// <new> does not exist on this target. Identical inline definition in
-// every TU that includes this header — no ODR hazard.
+// <new> does not exist on the freestanding target. Natively this shim
+// is also pulled by path from gxfx_mb.cpp (keeping the archive free of
+// libstdc++ link dependencies) where libstdc++'s <new> has ALREADY
+// defined it — skip there to avoid a redefinition.
+#ifndef __GLIBCXX__
 inline void* operator new(size_t, void* ptr) noexcept { return ptr; }
+#endif
 
 namespace std {
 

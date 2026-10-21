@@ -1000,12 +1000,16 @@ mod tests {
         for (fx, &want) in stereo.iter().enumerate() {
             assert_eq!(is_stereo(fx as i16), want != 0, "fx {fx}");
         }
-        // Availability: the live eleven only — ids 11..82 are catalog
-        // rows whose DSP TUs have not been ported yet (null factories).
-        for fx in 0..11 {
+        // Availability: every ported family is live — the standard
+        // families (drive, eq, wah, mod, time incl. the gxtape tail,
+        // reverb, amps, multiband/utility, bigmuffpi) flipped with their
+        // tiered honesty suite; ids 76..82 remain null factories (the
+        // convolver wrappers, detune, tuner, livelooper TUs are the
+        // next waves).
+        for fx in 0..76 {
             assert!(is_available(fx), "fx {fx} must be available");
         }
-        for fx in 11..83 {
+        for fx in 76..83 {
             assert!(!is_available(fx), "fx {fx} must report unavailable");
         }
         // Memory-class flag (catalog `memory`): for the live eleven
@@ -1014,10 +1018,16 @@ mod tests {
             assert_eq!(is_memory_class(fx as i16), matches!(fx, 8..=10), "fx {fx}");
         }
         // ...and the later-wave memory families carry the flag in the
-        // catalog even though their DSP cannot be created yet (spot ids:
-        // 45 duck_delay, 57 zita_rev1, 76 cabinet, 82 livelooper).
-        for fx in [45, 57, 76, 82] {
+        // catalog too — available now (ported) for duck_delay/zita,
+        // still unavailable for the holdouts (spot ids: 45 duck_delay,
+        // 57 zita_rev1, 76 cabinet, 82 livelooper).
+        for fx in [45, 57] {
             assert!(is_memory_class(fx), "fx {fx} must be memory-class");
+            assert!(is_available(fx), "fx {fx} is ported (memory-class)");
+        }
+        for fx in [76, 82] {
+            assert!(is_memory_class(fx), "fx {fx} must be memory-class");
+            assert!(!is_available(fx), "fx {fx} is not ported yet");
         }
         assert!(
             !is_memory_class(80),
@@ -1032,9 +1042,10 @@ mod tests {
     #[test]
     fn unavailable_ids_are_rejected_and_leave_no_state() {
         let mut r = rack();
-        // fuzzface (id 11) is in the catalog but its factory is null:
-        // set_slot must fail Unavailable and leave the slot empty.
-        assert_eq!(r.set_slot(0, 3, 11).unwrap_err(), GxFxError::Unavailable);
+        // cabinet (id 76) is in the catalog but its factory is null (the
+        // convolver-family TU is not ported): set_slot must fail
+        // Unavailable and leave the slot empty.
+        assert_eq!(r.set_slot(0, 3, 76).unwrap_err(), GxFxError::Unavailable);
         assert_eq!(r.slot_effect(0, 3).unwrap(), -1);
         assert_eq!(r.slot_instances(0, 3).unwrap(), 0);
         assert_eq!(r.memory_class_instances(), 0);
@@ -1043,8 +1054,9 @@ mod tests {
         // Ids PAST the catalog are BadEffect, not Unavailable.
         assert_eq!(r.set_slot(0, 3, 83).unwrap_err(), GxFxError::BadEffect);
         assert_eq!(r.set_slot(0, 3, 3000).unwrap_err(), GxFxError::BadEffect);
-        // The live eleven all set cleanly (distortion rides its own TU).
-        for fx in 0..11i16 {
+        // The ported wave (ids 0..=75) all set cleanly (distortion and
+        // bigmuffpi ride their own TU, the families theirs).
+        for fx in 0..76i16 {
             r.set_slot(0, 0, fx).unwrap();
         }
     }
@@ -1328,22 +1340,24 @@ mod tests {
         assert_eq!(delay["params"][0]["integer"], true);
         assert_eq!(delay["memory"], true, "delay is memory-class");
         assert_eq!(delay["available"], true);
-        // The live eleven are available; everything past them is a
-        // not-yet-ported catalog row and must say so.
+        // The live eleven are available; the ported wave covers ids
+        // 0..=75; the seven holdouts (76..82) are not-yet-ported catalog
+        // rows and must say so.
         for (i, e) in effects.iter().enumerate() {
-            assert_eq!(e["available"], i < 11, "effect {i}");
+            assert_eq!(e["available"], i < 76, "effect {i}");
         }
         // ...and the memory-class flag is exposed for later waves too
-        // (duck_delay 45, zita 57, cabinet 76, livelooper 82).
-        for (i, key) in [
-            (45, "duck_delay"),
-            (57, "zita_rev1"),
-            (76, "cabinet"),
-            (82, "livelooper"),
+        // (duck_delay 45, zita 57 now live; cabinet 76, livelooper 82
+        // still holdouts).
+        for (i, key, avail) in [
+            (45, "duck_delay", true),
+            (57, "zita_rev1", true),
+            (76, "cabinet", false),
+            (82, "livelooper", false),
         ] {
             assert_eq!(effects[i]["key"], key);
             assert_eq!(effects[i]["memory"], true);
-            assert_eq!(effects[i]["available"], false);
+            assert_eq!(effects[i]["available"], avail);
         }
         // Last row: livelooper (39 params, mono, unavailable).
         let looper = effects.last().unwrap();

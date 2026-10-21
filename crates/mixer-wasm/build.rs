@@ -118,11 +118,18 @@ fn main() {
     // source) dir, one level up from faust-generated.
     let vendor_zita = root.join("vendor/guitarix/trunk/src/zita-resampler-1.1.0");
     let vendor_clipping = root.join("vendor/guitarix/trunk/src/LV2/faust");
+    // circuit_tables: the guard-less tube/copicat transfer-table headers
+    // the time family's gxtape/gxtape_st/gxechocat/gxtubedelay .cc files
+    // include by bare name — exactly the include dir OctOBX's documented
+    // compile line for gxfx_dsp_time.cpp passes. One push on the shared
+    // include list covers BOTH targets (native and wasm32).
+    let vendor_circuit_tables = root.join("vendor/guitarix/trunk/src/LV2/DSP/circuit_tables");
 
     if !vendor_dsp.is_dir()
         || !vendor_faust.is_dir()
         || !vendor_zita.is_dir()
         || !vendor_clipping.is_dir()
+        || !vendor_circuit_tables.is_dir()
     {
         panic!(
             "vendor/guitarix is missing or not initialized (expected {}): run \
@@ -158,6 +165,7 @@ fn main() {
     includes.push(vendor_faust.display().to_string());
     includes.push(vendor_zita.display().to_string());
     includes.push(vendor_clipping.display().to_string());
+    includes.push(vendor_circuit_tables.display().to_string());
 
     let mut flags: Vec<String> = [
         "-std=c++20",
