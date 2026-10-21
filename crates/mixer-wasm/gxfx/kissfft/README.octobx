@@ -1,0 +1,22 @@
+Vendored subset of kissfft for the OctOBX self-written partitioned
+convolution FX (fx2plan.md Phase 2) and the later fftw3.h shims
+(detune/tuner). NOT a git submodule — this is a frozen copy.
+
+Source:    https://github.com/mborgerding/kissfft
+Commit:    e5e3fac46e0d94a8f8170c06706b7a4218828333 (master, 2026-08-12)
+License:   BSD-3-Clause (COPYING, LICENSES/BSD-3-Clause) — Mark Borgerding
+
+Files copied (unmodified): kiss_fft.c, kiss_fft.h, kiss_fft_log.h,
+_kiss_fft_guts.h, kiss_fftr.c, kiss_fftr.h, COPYING, LICENSES/BSD-3-Clause.
+
+Only the real-FFT core (kiss_fft + kiss_fftr, r2c/c2r) is needed; the rest
+of the upstream tree (kfc, nd, ndr, tools, C++ headers) is not vendored.
+
+The .c files are compiled exactly once across the synth module — they are
+#included at global scope inside extern "C" by wasm/obxd/gxfx_convolver.cpp
+(matching how guitarix .cc DSP classes ride the other gxfx TUs), so the
+kiss_* symbols keep C linkage and are linkable from the Phase 2 fftw3.h
+shim TUs later.
+
+To update: re-copy the files above from a fresh checkout, record the new
+commit here, rebuild (`make -C wasm/obxd`), and run `npm run test:wasm`.
