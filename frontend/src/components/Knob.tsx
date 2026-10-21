@@ -1,4 +1,4 @@
-import { onMount, onCleanup, createEffect } from "solid-js";
+import { onMount, onCleanup, createEffect, createSignal } from "solid-js";
 
 export interface KnobProps {
   label: string;           // short label shown above (e.g. "THR", "RATIO", "FREQ")
@@ -56,12 +56,20 @@ export function Knob(props: KnobProps) {
   const unit = () => props.unit ?? "";
 
   const fmt = (v: number) => props.format ? props.format(v) : String(Math.round(v));
-  const displayValue = () => `${fmt(props.value)}${unit()}`;
-  const tooltip = () => `${props.label}: ${fmt(props.value)}${unit()}`;
+  // During a drag the knob shows the local drag value, not the store value:
+  // pointer moves touch only a local signal, so the store round-trip
+  // (onChange commit → props.value) never gates the visuals.
+  const currentValue = () => dragValue() ?? props.value;
+  const displayValue = () => `${fmt(currentValue())}${unit()}`;
+  const titleText = () => `${props.label}: ${fmt(props.value)}${unit()}`;
+  // Title is frozen for the whole drag (set once at drag start, refreshed
+  // once on release): mutating the title attribute per mousemove forces
+  // tooltip-state invalidation and long layout/paint tasks in the browser.
+  const tooltip = () => (dragging() ? dragTitle : titleText());
 
   // Normalize current value to 0..1, honoring linear/log scale.
   function normalized(): number {
-    return normalizeValue(props.value, props.min, props.max, isLog());
+    return normalizeValue(currentValue(), props.min, props.max, isLog());
   }
 
   function draw() {
@@ -128,34 +136,72 @@ export function Knob(props: KnobProps) {
   }
 
   // ── Drag interaction (vertical delta, DAW-style) ───────────────────────
+  // Rate contract: pointer moves update the local drag signal only; the
+  // store is written at most once per animation frame (latest value wins)
+  // plus one final commit on release. Mouse events can fire far above
+  // display rate (high-polling mice), and per-move store writes +
+  // attribute mutation were the source of multi-second longtasks.
   let startY = 0;
   let startValue = 0;
-  let dragging = false;
+  const [dragging, setDragging] = createSignal(false);
+  const [dragValue, setDragValue] = createSignal<number | null>(null);
+  let dragTitle = "";
+  let commitRaf = 0;
 
   function onDocMouseMove(e: MouseEvent) {
-    if (!dragging) return;
+    if (!dragging()) return;
     const delta = startY - e.clientY;            // positive when dragging up
     const sensitivity = e.shiftKey ? 500 : 100;  // px for full range (Shift = 5× finer)
     const nd = delta / sensitivity;
     const log = isLog();
     const startNorm = normalizeValue(startValue, props.min, props.max, log);
-    const newValue = denormalizeValue(startNorm + nd, props.min, props.max, log);
-    props.onChange(newValue);
+    setDragValue(denormalizeValue(startNorm + nd, props.min, props.max, log));
+    // rAF-coalesced commit: at most one onChange per frame, latest value wins.
+    if (!commitRaf) {
+      commitRaf = requestAnimationFrame(() => {
+        commitRaf = 0;
+        const v = dragValue();
+        if (v !== null && dragging()) props.onChange(v);
+      });
+    }
+  }
+
+  function endDrag() {
+    if (!dragging()) return;
+    document.removeEventListener("mousemove", onDocMouseMove);
+    document.removeEventListener("mouseup", onDocMouseUp);
+    document.removeEventListener("pointercancel", onDocPointercancel);
+    if (commitRaf) {
+      cancelAnimationFrame(commitRaf);
+      commitRaf = 0;
+    }
+    const v = dragValue();
+    // Final commit lands BEFORE the drag state clears so the title refresh
+    // and last canvas repaint read the committed value, not the stale one.
+    if (v !== null) props.onChange(v);
+    setDragging(false);
+    setDragValue(null);
   }
 
   function onDocMouseUp() {
-    dragging = false;
-    document.removeEventListener("mousemove", onDocMouseMove);
-    document.removeEventListener("mouseup", onDocMouseUp);
+    endDrag();
+  }
+
+  // Touch/pen takeover aborts the pointer stream without a mouseup —
+  // without this the drag could get stuck on.
+  function onDocPointercancel() {
+    endDrag();
   }
 
   function onMouseDown(e: MouseEvent) {
     e.preventDefault();  // avoid text selection
     startY = e.clientY;
     startValue = props.value;
-    dragging = true;
+    dragTitle = titleText();  // freeze the pre-drag title for the whole drag
+    setDragging(true);
     document.addEventListener("mousemove", onDocMouseMove);
     document.addEventListener("mouseup", onDocMouseUp);
+    document.addEventListener("pointercancel", onDocPointercancel);
   }
 
   function onDoubleClick(e: MouseEvent) {
@@ -169,8 +215,10 @@ export function Knob(props: KnobProps) {
   createEffect(() => draw());
 
   onCleanup(() => {
+    if (commitRaf) cancelAnimationFrame(commitRaf);
     document.removeEventListener("mousemove", onDocMouseMove);
     document.removeEventListener("mouseup", onDocMouseUp);
+    document.removeEventListener("pointercancel", onDocPointercancel);
   });
 
   return (

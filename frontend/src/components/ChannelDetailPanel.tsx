@@ -1,4 +1,4 @@
-import { createSignal } from "solid-js";
+import { createSignal, For } from "solid-js";
 import {
   channels,
   setInputGain, setPhase, setPanLaw, setChannelName,
@@ -45,6 +45,39 @@ function snapFxParam(p: FxParamDef, v: number): number {
   if (p.integer) out = Math.round(out);
   else if (p.step > 0) out = Math.round(out / p.step) * p.step;
   return Math.max(p.min, Math.min(p.max, out));
+}
+
+/** Knob edit area for the selected FX chain slot. A component (not an
+ *  inline IIFE in the panel JSX) so slot-selection changes re-render only
+ *  this subtree while the LED row and chain list stay mounted. Props stay
+ *  lazy: `slot` is an accessor, so selection reads happen in this scope. */
+function FxEditArea(props: { ch: number; pair: number; slot: () => number }) {
+  return (
+    <>
+      {(() => {
+        const s = props.slot();
+        const st = fxChains[props.pair][s];
+        const fx = st.fx >= 0 ? fxCatalog()?.effects[st.fx] : undefined;
+        if (!fx) return <div class="fx-edit-title">empty slot</div>;
+        return (
+          <>
+            <div class="fx-edit-title">{fx.label} · {fx.stereo ? "stereo" : "mono"}</div>
+            <div class="knob-row">
+              {fx.params.map((p, pi) => (
+                <Knob
+                  label={p.name}
+                  value={st.params[pi] ?? p.default}
+                  min={p.min} max={p.max} defaultValue={p.default}
+                  format={fmtFx} size={28}
+                  onChange={(v) => setFxParam(props.ch, s, pi, snapFxParam(p, v))}
+                />
+              ))}
+            </div>
+          </>
+        );
+      })()}
+    </>
+  );
 }
 
 export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: number; slot: number } }) {
@@ -340,15 +373,17 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
         {/* LED chain summary (control-rate — DOM, not canvas): hollow =
             empty, dim category color = loaded but BYP, lit = IN. */}
         <div class="detail-fx-leds">
-          {fxChains[fxPair].map((st, s) => {
-            const fx = st.fx >= 0 ? fxCatalog()?.effects[st.fx] : undefined;
-            return (
-              <span
-                class={`fx-led${st.fx >= 0 ? ` loaded${fx ? ` cat-${fx.category}` : ""}${st.enabled ? " on" : ""}` : ""}`}
-                title={fx ? `${s + 1}. ${fx.label} — ${st.enabled ? "IN" : "BYP"}` : `${s + 1}. (empty)`}
-              />
-            );
-          })}
+          <For each={fxChains[fxPair]}>
+            {(st, s) => {
+              const fx = () => (st.fx >= 0 ? fxCatalog()?.effects[st.fx] : undefined);
+              return (
+                <span
+                  class={`fx-led${st.fx >= 0 ? ` loaded${fx() ? ` cat-${fx()!.category}` : ""}${st.enabled ? " on" : ""}` : ""}`}
+                  title={fx() ? `${s() + 1}. ${fx()!.label} — ${st.enabled ? "IN" : "BYP"}` : `${s() + 1}. (empty)`}
+                />
+              );
+            }}
+          </For>
         </div>
         {!isCollapsed("FX") && (
           fxCatalog() === null ? (
@@ -358,71 +393,52 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
           ) : (
           <>
             <div class="fx-chain-list">
-              {fxChains[fxPair].map((st, s) => (
-                <div
-                  class={`fx-row${s === selectedFxSlot() ? " selected" : ""}`}
-                  onClick={() => setFxSlotSel(s)}
-                  title={`Chain slot ${s + 1} — click to edit its parameters below`}
-                >
-                  <button
-                    class="fx-row-btn"
-                    disabled={s === 0}
-                    onClick={(e) => { e.stopPropagation(); moveFxSlot(idx, s, s - 1); }}
-                    title="Move earlier in chain"
-                  >▲</button>
-                  <button
-                    class="fx-row-btn"
-                    disabled={s === FX_SLOTS - 1}
-                    onClick={(e) => { e.stopPropagation(); moveFxSlot(idx, s, s + 1); }}
-                    title="Move later in chain"
-                  >▼</button>
-                  <button
-                    class={`detail-toggle ${st.enabled ? "active" : "bypassed"}`}
-                    disabled={st.fx < 0}
-                    onClick={(e) => { e.stopPropagation(); setFxEnabled(idx, s, !st.enabled); }}
-                    title={st.fx >= 0 ? `${fxCatalog()?.effects[st.fx]?.label ?? "?"} in / bypass` : "Empty slot"}
-                  >{st.enabled && st.fx >= 0 ? "IN" : "BYP"}</button>
-                  <select
-                    class="fx-slot-select"
-                    value={st.fx}
-                    onInput={(e) => setFxSlot(idx, s, parseInt(e.currentTarget.value))}
-                    title={`Effect in chain slot ${s + 1}`}
+              <For each={fxChains[fxPair]}>
+                {(st, s) => (
+                  <div
+                    class={`fx-row${s() === selectedFxSlot() ? " selected" : ""}`}
+                    onClick={() => setFxSlotSel(s())}
+                    title={`Chain slot ${s() + 1} — click to edit its parameters below`}
                   >
-                    <option value={-1}>(empty)</option>
-                    {fxCategories().map((cat) => (
-                      <optgroup label={cat.charAt(0).toUpperCase() + cat.slice(1)}>
-                        {fxCatalog()!.effects.filter((f) => f.category === cat).map((f) => (
-                          <option value={f.id}>{f.label}</option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
-                </div>
-              ))}
+                    <button
+                      class="fx-row-btn"
+                      disabled={s() === 0}
+                      onClick={(e) => { e.stopPropagation(); moveFxSlot(idx, s(), s() - 1); }}
+                      title="Move earlier in chain"
+                    >▲</button>
+                    <button
+                      class="fx-row-btn"
+                      disabled={s() === FX_SLOTS - 1}
+                      onClick={(e) => { e.stopPropagation(); moveFxSlot(idx, s(), s() + 1); }}
+                      title="Move later in chain"
+                    >▼</button>
+                    <button
+                      class={`detail-toggle ${st.enabled ? "active" : "bypassed"}`}
+                      disabled={st.fx < 0}
+                      onClick={(e) => { e.stopPropagation(); setFxEnabled(idx, s(), !st.enabled); }}
+                      title={st.fx >= 0 ? `${fxCatalog()?.effects[st.fx]?.label ?? "?"} in / bypass` : "Empty slot"}
+                    >{st.enabled && st.fx >= 0 ? "IN" : "BYP"}</button>
+                    <select
+                      class="fx-slot-select"
+                      value={st.fx}
+                      onInput={(e) => setFxSlot(idx, s(), parseInt(e.currentTarget.value))}
+                      title={`Effect in chain slot ${s() + 1}`}
+                    >
+                      <option value={-1}>(empty)</option>
+                      {fxCategories().map((cat) => (
+                        <optgroup label={cat.charAt(0).toUpperCase() + cat.slice(1)}>
+                          {fxCatalog()!.effects.filter((f) => f.category === cat).map((f) => (
+                            <option value={f.id}>{f.label}</option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </For>
             </div>
             <div class="fx-edit-area">
-              {(() => {
-                const s = selectedFxSlot();
-                const st = fxChains[fxPair!][s];
-                const fx = st.fx >= 0 ? fxCatalog()?.effects[st.fx] : undefined;
-                if (!fx) return <div class="fx-edit-title">empty slot</div>;
-                return (
-                  <>
-                    <div class="fx-edit-title">{fx.label} · {fx.stereo ? "stereo" : "mono"}</div>
-                    <div class="knob-row">
-                      {fx.params.map((p, pi) => (
-                        <Knob
-                          label={p.name}
-                          value={st.params[pi] ?? p.default}
-                          min={p.min} max={p.max} defaultValue={p.default}
-                          format={fmtFx} size={28}
-                          onChange={(v) => setFxParam(idx, s, pi, snapFxParam(p, v))}
-                        />
-                      ))}
-                    </div>
-                  </>
-                );
-              })()}
+              <FxEditArea ch={idx} pair={fxPair} slot={selectedFxSlot} />
             </div>
           </>
           )
