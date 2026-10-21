@@ -127,18 +127,63 @@ PluginLV2* gxfx_create_reverb() { return gxfx_reverb::stereoverb::plugin(); }
 PluginLV2* gxfx_create_distortion();
 
 // Effect id (gxfx_catalog.h row order) → factory. Rows 0..10.
+// INCREMENTAL-PORT MODEL: the catalog (generated, 83 ids) is the complete
+// menu; availability is honest per id. Ids 11..82 are NULL factories —
+// their DSP TUs have not been ported yet, so gxfx_create returns null,
+// gxfx_effect_info reports available=0 and the engine's set_slot rejects
+// them as "effect unavailable" (the frontend greys them out as
+// "(not ported)"). Each port wave replaces a run of nulls with real
+// factories — flip the rows here, nothing else; the catalog header and
+// its JSON surface never change.
 static const gxfx_factory GXFX_FACTORIES[GXFX_EFFECT_COUNT] = {
-    gxfx_create_wah,         /*  0 wah         */
-    gxfx_create_overdrive,   /*  1 overdrive   */
-    gxfx_create_distortion,  /*  2 distortion  */
-    gxfx_create_compressor,  /*  3 compressor  */
-    gxfx_create_chorus,      /*  4 chorus      */
-    gxfx_create_flanger,     /*  5 flanger     */
-    gxfx_create_phaser,      /*  6 phaser      */
-    gxfx_create_tremolo,     /*  7 tremolo     */
-    gxfx_create_delay,       /*  8 delay       */
-    gxfx_create_echo,        /*  9 echo        */
-    gxfx_create_reverb,      /* 10 reverb      */
+    gxfx_create_wah,         /*  0 wah            */
+    gxfx_create_overdrive,   /*  1 overdrive      */
+    gxfx_create_distortion,  /*  2 distortion     */
+    gxfx_create_compressor,  /*  3 compressor     */
+    gxfx_create_chorus,      /*  4 chorus         */
+    gxfx_create_flanger,     /*  5 flanger        */
+    gxfx_create_phaser,      /*  6 phaser         */
+    gxfx_create_tremolo,     /*  7 tremolo        */
+    gxfx_create_delay,       /*  8 delay          */
+    gxfx_create_echo,        /*  9 echo           */
+    gxfx_create_reverb,      /* 10 reverb         */
+    /* 11..82: not yet ported (null factories — see the comment above) */
+    0, /* 11 fuzzface         */ 0, /* 12 fuzzfacefm     */
+    0, /* 13 fumaster         */ 0, /* 14 hornet         */
+    0, /* 15 muff             */ 0, /* 16 cstb           */
+    0, /* 17 aclipper         */ 0, /* 18 mxrdist        */
+    0, /* 19 rangem           */ 0, /* 20 mole           */
+    0, /* 21 hfb              */ 0, /* 22 hogsfoot       */
+    0, /* 23 softclip         */ 0, /* 24 bassbooster    */
+    0, /* 25 highbooster      */ 0, /* 26 expander       */
+    0, /* 27 susta            */ 0, /* 28 graphiceq      */
+    0, /* 29 selecteq         */ 0, /* 30 tonecontroll   */
+    0, /* 31 moog             */ 0, /* 32 low_high_pass  */
+    0, /* 33 noise_shaper     */ 0, /* 34 wahmodel       */
+    0, /* 35 crybaby          */ 0, /* 36 autowah        */
+    0, /* 37 dunwah           */ 0, /* 38 vibe           */
+    0, /* 39 tubetremelo      */ 0, /* 40 tubevibrato    */
+    0, /* 41 switched_tremolo */ 0, /* 42 phaser_st      */
+    0, /* 43 flanger_st       */ 0, /* 44 chorus_mono    */
+    0, /* 45 duck_delay       */ 0, /* 46 duck_delay_st  */
+    0, /* 47 digital_delay    */ 0, /* 48 digital_delay_st */
+    0, /* 49 gxtape           */ 0, /* 50 gxtape_st      */
+    0, /* 51 gxechocat        */ 0, /* 52 gxtubedelay    */
+    0, /* 53 ts9              */ 0, /* 54 oc_2           */
+    0, /* 55 classic_delay    */ 0, /* 56 classic_echo   */
+    0, /* 57 zita_rev1        */ 0, /* 58 freeverb       */
+    0, /* 59 room_simulator   */ 0, /* 60 shimmizita     */
+    0, /* 61 ampmodel         */ 0, /* 62 tonestack      */
+    0, /* 63 studiopre        */ 0, /* 64 alembic        */
+    0, /* 65 w20              */ 0, /* 66 mbcompressor   */
+    0, /* 67 mbdelay          */ 0, /* 68 mbdistortion   */
+    0, /* 69 mbecho           */ 0, /* 70 barkgraphiceq  */
+    0, /* 71 bigmuffpi        */ 0, /* 72 balance        */
+    0, /* 73 outputlevel      */ 0, /* 74 ampout         */
+    0, /* 75 ampmodul         */ 0, /* 76 cabinet        */
+    0, /* 77 redeye           */ 0, /* 78 metalamp       */
+    0, /* 79 metalhead        */ 0, /* 80 detune         */
+    0, /* 81 tuner            */ 0, /* 82 livelooper     */
 };
 
 static bool gxfx_id_ok(int fx)
@@ -193,6 +238,26 @@ const GxFxParamDef* gxfx_param_def(int fx, int param)
     if (!gxfx_id_ok(fx) || param < 0 || param >= GXFX_CATALOG[fx].param_count)
         return 0;
     return &GXFX_CATALOG[fx].params[param];
+}
+
+/* Effect-level metadata + AVAILABILITY: fills *out with effect fx's key /
+ * label / category / stereo / memory / param_count (static catalog
+ * storage) plus available = (factory != null) — ids whose DSP TU has not
+ * been ported yet ride null factories and report available 0. Returns 1
+ * on success, 0 on an unknown id or null out. */
+int gxfx_effect_info(int fx, GxFxEffectInfo* out)
+{
+    if (!gxfx_id_ok(fx) || !out)
+        return 0;
+    const GxFxEffectDef* e = &GXFX_CATALOG[fx];
+    out->key = e->key;
+    out->label = e->label;
+    out->category = e->category;
+    out->stereo = e->stereo;
+    out->memory = e->memory;
+    out->param_count = e->param_count;
+    out->available = GXFX_FACTORIES[fx] != 0;
+    return 1;
 }
 
 /* Create a DSP instance for effect id at the given rate; null when the id

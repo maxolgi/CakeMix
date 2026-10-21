@@ -45,26 +45,30 @@ pub const CHAIN_SLOTS: usize = 11;
 pub const SLOT_PARAMS: usize = 48;
 
 /// Cap on concurrently CREATED instances of the memory-class effects
-/// (catalog ids 8 delay, 9 echo, 10 reverb). Sizing: the worst offender
-/// (stereodelay) new's 2 x 524288 f32 = 4 MiB of tape per instance
-/// (stereoecho 2 MiB; stereoverb's state is inline in the instance), so
-/// the cap bounds the worst-case tape at 96 x 4 MiB ≈ 384 MiB — big,
-/// but a ceiling, not an allocation: it lets every one of the 64 pairs
-/// run a delay AND leave 50% headroom (96 = 1.5 x 64) while a
-/// pathological all-memory-FX console fails CLEANLY at `set_slot`
-/// instead of OOM-crashing the wasm heap.
+/// (catalog `memory` flag — see [`is_memory_class`]). Sizing: the worst
+/// offender among the live effects (stereodelay) new's 2 x 524288 f32 =
+/// 4 MiB of tape per instance (stereoecho 2 MiB; stereoverb's state is
+/// inline in the instance), so the cap bounds the worst-case tape at
+/// 96 x 4 MiB ≈ 384 MiB — big, but a ceiling, not an allocation: it lets
+/// every one of the 64 pairs run a delay AND leave 50% headroom
+/// (96 = 1.5 x 64) while a pathological all-memory-FX console fails
+/// CLEANLY at `set_slot` instead of OOM-crashing the wasm heap.
 pub const MEMORY_CLASS_CAP: u32 = 96;
 
-/// Effects whose DSP allocates megabyte-scale delay/reverb buffers at
-/// create/first-activate (catalog ids: 8 delay, 9 echo, 10 reverb).
-const fn is_memory_class(fx: i16) -> bool {
-    matches!(fx, 8..=10)
+/// Whether `fx`'s DSP allocates megabyte-scale delay/reverb buffers at
+/// create/first-activate — read from the generated catalog's per-effect
+/// `memory` flag through the C ABI (delay/time family, reverb family,
+/// convolver/looper; everything else false). For the live eleven this
+/// is exactly the old hardcoded set: ids 8 (delay), 9 (echo),
+/// 10 (reverb).
+fn is_memory_class(fx: i16) -> bool {
+    effect_info(fx).is_some_and(|i| i.memory != 0)
 }
 
 // ── FFI: exact mirror of gxfx/gxfx_dsp_eleven.cpp's extern "C" ──────
 
 mod ffi {
-    use super::{GxFxInstance, GxFxParamDef};
+    use super::{GxFxEffectInfo, GxFxInstance, GxFxParamDef};
     use std::ffi::c_int;
 
     extern "C" {
@@ -74,6 +78,9 @@ mod ffi {
         pub fn gxfx_param_default(fx: c_int, param: c_int) -> f32;
         /// Pointee is static storage (gxfx_catalog.h), null when out of range.
         pub fn gxfx_param_def(fx: c_int, param: c_int) -> *const GxFxParamDef;
+        /// Fills the effect-level info block (catalog columns + the
+        /// availability flag); 0 on an unknown id.
+        pub fn gxfx_effect_info(fx: c_int, out: *mut GxFxEffectInfo) -> c_int;
         /// Null when the id is unknown or allocation fails. Calls
         /// set_samplerate BEFORE any port connection.
         pub fn gxfx_create(fx: c_int, sample_rate: u32) -> *mut GxFxInstance;
@@ -102,6 +109,20 @@ struct GxFxParamDef {
     is_integer: c_int,
 }
 
+/// Mirror of `GxFxEffectInfo` in gxfx/gxfx_catalog.h (keep in lockstep):
+/// one effect's catalog columns plus the runtime availability flag.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct GxFxEffectInfo {
+    key: *const c_char,
+    label: *const c_char,
+    category: *const c_char,
+    stereo: c_int,
+    memory: c_int,
+    param_count: c_int,
+    available: c_int,
+}
+
 /// Opaque C++ DSP instance (`struct GxFxInstance { PluginLV2* plugin; }`).
 #[repr(C)]
 pub struct GxFxInstance {
@@ -125,6 +146,22 @@ pub(crate) fn param_count(fx: i16) -> usize {
 /// Whether `fx` runs the native stereo path (else dual-mono).
 fn is_stereo(fx: i16) -> bool {
     unsafe { ffi::gxfx_is_stereo(fx as c_int) != 0 }
+}
+
+/// Effect-level info (catalog columns + availability); None for an
+/// unknown id. The string pointers inside are static catalog storage.
+fn effect_info(fx: i16) -> Option<GxFxEffectInfo> {
+    let mut info = GxFxEffectInfo {
+        key: std::ptr::null(),
+        label: std::ptr::null(),
+        category: std::ptr::null(),
+        stereo: 0,
+        memory: 0,
+        param_count: 0,
+        available: 0,
+    };
+    let ok = unsafe { ffi::gxfx_effect_info(fx as c_int, &mut info) };
+    (ok != 0).then_some(info)
 }
 
 /// Catalog default of `(fx, param)` in ENGINE units (0.0 out of range).
@@ -694,48 +731,47 @@ impl GxFxRack {
 
 // ── Catalog JSON ────────────────────────────────────────────────────
 
-/// Effect-level catalog metadata (key / label / category per effect
-/// id). The C ABI exposes only counts, stereo flags and the PARAM
-/// tables; these three display columns are mirrored here from
-/// `gxfx/gxfx_catalog.h`'s GXFX_CATALOG rows — keep in lockstep.
-static EFFECT_META: [(&str, &str, &str); 11] = [
-    ("wah", "Wah", "wah"),
-    ("overdrive", "Overdrive", "drive"),
-    ("distortion", "Distortion", "drive"),
-    ("compressor", "Compressor", "dynamics"),
-    ("chorus", "Chorus", "modulation"),
-    ("flanger", "Flanger", "modulation"),
-    ("phaser", "Phaser", "modulation"),
-    ("tremolo", "Tremolo", "modulation"),
-    ("delay", "Delay", "delay"),
-    ("echo", "Echo", "delay"),
-    ("reverb", "Reverb", "reverb"),
-];
-
 /// Serialize the effect CATALOG as JSON for the FX-chain UI (exposed
 /// through wasm-bindgen as `MixerWasm::fx_catalog_json`; the frontend
 /// builds its editor from this document). Hand-rolled string building
 /// in the crate's console_json style — the catalog is static data, so
 /// there is nothing to escape beyond the belt-and-braces `json_escape`.
-/// Everything but the three display columns is read through the C ABI
-/// (the catalog header is the single source of truth).
+/// EVERYTHING is read through the C ABI (the generated catalog header is
+/// the single source of truth): per effect the key/label/category/
+/// stereo/memory columns plus the runtime `available` flag (null
+/// factory = DSP not ported yet — the frontend greys those rows out),
+/// then the full param tables.
 pub fn catalog_json() -> String {
     let mut j = String::from("{\"slots\":");
     j.push_str(&CHAIN_SLOTS.to_string());
     j.push_str(",\"slotParams\":");
     j.push_str(&SLOT_PARAMS.to_string());
     j.push_str(",\"effects\":[");
+    let mut first = true;
     for fx in 0..effect_count() {
-        if fx > 0 {
+        let Some(info) = effect_info(fx) else {
+            continue;
+        };
+        if !first {
             j.push(',');
         }
-        let (key, label, category) = EFFECT_META[fx as usize];
+        first = false;
+        // SAFETY: the info block's strings are static catalog storage.
+        let (key, label, category) = unsafe {
+            (
+                static_cstr(info.key),
+                static_cstr(info.label),
+                static_cstr(info.category),
+            )
+        };
         j.push_str(&format!(
-            "{{\"id\":{fx},\"key\":\"{}\",\"label\":\"{}\",\"category\":\"{}\",\"stereo\":{},\"params\":[",
+            "{{\"id\":{fx},\"key\":\"{}\",\"label\":\"{}\",\"category\":\"{}\",\"stereo\":{},\"memory\":{},\"available\":{},\"params\":[",
             json_escape(key),
             json_escape(label),
             json_escape(category),
-            is_stereo(fx),
+            info.stereo != 0,
+            info.memory != 0,
+            info.available != 0,
         ));
         for p in 0..param_count(fx) {
             if p > 0 {
@@ -928,24 +964,88 @@ mod tests {
     const FS: u32 = 48_000;
     const BS: usize = 128;
 
+    /// Whether `fx`'s DSP factory is live (test-side read of the C ABI's
+    /// availability flag; the engine itself rejects null factories at
+    /// create inside `set_slot`).
+    fn is_available(fx: i16) -> bool {
+        effect_info(fx).is_some_and(|i| i.available != 0)
+    }
+
     fn rack() -> GxFxRack {
         GxFxRack::new(FS, BS)
     }
 
     #[test]
     fn catalog_shape() {
-        assert_eq!(effect_count(), 11);
+        assert_eq!(effect_count(), 83);
         assert_eq!(CHAIN_PAIRS, 64);
         assert_eq!(CHAIN_SLOTS, 11);
         assert_eq!(SLOT_PARAMS, 48);
-        // Param counts per gxfx_catalog.h (2,1,3,5,4,6,3,4,7,7,5).
-        let counts = [2, 1, 3, 5, 4, 6, 3, 4, 7, 7, 5];
+        // Param counts per gxfx_catalog.h (generator manifest, ids 0..82).
+        let counts = [
+            2, 1, 3, 5, 4, 6, 3, 4, 7, 7, 5, 2, 4, 3, 3, 2, 3, 3, 2, 2, 2, 2, 2, 1, 1, 1, 5, 2, 11,
+            30, 5, 2, 6, 1, 5, 3, 0, 1, 8, 5, 5, 8, 10, 7, 3, 5, 8, 8, 8, 10, 10, 8, 5, 3, 3, 2, 2,
+            11, 3, 5, 12, 6, 4, 12, 5, 2, 34, 19, 15, 14, 24, 3, 1, 1, 1, 7, 4, 9, 4, 4, 10, 2, 39,
+        ];
         for (fx, &want) in counts.iter().enumerate() {
             assert_eq!(param_count(fx as i16), want, "fx {fx}");
         }
-        // Stereo flags: chorus/delay/echo/reverb only.
+        // Stereo flags per the generated catalog (v1: chorus/delay/echo/
+        // reverb, plus the natively-stereo Phase 1+ classes).
+        let stereo: [u8; 83] = [
+            0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1,
+            0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        for (fx, &want) in stereo.iter().enumerate() {
+            assert_eq!(is_stereo(fx as i16), want != 0, "fx {fx}");
+        }
+        // Availability: the live eleven only — ids 11..82 are catalog
+        // rows whose DSP TUs have not been ported yet (null factories).
         for fx in 0..11 {
-            assert_eq!(is_stereo(fx), matches!(fx, 4 | 8 | 9 | 10), "fx {fx}");
+            assert!(is_available(fx), "fx {fx} must be available");
+        }
+        for fx in 11..83 {
+            assert!(!is_available(fx), "fx {fx} must report unavailable");
+        }
+        // Memory-class flag (catalog `memory`): for the live eleven
+        // exactly delay/echo/reverb (the old hardcoded set).
+        for fx in 0..11 {
+            assert_eq!(is_memory_class(fx as i16), matches!(fx, 8..=10), "fx {fx}");
+        }
+        // ...and the later-wave memory families carry the flag in the
+        // catalog even though their DSP cannot be created yet (spot ids:
+        // 45 duck_delay, 57 zita_rev1, 76 cabinet, 82 livelooper).
+        for fx in [45, 57, 76, 82] {
+            assert!(is_memory_class(fx), "fx {fx} must be memory-class");
+        }
+        assert!(
+            !is_memory_class(80),
+            "detune (sub-MB frames) is not memory-class"
+        );
+        // Unknown ids degrade cleanly.
+        assert!(!is_available(-1));
+        assert!(!is_memory_class(-1));
+        assert!(!is_available(83));
+    }
+
+    #[test]
+    fn unavailable_ids_are_rejected_and_leave_no_state() {
+        let mut r = rack();
+        // fuzzface (id 11) is in the catalog but its factory is null:
+        // set_slot must fail Unavailable and leave the slot empty.
+        assert_eq!(r.set_slot(0, 3, 11).unwrap_err(), GxFxError::Unavailable);
+        assert_eq!(r.slot_effect(0, 3).unwrap(), -1);
+        assert_eq!(r.slot_instances(0, 3).unwrap(), 0);
+        assert_eq!(r.memory_class_instances(), 0);
+        // Same at the catalog's end (livelooper, id 82).
+        assert_eq!(r.set_slot(0, 3, 82).unwrap_err(), GxFxError::Unavailable);
+        // Ids PAST the catalog are BadEffect, not Unavailable.
+        assert_eq!(r.set_slot(0, 3, 83).unwrap_err(), GxFxError::BadEffect);
+        assert_eq!(r.set_slot(0, 3, 3000).unwrap_err(), GxFxError::BadEffect);
+        // The live eleven all set cleanly (distortion rides its own TU).
+        for fx in 0..11i16 {
+            r.set_slot(0, 0, fx).unwrap();
         }
     }
 
@@ -982,7 +1082,7 @@ mod tests {
         assert_eq!(r.memory_class_instances(), 2);
         assert_eq!(r.set_slot(64, 0, 0).unwrap_err(), GxFxError::BadIndex);
         assert_eq!(r.set_slot(0, 11, 0).unwrap_err(), GxFxError::BadIndex);
-        assert_eq!(r.set_slot(0, 0, 11).unwrap_err(), GxFxError::BadEffect);
+        assert_eq!(r.set_slot(0, 0, 83).unwrap_err(), GxFxError::BadEffect);
         assert_eq!(r.set_slot(0, 0, -2).unwrap_err(), GxFxError::BadEffect);
         assert_eq!(r.set_param(0, 3, 0, 1.0).unwrap_err(), GxFxError::NoEffect);
     }
@@ -1203,14 +1303,16 @@ mod tests {
         assert_eq!(v["slots"], 11);
         assert_eq!(v["slotParams"], 48);
         let effects = v["effects"].as_array().unwrap();
-        assert_eq!(effects.len(), 11);
-        // First and last rows spot-checked against gxfx_catalog.h.
+        assert_eq!(effects.len(), 83);
+        // First row spot-checked against gxfx_catalog.h.
         let wah = &effects[0];
         assert_eq!(wah["id"], 0);
         assert_eq!(wah["key"], "wah");
         assert_eq!(wah["label"], "Wah");
         assert_eq!(wah["category"], "wah");
         assert_eq!(wah["stereo"], false);
+        assert_eq!(wah["memory"], false);
+        assert_eq!(wah["available"], true);
         let wah_params = wah["params"].as_array().unwrap();
         assert_eq!(wah_params.len(), 2);
         assert_eq!(wah_params[0]["port"], 2);
@@ -1221,12 +1323,45 @@ mod tests {
         assert_eq!(wah_params[0]["max"], 4.0);
         assert_eq!(wah_params[0]["step"], 0.1);
         assert_eq!(wah_params[0]["integer"], false);
-        let reverb = effects.last().unwrap();
-        assert_eq!(reverb["key"], "reverb");
-        assert_eq!(reverb["stereo"], true);
-        assert_eq!(reverb["params"].as_array().unwrap().len(), 5);
         // Integer flag survives the wire (delay "mode").
         let delay = &effects[8];
         assert_eq!(delay["params"][0]["integer"], true);
+        assert_eq!(delay["memory"], true, "delay is memory-class");
+        assert_eq!(delay["available"], true);
+        // The live eleven are available; everything past them is a
+        // not-yet-ported catalog row and must say so.
+        for (i, e) in effects.iter().enumerate() {
+            assert_eq!(e["available"], i < 11, "effect {i}");
+        }
+        // ...and the memory-class flag is exposed for later waves too
+        // (duck_delay 45, zita 57, cabinet 76, livelooper 82).
+        for (i, key) in [
+            (45, "duck_delay"),
+            (57, "zita_rev1"),
+            (76, "cabinet"),
+            (82, "livelooper"),
+        ] {
+            assert_eq!(effects[i]["key"], key);
+            assert_eq!(effects[i]["memory"], true);
+            assert_eq!(effects[i]["available"], false);
+        }
+        // Last row: livelooper (39 params, mono, unavailable).
+        let looper = effects.last().unwrap();
+        assert_eq!(looper["id"], 82);
+        assert_eq!(looper["key"], "livelooper");
+        assert_eq!(looper["label"], "Live Looper");
+        assert_eq!(looper["category"], "special");
+        assert_eq!(looper["stereo"], false);
+        assert_eq!(looper["available"], false);
+        assert_eq!(looper["params"].as_array().unwrap().len(), 39);
+        // A zero-param effect serializes an empty params array (autowah).
+        assert_eq!(effects[36]["key"], "autowah");
+        assert_eq!(effects[36]["params"].as_array().unwrap().len(), 0);
+        // Reverb keeps its old spot-check shape (stereo, 5 params).
+        let reverb = &effects[10];
+        assert_eq!(reverb["key"], "reverb");
+        assert_eq!(reverb["stereo"], true);
+        assert_eq!(reverb["memory"], true);
+        assert_eq!(reverb["params"].as_array().unwrap().len(), 5);
     }
 }

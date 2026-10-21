@@ -49,12 +49,18 @@ fn fx_api_validates_channel_slot_and_effect() {
         "slot 11 rejected"
     );
     assert!(m.fx_set_slot(0, 99, 0).is_err(), "slot 99 rejected");
-    // Effect id range -1..=10.
-    assert!(m.fx_set_slot(0, 0, 11).is_err(), "fx id 11 rejected");
+    // Effect id range -1..=82; ids past the catalog are rejected before
+    // the i16 cast, and in-catalog ids whose DSP is not ported yet
+    // (fuzzface, id 11 — null factory) fail as "effect unavailable".
+    assert!(m.fx_set_slot(0, 0, 83).is_err(), "fx id 83 rejected");
     assert!(m.fx_set_slot(0, 0, -2).is_err(), "fx id -2 rejected");
     assert!(
         m.fx_set_slot(0, 0, 100_000).is_err(),
         "huge fx id rejected before the i16 cast"
+    );
+    assert!(
+        m.fx_set_slot(0, 0, 11).is_err(),
+        "not-yet-ported fx id 11 rejected (null factory)"
     );
     // Distortion (id 2) landed with its TU: it sets like any effect
     // (then cleared, so the untouched-chain sweep below stays uniform).
@@ -95,7 +101,7 @@ fn fx_api_validates_channel_slot_and_effect() {
     // serializer, pinned in gxfx's own unit tests).
     let v: serde_json::Value = serde_json::from_str(&m.fx_catalog_json()).expect("catalog json");
     assert_eq!(v["slots"], CHAIN_SLOTS as i64);
-    assert_eq!(v["effects"].as_array().unwrap().len(), 11);
+    assert_eq!(v["effects"].as_array().unwrap().len(), 83);
 }
 
 /// fx_* writes are scene-affecting setters: they cancel an in-progress

@@ -1,0 +1,643 @@
+{
+  "version": 2,
+  "effects": [
+    {
+      "id": 0,
+      "key": "wah",
+      "label": "Wah",
+      "dsp": "gcb_95",
+      "stereo": false,
+      "category": "wah",
+      "out_ports": [],
+      "params": [
+        {
+          "port": 2,
+          "symbol": "VOLUME",
+          "name": "Volume",
+          "default": 0,
+          "min": -20,
+          "max": 4,
+          "step": 0.1,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 3,
+          "symbol": "HOTPOTZ",
+          "name": "Wah",
+          "default": 0.5,
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "key": "overdrive",
+      "label": "Overdrive",
+      "dsp": "scream",
+      "stereo": false,
+      "category": "drive",
+      "out_ports": [],
+      "params": [
+        {
+          "port": 2,
+          "symbol": "SCREAM",
+          "name": "Scream",
+          "default": 0.5,
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "key": "distortion",
+      "label": "Distortion",
+      "dsp": "bossds1",
+      "stereo": false,
+      "category": "drive",
+      "out_ports": [],
+      "params": [
+        {
+          "port": 2,
+          "symbol": "LEVEL",
+          "name": "Level",
+          "default": -2,
+          "min": -20,
+          "max": 12,
+          "step": 0.1,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 3,
+          "symbol": "TONE",
+          "name": "Tone",
+          "default": 0.5,
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 4,
+          "symbol": "DRIVE",
+          "name": "Drive",
+          "default": 0.5,
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "key": "compressor",
+      "label": "Compressor",
+      "dsp": "compressor",
+      "stereo": false,
+      "category": "dynamics",
+      "out_ports": [],
+      "params": [
+        {
+          "port": 0,
+          "symbol": "RATIO",
+          "name": "Ratio",
+          "default": 2,
+          "min": 1,
+          "max": 20,
+          "step": 0.1,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 1,
+          "symbol": "KNEE",
+          "name": "Knee",
+          "default": 3,
+          "min": 0,
+          "max": 20,
+          "step": 0.1,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 2,
+          "symbol": "THRESHOLD",
+          "name": "Threshold",
+          "default": -20,
+          "min": -96,
+          "max": 10,
+          "step": 0.1,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 3,
+          "symbol": "RELEASE",
+          "name": "Release",
+          "default": 0.5,
+          "min": 0,
+          "max": 10,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 4,
+          "symbol": "ATTACK",
+          "name": "Attack",
+          "default": 0.002,
+          "min": 0,
+          "max": 1,
+          "step": 0.001,
+          "toggled": false,
+          "integer": false
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "key": "chorus",
+      "label": "Chorus",
+      "dsp": "chorus",
+      "stereo": true,
+      "category": "modulation",
+      "out_ports": [],
+      "params": [
+        {
+          "port": 0,
+          "symbol": "level",
+          "name": "Level",
+          "default": 0.5,
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 1,
+          "symbol": "delay",
+          "name": "Delay",
+          "default": 0.02,
+          "min": 0,
+          "max": 0.2,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 2,
+          "symbol": "depth",
+          "name": "Depth",
+          "default": 0.02,
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 3,
+          "symbol": "freq",
+          "name": "Freq",
+          "default": 3,
+          "min": 0.1,
+          "max": 10,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "key": "flanger",
+      "label": "Flanger",
+      "dsp": "gx_flanger",
+      "stereo": false,
+      "category": "modulation",
+      "out_ports": [],
+      "params": [
+        {
+          "port": 0,
+          "symbol": "depth",
+          "name": "Depth",
+          "default": 0.5,
+          "min": 0,
+          "max": 5,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 1,
+          "symbol": "width",
+          "name": "Width",
+          "default": 5,
+          "min": 0,
+          "max": 10,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 2,
+          "symbol": "freq",
+          "name": "Freq",
+          "default": 0.2,
+          "min": 0.05,
+          "max": 10,
+          "step": 1.06,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 3,
+          "symbol": "feedback",
+          "name": "Feedback",
+          "default": -0.707,
+          "min": -0.99,
+          "max": 0.99,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 4,
+          "symbol": "dry_wet",
+          "name": "Wet",
+          "default": 100,
+          "min": 0,
+          "max": 100,
+          "step": 1,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 5,
+          "symbol": "mix",
+          "name": "Mix",
+          "default": 0,
+          "min": -1,
+          "max": 1,
+          "step": 0.1,
+          "toggled": false,
+          "integer": false
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "key": "phaser",
+      "label": "Phaser",
+      "dsp": "phaser_mono",
+      "stereo": false,
+      "category": "modulation",
+      "out_ports": [],
+      "params": [
+        {
+          "port": 0,
+          "symbol": "dry_wet",
+          "name": "Dry/Wet",
+          "default": 50,
+          "min": 0,
+          "max": 100,
+          "step": 1,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 1,
+          "symbol": "level",
+          "name": "Level",
+          "default": 0,
+          "min": -60,
+          "max": 10,
+          "step": 0.1,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 2,
+          "symbol": "speed",
+          "name": "Speed",
+          "default": 0.5,
+          "min": 0,
+          "max": 10,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "key": "tremolo",
+      "label": "Tremolo",
+      "dsp": "tremolo",
+      "stereo": false,
+      "category": "modulation",
+      "out_ports": [],
+      "params": [
+        {
+          "port": 0,
+          "symbol": "dry_wet",
+          "name": "Dry/Wet",
+          "default": 50,
+          "min": 0,
+          "max": 100,
+          "step": 1,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 1,
+          "symbol": "mode",
+          "name": "Mode",
+          "default": 0,
+          "min": 0,
+          "max": 1,
+          "step": 1,
+          "toggled": false,
+          "integer": true
+        },
+        {
+          "port": 2,
+          "symbol": "depth",
+          "name": "Depth",
+          "default": 0.5,
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 3,
+          "symbol": "freq",
+          "name": "Freq",
+          "default": 5,
+          "min": 0.1,
+          "max": 50,
+          "step": 0.1,
+          "toggled": false,
+          "integer": false
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "key": "delay",
+      "label": "Delay",
+      "dsp": "stereodelay",
+      "stereo": true,
+      "category": "delay",
+      "out_ports": [],
+      "params": [
+        {
+          "port": 0,
+          "symbol": "mode",
+          "name": "Mode",
+          "default": 0,
+          "min": 0,
+          "max": 1,
+          "step": 1,
+          "toggled": false,
+          "integer": true
+        },
+        {
+          "port": 1,
+          "symbol": "level_r",
+          "name": "R Level",
+          "default": -10,
+          "min": -20,
+          "max": 20,
+          "step": 0.1,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 2,
+          "symbol": "timt_r",
+          "name": "R Time",
+          "default": 1000,
+          "min": 1,
+          "max": 5000,
+          "step": 10,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 3,
+          "symbol": "level_l",
+          "name": "L Level",
+          "default": -10,
+          "min": -20,
+          "max": 20,
+          "step": 0.1,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 4,
+          "symbol": "timt_l",
+          "name": "L Time",
+          "default": 1000,
+          "min": 1,
+          "max": 5000,
+          "step": 10,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 5,
+          "symbol": "lfo",
+          "name": "LFO",
+          "default": 0.2,
+          "min": 0.2,
+          "max": 5,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 6,
+          "symbol": "link",
+          "name": "Link (L+R)",
+          "default": 0,
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "key": "echo",
+      "label": "Echo",
+      "dsp": "stereoecho",
+      "stereo": true,
+      "category": "delay",
+      "out_ports": [],
+      "params": [
+        {
+          "port": 0,
+          "symbol": "mode",
+          "name": "Mode",
+          "default": 0,
+          "min": 0,
+          "max": 1,
+          "step": 1,
+          "toggled": false,
+          "integer": true
+        },
+        {
+          "port": 1,
+          "symbol": "level_r",
+          "name": "R Level",
+          "default": 30,
+          "min": 0,
+          "max": 100,
+          "step": 0.1,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 2,
+          "symbol": "timt_r",
+          "name": "R Time",
+          "default": 100,
+          "min": 1,
+          "max": 2000,
+          "step": 1,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 3,
+          "symbol": "level_l",
+          "name": "L Level",
+          "default": 30,
+          "min": 0,
+          "max": 100,
+          "step": 0.1,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 4,
+          "symbol": "timt_l",
+          "name": "L Time",
+          "default": 100,
+          "min": 1,
+          "max": 2000,
+          "step": 1,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 5,
+          "symbol": "lfo",
+          "name": "LFO",
+          "default": 0.2,
+          "min": 0.2,
+          "max": 5,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 6,
+          "symbol": "link",
+          "name": "Link (L+R)",
+          "default": 0,
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "key": "reverb",
+      "label": "Reverb",
+      "dsp": "stereoverb",
+      "stereo": true,
+      "category": "reverb",
+      "out_ports": [],
+      "params": [
+        {
+          "port": 0,
+          "symbol": "dry_wet",
+          "name": "Dry/Wet",
+          "default": 50,
+          "min": 0,
+          "max": 100,
+          "step": 1,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 1,
+          "symbol": "lfo",
+          "name": "LFO",
+          "default": 0.2,
+          "min": 0.2,
+          "max": 5,
+          "step": 0.01,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 2,
+          "symbol": "roomsize",
+          "name": "Roomsize",
+          "default": 0.5,
+          "min": 0,
+          "max": 1,
+          "step": 0.025,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 3,
+          "symbol": "damp",
+          "name": "Damp",
+          "default": 0.2,
+          "min": 0,
+          "max": 1,
+          "step": 0.025,
+          "toggled": false,
+          "integer": false
+        },
+        {
+          "port": 4,
+          "symbol": "mode",
+          "name": "Mode",
+          "default": 0,
+          "min": 0,
+          "max": 1,
+          "step": 1,
+          "toggled": false,
+          "integer": true
+        }
+      ]
+    }
+  ]
+}

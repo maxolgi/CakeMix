@@ -428,7 +428,12 @@ export function ChannelDetailPanel(props: { channelIndex: number; slot?: { bus: 
                       {fxCategories().map((cat) => (
                         <optgroup label={cat.charAt(0).toUpperCase() + cat.slice(1)}>
                           {fxCatalog()!.effects.filter((f) => f.category === cat).map((f) => (
-                            <option value={f.id}>{f.label}</option>
+                            // Not-yet-ported catalog rows stay visible but
+                            // disabled (the engine's factory for the id is
+                            // null — the distortion pre-land guard pattern).
+                            <option value={f.id} disabled={!f.available}>
+                              {f.label}{f.available ? "" : " (not ported)"}
+                            </option>
                           ))}
                         </optgroup>
                       ))}

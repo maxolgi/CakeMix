@@ -56,6 +56,9 @@ export interface FxParamDef {
 
 export interface FxEffectDef {
   id: number; key: string; label: string; category: string; stereo: boolean;
+  /** DSP factory live in the engine build. False = catalog row whose TU
+   *  has not been ported yet (the engine rejects it at set-fx-slot). */
+  available: boolean;
   params: FxParamDef[];
 }
 
@@ -353,11 +356,12 @@ export function applyFxError(payload: FxErrorPayload) {
 export function setFxSlot(ch: number, slot: number, fxId: number) {
   const pair = fxPairOf(ch);
   if (pair === null || slot < 0 || slot >= FX_SLOTS) return;
-  // -1 empties the slot; any other id must resolve in the catalog (the
-  // wasm rejects ids outside it — and without a catalog we cannot know
-  // the defaults it would install, so don't post either).
+  // -1 empties the slot; any other id must resolve in the catalog AND be
+  // available (the wasm rejects ids outside it and null-factory rows —
+  // and without a catalog we cannot know the defaults it would install,
+  // so don't post either).
   const fx = fxId >= 0 ? fxCatalog()?.effects[fxId] : undefined;
-  if (fxId !== -1 && !fx) return;
+  if (fxId !== -1 && (!fx || !fx.available)) return;
   fxPending.set(`${ch}:${slot}`, { kind: "slot", state: snapshotFxSlot(pair, slot) });
   setFxChains(pair, slot, { fx: fxId, enabled: false, params: fx ? fx.params.map(p => p.default) : [] });
   sendToWorklet({ type: "set-fx-slot", ch, slot, fxId });
