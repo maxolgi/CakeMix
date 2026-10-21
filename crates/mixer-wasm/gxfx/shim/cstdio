@@ -1,0 +1,17 @@
+// Freestanding <cstdio> shim: declares the stdio surface gxfx TUs
+// reference (printf — zita's debug dump, uncalled; fprintf — the
+// livelooper's out-of-memory branch). Declarations alone emit no
+// undefined symbol unless called: the livelooper's fprintf sits in
+// the catch arm of mem_alloc, dead code under this repo's
+// -fno-exceptions try/catch neutralization (see gxfx_dsp_looper.cpp)
+// and eliminated at the archive's fixed -O2. Natively the real
+// header/libc serve unchanged.
+#pragma once
+typedef __SIZE_TYPE__ size_t;
+extern "C" {
+int printf(const char*, ...);
+int fprintf(void*, const char*, ...);
+}
+// FILE* stderr: the only would-be consumer is the (dead) fprintf above;
+// a constant keeps the syntax compilable without a FILE runtime.
+#define stderr 0

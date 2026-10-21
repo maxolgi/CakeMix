@@ -36,7 +36,7 @@ pub use scene::{
 };
 
 use effects::{CompressorEffect, EqEffect, ExpanderEffect, GateEffect};
-use gxfx::{GxFxRack, CHAIN_PAIRS, CHAIN_SLOTS};
+use gxfx::{GxFxRack, CHAIN_PAIRS, CHAIN_SLOTS, SLOT_OUT_PORTS};
 
 /// Gain-stage parameters for one channel, snapshotted once per block.
 #[derive(Clone, Copy)]
@@ -1004,6 +1004,25 @@ impl MixerWasm {
     /// truth: effects, stereo flags, param ranges in ENGINE units).
     pub fn fx_catalog_json(&self) -> String {
         gxfx::catalog_json()
+    }
+
+    /// Read one control OUTPUT port ("meter row") value of `(ch, slot)`
+    /// — `index` 0..8, ENGINE units: today the looper's bar1..4
+    /// (indices 0..3, remaining record time in seconds) and playh1..4
+    /// (indices 4..7, play heads in 0..1000 per-mille); the tuner's
+    /// FREQ will ride the same surface. Degrades to 0.0 on invalid
+    /// indices or empty slots (OctOBX `fx_get_out_param` semantics),
+    /// so meter polling never throws.
+    pub fn fx_out_param(&self, ch: u32, slot: u32, index: u32) -> f32 {
+        let (Ok(pair), Ok(slot)) = (Self::fx_pair(ch), Self::fx_slot(slot)) else {
+            return 0.0;
+        };
+        if index >= SLOT_OUT_PORTS as u32 {
+            return 0.0;
+        }
+        self.gxfx
+            .out_param(pair, slot, index as usize)
+            .unwrap_or(0.0)
     }
 
     // ── Channel-level controls ─────────────────────────

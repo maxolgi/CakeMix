@@ -37,6 +37,10 @@ float fabsf(float x);
 float floorf(float x);
 float ceilf(float x);
 float fmodf(float x, float y);
+double fmax(double x, double y);
+double fmin(double x, double y);
+float fmaxf(float x, float y);
+float fminf(float x, float y);
 }
 namespace std {
 using ::sin;
@@ -71,4 +75,8 @@ using ::fabsf;
 using ::floorf;
 using ::ceilf;
 using ::fmodf;
+using ::fmax;
+using ::fmin;
+using ::fmaxf;
+using ::fminf;
 }

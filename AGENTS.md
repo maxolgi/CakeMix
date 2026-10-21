@@ -102,7 +102,9 @@ stayed rejected by `set_slot` until its TU, freestanding object audit
 and honesty test all landed. Because delay/echo/reverb allocate MB-scale tapes
 at create, the engine caps concurrently created memory-class instances
 at 96 (~384 MiB worst case, 1.5× the 64 pairs so every pair can run a
-delay with headroom); DSP create/activate is eager at message time,
+delay with headroom), while the livelooper (~128 MiB of tapes per
+enabled slot) rides its own separate cap of 4 created loopers (~512 MiB
+worst case); DSP create/activate is eager at message time,
 never inside process().
 
 ### QuicSRT boundary

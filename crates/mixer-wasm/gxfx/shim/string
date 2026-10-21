@@ -1,0 +1,107 @@
+// Freestanding <string> shim: a minimal std::string for the gxfx TUs
+// whose vendor DSP keeps std::string members (livelooper's wave
+// save/load names). Dual-purpose include contract: on the wasm32
+// freestanding build this dir is first on the include path so a plain
+// <string> resolves here; the looper TU instead pulls it as
+// "shim/string" on BOTH targets — the real libstdc++ string references
+// std::__throw_* helpers that Rust's nodefaultlibs native link (no
+// libstdc++) cannot resolve. The shim implements exactly the subset
+// livelooper.cc exercises — default/const char*/copy construction,
+// copy assignment, +=, + (string/const char* operands), c_str(),
+// empty(), size(), compare(const char*) — with a fixed inline buffer
+// (no allocation, no undefined symbols; our host only ever stores the
+// short ctor literals "tape"/"/gxloops/"/"N.wav", and longer sources
+// truncate, documented).
+//
+// Deliberate deviation from libstdc++: the const char* constructor is
+// NULL-TOLERANT. livelooper assigns `std::string pPath = getenv(...)`,
+// and under the empty wasm environ the Rust c_floor getenv returns
+// NULL — libstdc++ would be UB there (strlen(NULL)); the shim degrades
+// to "" instead, the same net result OctOBX relied on the zero-filled
+// null page for.
+#pragma once
+
+namespace std {
+
+class string {
+public:
+    static const unsigned long kCap = 128;
+
+    string() : n_(0) { b_[0] = '\0'; }
+
+    string(const char* s) : n_(0) {
+        b_[0] = '\0';
+        if (s != 0) {
+            while (s[n_] != '\0' && n_ + 1 < kCap) {
+                b_[n_] = s[n_];
+                ++n_;
+            }
+            b_[n_] = '\0';
+        }
+    }
+
+    string(const string& o) : n_(o.n_) {
+        for (unsigned long i = 0; i < n_; ++i) b_[i] = o.b_[i];
+        b_[n_] = '\0';
+    }
+
+    string& operator=(const string& o) {
+        if (this != &o) {
+            n_ = o.n_;
+            for (unsigned long i = 0; i < n_; ++i) b_[i] = o.b_[i];
+            b_[n_] = '\0';
+        }
+        return *this;
+    }
+
+    string& operator=(const char* s) {
+        *this = string(s);
+        return *this;
+    }
+
+    string& operator+=(const string& o) {
+        for (unsigned long i = 0; i < o.n_ && n_ + 1 < kCap; ++i) {
+            b_[n_++] = o.b_[i];
+        }
+        b_[n_] = '\0';
+        return *this;
+    }
+
+    string& operator+=(const char* s) {
+        *this += string(s);
+        return *this;
+    }
+
+    const char* c_str() const { return b_; }
+    bool empty() const { return n_ == 0; }
+    unsigned long size() const { return n_; }
+
+    // strcmp semantics (livelooper: name.compare("tape") == 0).
+    int compare(const char* s) const {
+        if (s == 0) s = "";
+        unsigned long i = 0;
+        while (i < n_ && s[i] != '\0') {
+            if (b_[i] != s[i]) return b_[i] < s[i] ? -1 : 1;
+            ++i;
+        }
+        if (i == n_ && s[i] == '\0') return 0; // equal
+        if (i == n_) return -1;                // *this is a prefix (shorter)
+        return 1;                              // s is a prefix (longer)
+    }
+
+private:
+    char b_[kCap];
+    unsigned long n_;
+};
+
+inline string operator+(string l, const string& r) {
+    l += r;
+    return l;
+}
+
+inline string operator+(string l, const char* r) {
+    l += string(r);
+    return l;
+}
+
+} // namespace std

@@ -15,9 +15,11 @@
 //! * `set_slot` eagerly CREATES the DSP at message time (`gxfx_create`
 //!   calls set_samplerate internally, whose init() computes the
 //!   rate-dependent constants; the megabyte-scale delay/reverb tapes
-//!   are new'd at first activate) and connects every param port to the
-//!   slot's param storage BEFORE activation. `set_slot` also resets the
-//!   slot's params to the catalog defaults and clears enabled.
+//!   are new'd at first activate) and connects every param port —
+//!   and, for effects with them, every control OUTPUT port (meters,
+//!   see [`GxFxRack::out_param`]) — to the slot's storage BEFORE
+//!   activation. `set_slot` also resets the slot's params to the
+//!   catalog defaults and clears enabled.
 //! * `set_enabled` eagerly activates/deactivates (message time).
 //! * `move_slot` array-moves the whole slot content — id, params,
 //!   enabled, DSP handles — and re-points every shifted slot's DSP at
@@ -44,6 +46,12 @@ pub const CHAIN_SLOTS: usize = 11;
 /// Param floats per slot, in ENGINE units (padded row width).
 pub const SLOT_PARAMS: usize = 48;
 
+/// Control OUTPUT port floats per slot ("meter row"): the DSP writes
+/// these through pointers connected at create time (OctOBX's
+/// FX_OUT_PORTS=8; the row is zeroed for empty slots and effects
+/// without out ports).
+pub const SLOT_OUT_PORTS: usize = 8;
+
 /// Cap on concurrently CREATED instances of the memory-class effects
 /// (catalog `memory` flag — see [`is_memory_class`]). Sizing: the worst
 /// offender among the live effects (stereodelay) new's 2 x 524288 f32 =
@@ -55,6 +63,30 @@ pub const SLOT_PARAMS: usize = 48;
 /// CLEANLY at `set_slot` instead of OOM-crashing the wasm heap.
 pub const MEMORY_CLASS_CAP: u32 = 96;
 
+/// Catalog id of the live looper (gx_livelooper.lv2, mono). Kept as a
+/// named constant because its memory shape is special-cased by the
+/// SEPARATE cap below: TAPESIZE 4194304 floats × 4 tapes = 64 MiB per
+/// DSP instance, dual-mono → ~128 MiB per ENABLED slot — two orders
+/// beyond the ~4 MiB instances [`MEMORY_CLASS_CAP`]'s sizing assumes
+/// (the looper does carry the catalog's memory flag and still counts
+/// toward that generic budget too, but only with 2 handles per slot
+/// it can never bind first).
+const FX_LIVELOOPER: i16 = 82;
+
+/// Cap on concurrently CREATED looper slots across all racks
+/// (sizing: one looper slot ≈ 128 MiB of tapes when enabled —
+/// 2 × 64 MiB, allocated lazily at first activate, so the cap bounds
+/// the worst-case tape pool at 4 × 128 MiB = 512 MiB). Enforced at
+/// `set_slot` with its own error, BEFORE any teardown, exactly like
+/// [`MEMORY_CLASS_CAP`]; see [`is_looper`].
+pub const LOOPER_CAP: u32 = 4;
+
+/// Whether `fx` is the live looper — the one effect with an
+/// out-of-band memory footprint (see [`FX_LIVELOOPER`] / [`LOOPER_CAP`]).
+fn is_looper(fx: i16) -> bool {
+    fx == FX_LIVELOOPER
+}
+
 /// Whether `fx`'s DSP allocates megabyte-scale delay/reverb buffers at
 /// create/first-activate — read from the generated catalog's per-effect
 /// `memory` flag through the C ABI (delay/time family, reverb family,
@@ -63,6 +95,22 @@ pub const MEMORY_CLASS_CAP: u32 = 96;
 /// 10 (reverb).
 fn is_memory_class(fx: i16) -> bool {
     effect_info(fx).is_some_and(|i| i.memory != 0)
+}
+
+/// Control OUTPUT port ids (LV2 PortIndex) per effect, in out-row
+/// order — the ports whose storage the DSP WRITES (meters). The
+/// catalog generation doesn't carry out-port declarations, so these
+/// are HARDCODED from each effect's PortIndex enum (the same source
+/// the catalog's param ports were transcribed from), pending catalog
+/// support. Today: the looper (id 82) — bar1..4 (ports 14..17, record
+/// time meters) → row 0..3, playh1..4 (ports 32..35, play heads) →
+/// row 4..7 (OctOBX fx_connect_out_ports order). The tuner (id 81)
+/// will add its FREQ row here.
+fn out_port_ids(fx: i16) -> &'static [c_int] {
+    match fx {
+        FX_LIVELOOPER => &[14, 15, 16, 17, 32, 33, 34, 35],
+        _ => &[],
+    }
 }
 
 // ── FFI: exact mirror of gxfx/gxfx_dsp_eleven.cpp's extern "C" ──────
@@ -248,6 +296,10 @@ pub enum GxFxError {
     /// [`MEMORY_CLASS_CAP`] concurrently created memory-class instances
     /// would be exceeded.
     Budget,
+    /// [`LOOPER_CAP`] concurrently created looper slots would be
+    /// exceeded (the looper's ~128 MiB-per-slot tapes ride their own
+    /// budget, not [`GxFxError::Budget`]).
+    LooperBudget,
     /// Param operation on an empty slot.
     NoEffect,
     /// Param ordinal outside the slot effect's live param count.
@@ -261,6 +313,9 @@ impl fmt::Display for GxFxError {
             GxFxError::BadEffect => "effect id outside the catalog",
             GxFxError::Unavailable => "effect unavailable (DSP create failed)",
             GxFxError::Budget => "memory-class instance cap would be exceeded",
+            GxFxError::LooperBudget => {
+                "looper instance cap would be exceeded (4 slots, ~512 MiB of tapes)"
+            }
             GxFxError::NoEffect => "slot holds no effect",
             GxFxError::BadParam => "param index outside the effect's param count",
         };
@@ -281,6 +336,10 @@ struct FxSlot {
     enabled: bool,
     active: bool,
     params: [f32; SLOT_PARAMS],
+    /// Control OUTPUT port row (meters — e.g. the looper's bar/play
+    /// heads): the DSP's out-port pointers target this row from create
+    /// time on; zeroed on teardown (OctOBX g_fx_out semantics).
+    out: [f32; SLOT_OUT_PORTS],
     dsp: Option<GxFxHandle>,
     dsp_r: Option<GxFxHandle>,
 }
@@ -292,6 +351,7 @@ impl FxSlot {
             enabled: false,
             active: false,
             params: [0.0; SLOT_PARAMS],
+            out: [0.0; SLOT_OUT_PORTS],
             dsp: None,
             dsp_r: None,
         }
@@ -328,6 +388,11 @@ pub struct GxFxRack {
     /// [`MEMORY_CLASS_CAP`]); incremented per handle at create,
     /// decremented at teardown.
     mem_class_instances: u32,
+    /// Currently created looper SLOTS across all racks (see
+    /// [`LOOPER_CAP`]); incremented per slot at create, decremented at
+    /// teardown — a slot counts as ONE looper (~128 MiB when enabled)
+    /// whatever its dual-mono handle count.
+    looper_slots: u32,
 }
 
 impl GxFxRack {
@@ -343,6 +408,7 @@ impl GxFxRack {
                 .collect(),
             stereo_scratch: vec![0.0; max_block.max(1)],
             mem_class_instances: 0,
+            looper_slots: 0,
         }
     }
 
@@ -361,11 +427,15 @@ impl GxFxRack {
     }
 
     /// Deactivate + destroy the slot's DSP and reset it to empty
-    /// (params zeroed, like OctOBX's empty-slot memset). Budget is
-    /// released per destroyed memory-class handle.
+    /// (params and out-port row zeroed, like OctOBX's empty-slot
+    /// memset). Budget is released per destroyed memory-class handle
+    /// and per destroyed looper slot.
     fn slot_teardown(&mut self, pair: usize, slot: usize) {
         let s = &mut self.chains[pair].slots[slot];
         let mem = is_memory_class(s.fx);
+        if is_looper(s.fx) {
+            self.looper_slots -= 1;
+        }
         if let Some(h) = s.dsp.take() {
             if mem {
                 self.mem_class_instances -= 1;
@@ -381,12 +451,16 @@ impl GxFxRack {
         *s = FxSlot::empty();
     }
 
-    /// Point every param port of the slot's DSP handle(s) at the slot's
-    /// param storage. Called after create and after the array-move in
+    /// Point every param port — and, for effects with them (see
+    /// [`out_port_ids`]), every control OUTPUT port — of the slot's
+    /// DSP handle(s) at the slot's param / out-row storage. Called
+    /// after create and after the array-move in
     /// [`GxFxRack::move_slot`] (the moved C++ instances keep the
     /// connect_ports pointers they were created with — they still
-    /// reference their OLD param rows until re-pointed; pointer stores
-    /// only, no processing state is touched).
+    /// reference their OLD rows until re-pointed; pointer stores
+    /// only, no processing state is touched). Dual-mono pairs point
+    /// BOTH handles at the same out row (both halves write the same
+    /// values — OctOBX tuner precedent, harmless).
     fn connect_slot_params(&mut self, pair: usize, slot: usize) {
         let fx = self.chains[pair].slots[slot].fx;
         if fx < 0 {
@@ -402,6 +476,15 @@ impl GxFxRack {
             }
             if let Some(h) = hr {
                 unsafe { ffi::gxfx_connect_port(h, param_port(fx, i), storage) };
+            }
+        }
+        for (i, &port) in out_port_ids(fx).iter().enumerate() {
+            let storage: *mut f32 = &mut self.chains[pair].slots[slot].out[i];
+            if let Some(h) = hl {
+                unsafe { ffi::gxfx_connect_port(h, port, storage) };
+            }
+            if let Some(h) = hr {
+                unsafe { ffi::gxfx_connect_port(h, port, storage) };
             }
         }
     }
@@ -420,8 +503,9 @@ impl GxFxRack {
     /// * Errors leave the slot EMPTY (never a torn half-state):
     ///   [`GxFxError::Unavailable`] when the id's factory is null,
     ///   [`GxFxError::Budget`] when the memory-class cap would be
-    ///   exceeded (checked BEFORE any teardown, so a rejected set
-    ///   leaves the previous effect running).
+    ///   exceeded, [`GxFxError::LooperBudget`] when the separate
+    ///   looper cap would (both checked BEFORE any teardown, so a
+    ///   rejected set leaves the previous effect running).
     pub fn set_slot(&mut self, pair: usize, slot: usize, fx: i16) -> Result<(), GxFxError> {
         self.chain_mut(pair)?;
         if slot >= CHAIN_SLOTS {
@@ -446,6 +530,14 @@ impl GxFxRack {
         };
         if self.mem_class_instances - old_mem + new_mem > MEMORY_CLASS_CAP {
             return Err(GxFxError::Budget);
+        }
+        // Looper budget pre-check (SEPARATE cap — one looper slot ≈
+        // 128 MiB of tapes; see LOOPER_CAP): same
+        // teardown-releases-first accounting, at slot granularity.
+        let old_loop = u32::from(is_looper(old.fx));
+        let new_loop = u32::from(is_looper(fx));
+        if self.looper_slots - old_loop + new_loop > LOOPER_CAP {
+            return Err(GxFxError::LooperBudget);
         }
         self.slot_teardown(pair, slot);
         if fx < 0 {
@@ -473,6 +565,7 @@ impl GxFxRack {
             }
         };
         self.mem_class_instances += new_mem;
+        self.looper_slots += new_loop;
         let s = &mut self.chains[pair].slots[slot];
         s.fx = fx;
         s.enabled = false;
@@ -507,6 +600,30 @@ impl GxFxRack {
     /// Currently created memory-class DSP instances (budget readback).
     pub fn memory_class_instances(&self) -> u32 {
         self.mem_class_instances
+    }
+
+    /// Currently created looper slots across all racks (budget
+    /// readback; see [`LOOPER_CAP`]).
+    pub fn looper_count(&self) -> u32 {
+        self.looper_slots
+    }
+
+    /// Read one control OUTPUT port value of `(pair, slot)`'s meter
+    /// row (`index` 0..[`SLOT_OUT_PORTS`]; e.g. the looper's
+    /// bar1..4 → 0..3, playh1..4 → 4..7). The row is zeroed for empty
+    /// slots and effects without out ports — a meter read never
+    /// fails on slot content, only on indices (OctOBX
+    /// `fx_get_out_param` semantics).
+    pub fn out_param(&self, pair: usize, slot: usize, index: usize) -> Result<f32, GxFxError> {
+        let s = self
+            .chain(pair)?
+            .slots
+            .get(slot)
+            .ok_or(GxFxError::BadIndex)?;
+        if index >= SLOT_OUT_PORTS {
+            return Err(GxFxError::BadIndex);
+        }
+        Ok(s.out[index])
     }
 
     /// Whether any pair's chain holds a created+enabled effect — the
@@ -815,6 +932,7 @@ pub fn catalog_json() -> String {
 #[cfg(target_arch = "wasm32")]
 mod c_floor {
     use std::alloc::{alloc as rust_alloc, alloc_zeroed, dealloc, Layout};
+    use std::ffi::{c_char, c_int};
     use std::ptr;
 
     // ── C heap: malloc family over std::alloc ──────────────────────
@@ -899,6 +1017,35 @@ mod c_floor {
         unsafe { ptr::copy_nonoverlapping(p, new, old_size.min(size)) };
         unsafe { free(p) };
         new
+    }
+
+    // ── wave-path libc floor: getenv/stat/mkdir ────────────────────
+    //
+    // The looper's loop save/load paths call these on every activate.
+    // Under the empty wasm environ they fail CLOSED — getenv returns
+    // NULL (loop paths degrade to ""), stat/mkdir return -1 — which
+    // pairs with the always-fail sndfile.hh stub: nothing about loop
+    // persistence can succeed, everything degrades harmlessly. On
+    // native builds this module doesn't exist and libc serves the real
+    // functions.
+
+    #[no_mangle]
+    pub extern "C" fn getenv(_name: *const c_char) -> *mut c_char {
+        ptr::null_mut()
+    }
+
+    /// # Safety
+    ///
+    /// `buf` is never written (the function always fails); the pointee
+    /// type is opaque to callers (the shim's `struct stat`).
+    #[no_mangle]
+    pub unsafe extern "C" fn stat(_path: *const c_char, _buf: *mut u8) -> c_int {
+        -1
+    }
+
+    #[no_mangle]
+    pub extern "C" fn mkdir(_path: *const c_char, _mode: u32) -> c_int {
+        -1
     }
 
     // ── libm shims ─────────────────────────────────────────────────
@@ -1179,6 +1326,110 @@ mod tests {
         assert!(r.set_slot(63, 10, 10).is_ok());
         // Non-memory effects are never budget-gated.
         r.set_slot(63, 10, 0).unwrap();
+    }
+
+    /// The looper's out-port surface: constants, error identity, and —
+    /// the real invariant — the hardcoded out-port ids (from the
+    /// livelooper PortIndex enum, pending catalog out-port support)
+    /// must not collide with any of the effect's CATALOG param ports
+    /// (a collision would route a knob into a meter row). Runnable
+    /// now: param defs come from the static catalog, no factory
+    /// needed.
+    #[test]
+    fn looper_out_port_surface() {
+        assert_eq!(LOOPER_CAP, 4);
+        assert_ne!(GxFxError::LooperBudget, GxFxError::Budget);
+        assert!(GxFxError::LooperBudget.to_string().contains("looper"));
+        let outs = out_port_ids(FX_LIVELOOPER);
+        assert_eq!(outs.len(), SLOT_OUT_PORTS);
+        assert_eq!(outs, &[14, 15, 16, 17, 32, 33, 34, 35]);
+        for p in 0..param_count(FX_LIVELOOPER) {
+            let port = param_port(FX_LIVELOOPER, p);
+            assert!(
+                !outs.contains(&port),
+                "livelooper param {p} port {port} collides with an out port"
+            );
+        }
+        // Every other effect: no out ports declared yet (the tuner's
+        // FREQ row lands with its wave).
+        for fx in 0..effect_count() {
+            if fx != FX_LIVELOOPER {
+                assert!(out_port_ids(fx).is_empty(), "fx {fx}");
+            }
+        }
+    }
+
+    /// The SEPARATE looper cap (LOOPER_CAP — one looper slot ≈ 128 MiB
+    /// of tapes at first activate, far beyond what the generic
+    /// MEMORY_CLASS_CAP sizing assumes). Requires the REAL factory to
+    /// drive `set_slot` honestly, so it is gated on id 82's
+    /// availability: until the final wave flips factory row 82 (with
+    /// its honesty tests) it stays skipped — `set_slot(82)` fails
+    /// Unavailable long before any cap arithmetic could run.
+    #[test]
+    fn looper_cap_enforced() {
+        if !is_available(FX_LIVELOOPER) {
+            eprintln!(
+                "skipped: livelooper (id 82) factory not flipped yet — \
+                 activates at the final wave's flip"
+            );
+            return;
+        }
+        let mut r = rack();
+        // Fill the board-wide cap across different pairs/slots.
+        for i in 0..LOOPER_CAP {
+            r.set_slot(i as usize, 0, FX_LIVELOOPER).unwrap();
+        }
+        assert_eq!(r.looper_count(), LOOPER_CAP);
+        // Loopers are memory-class too: dual-mono handles keep riding
+        // the generic budget (4 × 2 = 8 << 96 — it can never bind first).
+        assert_eq!(r.memory_class_instances(), LOOPER_CAP * 2);
+        // One more, anywhere → the looper's own error, nothing torn.
+        assert_eq!(
+            r.set_slot(0, 1, FX_LIVELOOPER).unwrap_err(),
+            GxFxError::LooperBudget
+        );
+        assert_eq!(r.slot_effect(0, 1).unwrap(), -1);
+        assert_eq!(r.looper_count(), LOOPER_CAP);
+        // Replacing a looper with a looper stays within the cap
+        // (teardown releases the slot's budget first)...
+        assert!(r.set_slot(0, 0, FX_LIVELOOPER).is_ok());
+        assert_eq!(r.looper_count(), LOOPER_CAP);
+        // ...and non-loopers are never looper-gated.
+        assert!(r.set_slot(0, 1, 8).is_ok());
+        // Freeing one releases budget for a new one elsewhere.
+        r.set_slot(1, 0, -1).unwrap();
+        assert_eq!(r.looper_count(), LOOPER_CAP - 1);
+        assert!(r.set_slot(63, 10, FX_LIVELOOPER).is_ok());
+        assert_eq!(r.looper_count(), LOOPER_CAP);
+    }
+
+    /// The out-port row (meter storage) read surface: zeroed on empty
+    /// slots, zeroed rows for effects without out ports, index
+    /// validation, teardown re-zeroing. The DSP-written path (looper
+    /// bar/play heads) rides the gated cap test + the archive probe.
+    #[test]
+    fn out_param_row_reads_and_degrades() {
+        let mut r = rack();
+        assert_eq!(r.out_param(0, 0, 0).unwrap(), 0.0);
+        assert_eq!(r.out_param(63, 10, 7).unwrap(), 0.0);
+        assert_eq!(r.out_param(64, 0, 0).unwrap_err(), GxFxError::BadIndex);
+        assert_eq!(r.out_param(0, 11, 0).unwrap_err(), GxFxError::BadIndex);
+        assert_eq!(
+            r.out_param(0, 0, SLOT_OUT_PORTS).unwrap_err(),
+            GxFxError::BadIndex
+        );
+        // An effect WITHOUT out ports (wah): the row is connected to
+        // nothing — reads stay 0 through enable + processing.
+        r.set_slot(0, 0, 0).unwrap();
+        r.set_enabled(0, 0, true).unwrap();
+        let mut buf = vec![0.1f32; BS];
+        let mut rbuf = buf.clone();
+        r.process_pair(0, &mut buf, Some(&mut rbuf));
+        assert_eq!(r.out_param(0, 0, 0).unwrap(), 0.0);
+        // Emptying a slot zeroes its row (teardown parity).
+        r.set_slot(0, 0, -1).unwrap();
+        assert_eq!(r.out_param(0, 0, 0).unwrap(), 0.0);
     }
 
     #[test]

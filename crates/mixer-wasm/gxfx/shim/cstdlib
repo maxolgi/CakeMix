@@ -1,8 +1,11 @@
 // Freestanding <cstdlib> shim: just the allocation pair the gxfx global
-// operator new/delete overloads route to (size_t for their signatures).
+// operator new/delete overloads route to (size_t for their signatures),
+// plus getenv for the livelooper's wave save/load paths (the Rust
+// c_floor defines it to return NULL under the empty wasm environ).
 #pragma once
 typedef __SIZE_TYPE__ size_t;
 extern "C" {
 void* malloc(size_t size);
 void free(void* ptr);
+char* getenv(const char* name);
 }

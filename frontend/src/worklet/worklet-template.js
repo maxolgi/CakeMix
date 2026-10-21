@@ -230,6 +230,20 @@ class MixerProcessor extends AudioWorkletProcessor {
                 var fxCatalog = '{"slots":0,"slotParams":0,"effects":[]}';
                 if (this._mixer) try { fxCatalog = this._mixer.fx_catalog_json(); } catch(e) {}
                 this.port.postMessage({ type: "fx-catalog", json: fxCatalog });
+            } else if (msg.type === "get-fx-out") {
+                // FX out-port (meter row) pull (request/reply like
+                // get-fx-catalog): the 8 control OUTPUT floats of
+                // (ch, slot) — the looper's bar1..4 / playh1..4 meters
+                // (and later the tuner's FREQ row). ALWAYS replies with
+                // a full values array — invalid/empty slots degrade to
+                // zeros (the engine getter's OctOBX-style contract), so
+                // meter polling never blocks or throws.
+                var fxOut = [0, 0, 0, 0, 0, 0, 0, 0];
+                if (this._mixer) try {
+                    for (var oi = 0; oi < fxOut.length; oi++)
+                        fxOut[oi] = this._mixer.fx_out_param(msg.ch, msg.slot, oi);
+                } catch(e) {}
+                this.port.postMessage({ type: "fx-out", ch: msg.ch, slot: msg.slot, values: fxOut });
             } else if (msg.type === "set-master-gain") {
                 if (this._mixer) try { this._mixer.set_master_gain(msg.gain); } catch(e) {}
             } else if (msg.type === "set-limiter") {
