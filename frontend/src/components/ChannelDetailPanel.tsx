@@ -1,4 +1,5 @@
-import { createSignal, For } from "solid-js";
+import { createSignal, createEffect, onCleanup, For } from "solid-js";
+import type { JSX } from "solid-js";
 import {
   channels,
   setInputGain, setPhase, setPanLaw, setChannelName,
@@ -9,6 +10,7 @@ import {
   setMainAssign,
   busChannels, setBusSource, clearBusSource, NUM_CHANNELS, FX_SLOTS,
   fxChains, fxCatalog, setFxSlot, setFxEnabled, setFxParam, moveFxSlot, type FxParamDef,
+  fxOut,
   faderToGain, gainToFader, formatGainDb,
   setChannels, sendToWorklet,
 } from "../stores/mixer";
@@ -47,6 +49,68 @@ function snapFxParam(p: FxParamDef, v: number): number {
   return Math.max(p.min, Math.min(p.max, out));
 }
 
+const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+/** Live pitch readout for the tuner (catalog key "tuner"): its value is
+ *  a real-time OUTPUT — the detected FREQ on out-port row 0 — so while
+ *  the tuner slot is selected (and this subtree is mounted, i.e. the FX
+ *  section is expanded) it polls the worklet's get-fx-out at a human
+ *  rate and renders Hz + nearest note (equal temperament, A4=440) with
+ *  a cents offset. FREQ 0 = no pitch detected → silent state. */
+function TunerReadout(props: { ch: number; pair: number; slot: () => number }) {
+  const isTuner = () => {
+    const st = fxChains[props.pair][props.slot()];
+    const fx = st.fx >= 0 ? fxCatalog()?.effects[st.fx] : undefined;
+    return fx?.key === "tuner";
+  };
+
+  // Poll lifecycle: runs only while the selected slot IS the tuner —
+  // selection moves away, the slot's effect changes, or the FX section
+  // collapses (unmount) and the cleanup stops the interval. One
+  // immediate pull so the readout populates before the first tick.
+  createEffect(() => {
+    if (!isTuner()) return;
+    const request = () => sendToWorklet({ type: "get-fx-out", ch: props.ch, slot: props.slot() });
+    request();
+    const t = setInterval(request, 300);
+    onCleanup(() => clearInterval(t));
+  });
+
+  return (
+    <>
+      {(() => {
+        if (!isTuner()) return null;
+        const out = fxOut();
+        const f = out && out.ch === props.ch && out.slot === props.slot() ? out.values[0] ?? 0 : 0;
+        let content: string | JSX.Element = "— silent";
+        if (f > 0) {
+          // Nearest note: midi 69 = A4 = 440 Hz.
+          const midi = 69 + 12 * Math.log2(f / 440);
+          const n = Math.round(midi);
+          const cents = Math.round((midi - n) * 100);
+          const name = NOTE_NAMES[((n % 12) + 12) % 12] + (Math.floor(n / 12) - 1);
+          content = (
+            <>
+              <b>{name}</b>
+              {f.toFixed(1)} Hz
+              {cents !== 0 && <i>{cents > 0 ? `+${cents}` : `−${-cents}`}¢</i>}
+            </>
+          );
+        }
+        return (
+          <div
+            class="fx-tuner-readout"
+            data-silent={f > 0 ? undefined : ""}
+            title="Detected pitch from the tuner slot — 0 means no pitch detected (silence or below the Threshold knob)"
+          >
+            {content}
+          </div>
+        );
+      })()}
+    </>
+  );
+}
+
 /** Knob edit area for the selected FX chain slot. A component (not an
  *  inline IIFE in the panel JSX) so slot-selection changes re-render only
  *  this subtree while the LED row and chain list stay mounted. Props stay
@@ -73,6 +137,7 @@ function FxEditArea(props: { ch: number; pair: number; slot: () => number }) {
                 />
               ))}
             </div>
+            <TunerReadout ch={props.ch} pair={props.pair} slot={props.slot} />
           </>
         );
       })()}

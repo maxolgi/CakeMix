@@ -344,6 +344,15 @@ export function applyFxError(payload: FxErrorPayload) {
   setFxLastError({ op: payload.op, ch: payload.ch, slot: payload.slot, msg: payload.msg });
 }
 
+/** The worklet's `fx-out` reply (routed by App): the 8 control OUTPUT
+ *  floats of one (ch, slot). Display-only — the tuner readout polls it
+ *  at a human rate; the looper's meter rows have no UI yet. Latest
+ *  reply wins: readers match on (ch, slot) and pollers re-request, so a
+ *  single slot of state is all the UI needs. */
+export interface FxOutPayload { ch: number; slot: number; values: number[]; }
+export const [fxOut, setFxOut] = createSignal<FxOutPayload | null>(null);
+export function applyFxOut(payload: FxOutPayload) { setFxOut(payload); }
+
 // Store helpers — each updates store + sends worklet message. The wasm
 // is the source of truth; these mirror its exact semantics (param is
 // the catalog-row ORDINAL in ENGINE units, params rows live-trimmed) so

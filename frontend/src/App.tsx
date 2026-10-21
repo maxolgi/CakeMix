@@ -11,7 +11,7 @@ import { BusMasterStrip } from "./components/BusMasterStrip";
 import { BusManager } from "./components/BusManager";
 import { QuicSRTPanel } from "./components/QuicSRTPanel";
 import {
-  updateMeterData, applyConsoleParams, applyFxCatalog, applyFxError, requestFxCatalog,
+  updateMeterData, applyConsoleParams, applyFxCatalog, applyFxError, applyFxOut, requestFxCatalog,
   fxLastError, setFxLastError,
   wasmReady, setWasmReady, isRunning, setIsRunning,
   status, setStatus, setMixerNode, sendToWorklet,
@@ -81,6 +81,9 @@ export default function App() {
         // An fx op the engine rejected (instance cap, unavailable effect):
         // the store rolls its optimistic slot back and raises the toast.
         else if (msg.type === "fx-error") { applyFxError(msg); }
+        // FX out-port pull reply (the tuner readout polls get-fx-out):
+        // display-only, latest reply wins in the store.
+        else if (msg.type === "fx-out") { applyFxOut(msg); }
         else if (msg.type === "pcm-dropped") { quicsrtStore.onWorkletPcmDropped(msg.total); }
         else if (msg.type === "pub-pcm") { relayPubPcm(msg.samples, msg.ptsUs, msg.channels); }
       };
