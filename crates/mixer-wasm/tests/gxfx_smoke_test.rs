@@ -1,17 +1,22 @@
-//! Tiered honesty suite for the gxfx (guitarix) insert FX — the wave-2
-//! standard families, driven through the REAL C++ DSP via [`GxFxRack`].
+//! Tiered honesty suite for the gxfx (guitarix) insert FX — every
+//! ported family, driven through the REAL C++ DSP via [`GxFxRack`].
 //!
 //! Tiered RULE (AGENTS.md honesty rule, user-approved tiering): a ported
 //! effect family is only allowed to leave "unavailable" together with
 //! its tests, in the same commit. The tiers are
 //!   1. a MANDATORY per-effect smoke suite over EVERY available catalog
-//!      id (below: `available_effects_smoke`) — every effect must create,
-//!      connect, activate, run, stay finite/bounded, drain to silence
-//!      after a bounded window, survive two create/destroy cycles and
-//!      agree with the catalog's param metadata; and
-//!   2. representative per-family KNOWN-ANSWER tests (the six at the
-//!      bottom of this file) proving each family's namesake PHYSICS
-//!      claim on the DSP path, in the style of tests/gxfx_honesty_test.rs.
+//!      id (below: `available_effects_smoke`) — all 83 since the final
+//!      wave (conv family 76..79, detune, tuner, livelooper): every
+//!      effect must create, connect, activate, run, stay
+//!      finite/bounded, drain to silence after a bounded window,
+//!      survive two create/destroy cycles and agree with the catalog's
+//!      param metadata; and
+//!   2. representative per-family KNOWN-ANSWER tests proving each
+//!      family's namesake PHYSICS claim on the DSP path, in the style
+//!      of tests/gxfx_honesty_test.rs — the wave-2 representatives at
+//!      the bottom of this file (autowah/vibe/graphiceq/tonestack/
+//!      duck_delay/zita), the final wave's (cabinet, detune, tuner,
+//!      looper) in tests/gxfx_exotic_test.rs.
 //!
 //! A tier-1 pass alone proves "not fake-fatal", not "real DSP"; the
 //! tier-2 answers carry the honesty. Failures name the exact id + claim.
@@ -490,30 +495,29 @@ fn available_effects_smoke() {
     }
 }
 
-/// The wave actually flipped: ids 11..75 report available, and the four
-/// holdout families (76..82: cabinet/redeye/metalamp/metalhead,
-/// detune, tuner, livelooper) honestly do not. This is the tiered
-/// rule's bookkeeping half — availability must equal ported-ness.
+/// The wave actually flipped: ALL 83 ids report available (the final
+/// wave completed the catalog — conv family 76..79, detune 80, tuner
+/// 81, livelooper 82). This is the tiered rule's bookkeeping half —
+/// availability must equal ported-ness.
 #[test]
 fn availability_matches_the_ported_wave() {
     let cat = catalog();
     assert_eq!(cat.len(), 83, "catalog size");
     for e in &cat {
-        let want = (0..=75).contains(&e.id);
-        assert_eq!(
-            e.available, want,
-            "fx {} ({}) availability must be {}",
-            e.id, e.key, want
+        assert!(
+            e.available,
+            "fx {} ({}) must be available — the full catalog is live",
+            e.id, e.key
         );
     }
-    // And the engine enforces it: a holdout id is rejected cleanly.
+    // And the engine agrees end to end: the last wave's bookend ids set
+    // cleanly (cabinet builds its convolver IR, livelooper rides the
+    // looper cap).
     let mut r = rack();
-    assert_eq!(
-        r.set_slot(0, 0, 76).unwrap_err(),
-        GxFxError::Unavailable,
-        "cabinet (76) stays unavailable until the convolver TU lands"
-    );
-    assert_eq!(r.set_slot(0, 0, 82).unwrap_err(), GxFxError::Unavailable);
+    r.set_slot(0, 0, 76).expect("cabinet (76) is live");
+    r.set_slot(0, 0, 82).expect("livelooper (82) is live");
+    // Ids PAST the catalog stay clean errors.
+    assert_eq!(r.set_slot(0, 0, 83).unwrap_err(), GxFxError::BadEffect);
 }
 
 // ===========================================================================

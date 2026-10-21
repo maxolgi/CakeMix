@@ -73,6 +73,12 @@ pub const MEMORY_CLASS_CAP: u32 = 96;
 /// it can never bind first).
 const FX_LIVELOOPER: i16 = 82;
 
+/// Catalog id of the tuner (gxtuner.lv2, mono) — named because it is
+/// the one effect whose audio path is BIT-transparent (the NSDF pitch
+/// tracker only reads the input; see [`out_port_ids`] for its FREQ
+/// control OUTPUT port).
+const FX_TUNER: i16 = 81;
+
 /// Cap on concurrently CREATED looper slots across all racks
 /// (sizing: one looper slot ≈ 128 MiB of tapes when enabled —
 /// 2 × 64 MiB, allocated lazily at first activate, so the cap bounds
@@ -102,12 +108,14 @@ fn is_memory_class(fx: i16) -> bool {
 /// catalog generation doesn't carry out-port declarations, so these
 /// are HARDCODED from each effect's PortIndex enum (the same source
 /// the catalog's param ports were transcribed from), pending catalog
-/// support. Today: the looper (id 82) — bar1..4 (ports 14..17, record
-/// time meters) → row 0..3, playh1..4 (ports 32..35, play heads) →
-/// row 4..7 (OctOBX fx_connect_out_ports order). The tuner (id 81)
-/// will add its FREQ row here.
+/// support. Today: the tuner (id 81) — FREQ (port 0, detected
+/// frequency in Hz, 0 = silent) → row 0; the looper (id 82) —
+/// bar1..4 (ports 14..17, record time meters) → row 0..3, playh1..4
+/// (ports 32..35, play heads) → row 4..7 (OctOBX fx_connect_out_ports
+/// order).
 fn out_port_ids(fx: i16) -> &'static [c_int] {
     match fx {
+        FX_TUNER => &[0],
         FX_LIVELOOPER => &[14, 15, 16, 17, 32, 33, 34, 35],
         _ => &[],
     }
@@ -1071,6 +1079,7 @@ mod c_floor {
         asin(f64) => libm::asin; acos(f64) => libm::acos; atan(f64) => libm::atan;
         sinh(f64) => libm::sinh; cosh(f64) => libm::cosh; tanh(f64) => libm::tanh;
         exp(f64) => libm::exp;   log(f64) => libm::log;   log2(f64) => libm::log2;
+        exp2(f64) => libm::exp2;
         log10(f64) => libm::log10;
         fabs(f64) => libm::fabs; floor(f64) => libm::floor; ceil(f64) => libm::ceil;
         round(f64) => libm::round; sqrt(f64) => libm::sqrt;
@@ -1078,6 +1087,7 @@ mod c_floor {
         asinf(f32) => libm::asinf; acosf(f32) => libm::acosf; atanf(f32) => libm::atanf;
         sinhf(f32) => libm::sinhf; coshf(f32) => libm::coshf; tanhf(f32) => libm::tanhf;
         expf(f32) => libm::expf;   logf(f32) => libm::logf;   log2f(f32) => libm::log2f;
+        exp2f(f32) => libm::exp2f;
         log10f(f32) => libm::log10f;
         fabsf(f32) => libm::fabsf; floorf(f32) => libm::floorf; ceilf(f32) => libm::ceilf;
         roundf(f32) => libm::roundf; sqrtf(f32) => libm::sqrtf;
@@ -1147,17 +1157,13 @@ mod tests {
         for (fx, &want) in stereo.iter().enumerate() {
             assert_eq!(is_stereo(fx as i16), want != 0, "fx {fx}");
         }
-        // Availability: every ported family is live — the standard
-        // families (drive, eq, wah, mod, time incl. the gxtape tail,
-        // reverb, amps, multiband/utility, bigmuffpi) flipped with their
-        // tiered honesty suite; ids 76..82 remain null factories (the
-        // convolver wrappers, detune, tuner, livelooper TUs are the
-        // next waves).
-        for fx in 0..76 {
+        // Availability: EVERY catalog id is live — the standard families
+        // (drive, eq, wah, mod, time, reverb, amps, multiband/utility,
+        // bigmuffpi) flipped with their tiered honesty suite, and the
+        // final wave (conv family 76..79, detune, tuner, livelooper)
+        // completed the catalog: all 83 factories are non-null.
+        for fx in 0..83 {
             assert!(is_available(fx), "fx {fx} must be available");
-        }
-        for fx in 76..83 {
-            assert!(!is_available(fx), "fx {fx} must report unavailable");
         }
         // Memory-class flag (catalog `memory`): for the live eleven
         // exactly delay/echo/reverb (the old hardcoded set).
@@ -1165,16 +1171,11 @@ mod tests {
             assert_eq!(is_memory_class(fx as i16), matches!(fx, 8..=10), "fx {fx}");
         }
         // ...and the later-wave memory families carry the flag in the
-        // catalog too — available now (ported) for duck_delay/zita,
-        // still unavailable for the holdouts (spot ids: 45 duck_delay,
-        // 57 zita_rev1, 76 cabinet, 82 livelooper).
-        for fx in [45, 57] {
+        // catalog too (spot ids: 45 duck_delay, 57 zita_rev1, 76
+        // cabinet, 82 livelooper — all live now).
+        for fx in [45, 57, 76, 82] {
             assert!(is_memory_class(fx), "fx {fx} must be memory-class");
             assert!(is_available(fx), "fx {fx} is ported (memory-class)");
-        }
-        for fx in [76, 82] {
-            assert!(is_memory_class(fx), "fx {fx} must be memory-class");
-            assert!(!is_available(fx), "fx {fx} is not ported yet");
         }
         assert!(
             !is_memory_class(80),
@@ -1189,22 +1190,23 @@ mod tests {
     #[test]
     fn unavailable_ids_are_rejected_and_leave_no_state() {
         let mut r = rack();
-        // cabinet (id 76) is in the catalog but its factory is null (the
-        // convolver-family TU is not ported): set_slot must fail
-        // Unavailable and leave the slot empty.
-        assert_eq!(r.set_slot(0, 3, 76).unwrap_err(), GxFxError::Unavailable);
-        assert_eq!(r.slot_effect(0, 3).unwrap(), -1);
-        assert_eq!(r.slot_instances(0, 3).unwrap(), 0);
-        assert_eq!(r.memory_class_instances(), 0);
-        // Same at the catalog's end (livelooper, id 82).
-        assert_eq!(r.set_slot(0, 3, 82).unwrap_err(), GxFxError::Unavailable);
-        // Ids PAST the catalog are BadEffect, not Unavailable.
+        // No catalog id is unavailable anymore (all 83 factories live),
+        // so the Unavailable rejection path is exercised by the catalog
+        // BOUNDARY: ids past the end are BadEffect (not Unavailable —
+        // that error only fires for in-catalog null factories, of which
+        // none remain).
         assert_eq!(r.set_slot(0, 3, 83).unwrap_err(), GxFxError::BadEffect);
         assert_eq!(r.set_slot(0, 3, 3000).unwrap_err(), GxFxError::BadEffect);
-        // The ported wave (ids 0..=75) all set cleanly (distortion and
-        // bigmuffpi ride their own TU, the families theirs).
-        for fx in 0..76i16 {
-            r.set_slot(0, 0, fx).unwrap();
+        assert_eq!(r.set_slot(0, 3, -2).unwrap_err(), GxFxError::BadEffect);
+        assert_eq!(r.slot_effect(0, 3).unwrap(), -1, "nothing was set");
+        assert_eq!(r.slot_instances(0, 3).unwrap(), 0);
+        assert_eq!(r.memory_class_instances(), 0);
+        // The full catalog (ids 0..=82) all set cleanly, including the
+        // final wave's conv family + specials (cabinet 76..79 set
+        // their convolver IRs, livelooper 82 rides the looper cap).
+        for fx in 0..83i16 {
+            r.set_slot(0, 0, fx)
+                .unwrap_or_else(|err| panic!("fx {fx} must be live: {err:?}"));
         }
     }
 
@@ -1328,12 +1330,12 @@ mod tests {
         r.set_slot(63, 10, 0).unwrap();
     }
 
-    /// The looper's out-port surface: constants, error identity, and —
-    /// the real invariant — the hardcoded out-port ids (from the
-    /// livelooper PortIndex enum, pending catalog out-port support)
-    /// must not collide with any of the effect's CATALOG param ports
-    /// (a collision would route a knob into a meter row). Runnable
-    /// now: param defs come from the static catalog, no factory
+    /// The looper's + tuner's out-port surface: constants, error
+    /// identity, and — the real invariant — the hardcoded out-port ids
+    /// (from each effect's PortIndex enum, pending catalog out-port
+    /// support) must not collide with any of the effect's CATALOG param
+    /// ports (a collision would route a knob into a meter row).
+    /// Runnable now: param defs come from the static catalog, no factory
     /// needed.
     #[test]
     fn looper_out_port_surface() {
@@ -1350,10 +1352,20 @@ mod tests {
                 "livelooper param {p} port {port} collides with an out port"
             );
         }
-        // Every other effect: no out ports declared yet (the tuner's
-        // FREQ row lands with its wave).
+        // The tuner's FREQ row (PortIndex 0, control OUTPUT): its two
+        // catalog params ride ports 1 (REFFREQ) and 4 (THRESHOLD) — no
+        // collision.
+        assert_eq!(out_port_ids(FX_TUNER), &[0]);
+        for p in 0..param_count(FX_TUNER) {
+            let port = param_port(FX_TUNER, p);
+            assert!(
+                !out_port_ids(FX_TUNER).contains(&port),
+                "tuner param {p} port {port} collides with an out port"
+            );
+        }
+        // Every other effect: no out ports declared.
         for fx in 0..effect_count() {
-            if fx != FX_LIVELOOPER {
+            if fx != FX_LIVELOOPER && fx != FX_TUNER {
                 assert!(out_port_ids(fx).is_empty(), "fx {fx}");
             }
         }
@@ -1362,19 +1374,10 @@ mod tests {
     /// The SEPARATE looper cap (LOOPER_CAP — one looper slot ≈ 128 MiB
     /// of tapes at first activate, far beyond what the generic
     /// MEMORY_CLASS_CAP sizing assumes). Requires the REAL factory to
-    /// drive `set_slot` honestly, so it is gated on id 82's
-    /// availability: until the final wave flips factory row 82 (with
-    /// its honesty tests) it stays skipped — `set_slot(82)` fails
-    /// Unavailable long before any cap arithmetic could run.
+    /// drive `set_slot` honestly (live since the final wave's flip —
+    /// `catalog_shape` pins id 82's availability).
     #[test]
     fn looper_cap_enforced() {
-        if !is_available(FX_LIVELOOPER) {
-            eprintln!(
-                "skipped: livelooper (id 82) factory not flipped yet — \
-                 activates at the final wave's flip"
-            );
-            return;
-        }
         let mut r = rack();
         // Fill the board-wide cap across different pairs/slots.
         for i in 0..LOOPER_CAP {
@@ -1591,33 +1594,31 @@ mod tests {
         assert_eq!(delay["params"][0]["integer"], true);
         assert_eq!(delay["memory"], true, "delay is memory-class");
         assert_eq!(delay["available"], true);
-        // The live eleven are available; the ported wave covers ids
-        // 0..=75; the seven holdouts (76..82) are not-yet-ported catalog
-        // rows and must say so.
+        // The full catalog is live: every id (0..=82, the final wave's
+        // conv family + detune/tuner/livelooper included) says so.
         for (i, e) in effects.iter().enumerate() {
-            assert_eq!(e["available"], i < 76, "effect {i}");
+            assert_eq!(e["available"], true, "effect {i}");
         }
-        // ...and the memory-class flag is exposed for later waves too
-        // (duck_delay 45, zita 57 now live; cabinet 76, livelooper 82
-        // still holdouts).
-        for (i, key, avail) in [
-            (45, "duck_delay", true),
-            (57, "zita_rev1", true),
-            (76, "cabinet", false),
-            (82, "livelooper", false),
+        // ...and the memory-class flag is exposed across waves too
+        // (duck_delay 45, zita 57, cabinet 76, livelooper 82).
+        for (i, key) in [
+            (45, "duck_delay"),
+            (57, "zita_rev1"),
+            (76, "cabinet"),
+            (82, "livelooper"),
         ] {
             assert_eq!(effects[i]["key"], key);
             assert_eq!(effects[i]["memory"], true);
-            assert_eq!(effects[i]["available"], avail);
+            assert_eq!(effects[i]["available"], true);
         }
-        // Last row: livelooper (39 params, mono, unavailable).
+        // Last row: livelooper (39 params, mono, available).
         let looper = effects.last().unwrap();
         assert_eq!(looper["id"], 82);
         assert_eq!(looper["key"], "livelooper");
         assert_eq!(looper["label"], "Live Looper");
         assert_eq!(looper["category"], "special");
         assert_eq!(looper["stereo"], false);
-        assert_eq!(looper["available"], false);
+        assert_eq!(looper["available"], true);
         assert_eq!(looper["params"].as_array().unwrap().len(), 39);
         // A zero-param effect serializes an empty params array (autowah).
         assert_eq!(effects[36]["key"], "autowah");

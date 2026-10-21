@@ -26,8 +26,8 @@ fn mixer() -> MixerWasm {
 
 /// The fx_* setters validate their addressing exactly like the rest of
 /// the console: pair owner must be an even input strip, slots 0..11,
-/// effect ids -1..=catalog max; the rack's unavailable-effect error
-/// surfaces; rejected calls leave the chain untouched.
+/// effect ids -1..=catalog max; rejected calls leave the chain
+/// untouched.
 #[test]
 fn fx_api_validates_channel_slot_and_effect() {
     let mut m = mixer();
@@ -50,18 +50,14 @@ fn fx_api_validates_channel_slot_and_effect() {
     );
     assert!(m.fx_set_slot(0, 99, 0).is_err(), "slot 99 rejected");
     // Effect id range -1..=82; ids past the catalog are rejected before
-    // the i16 cast, and in-catalog ids whose DSP is not ported yet
-    // (cabinet, id 76 — the convolver family is a future wave) fail as
-    // "effect unavailable".
+    // the i16 cast. (The "effect unavailable" path has no in-catalog
+    // trigger left — all 83 factories are live; it now fires only for a
+    // future id whose factory row is flipped back off.)
     assert!(m.fx_set_slot(0, 0, 83).is_err(), "fx id 83 rejected");
     assert!(m.fx_set_slot(0, 0, -2).is_err(), "fx id -2 rejected");
     assert!(
         m.fx_set_slot(0, 0, 100_000).is_err(),
         "huge fx id rejected before the i16 cast"
-    );
-    assert!(
-        m.fx_set_slot(0, 0, 76).is_err(),
-        "not-yet-ported fx id 76 rejected (null factory)"
     );
     // Distortion (id 2) landed with its TU: it sets like any effect
     // (then cleared, so the untouched-chain sweep below stays uniform).

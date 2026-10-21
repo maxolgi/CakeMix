@@ -1,7 +1,7 @@
 // gxfx_dsp_eleven.cpp — the v1 "eleven" guitarix faust DSP effects as
 // freestanding object code for the CakeMix mixer engine
 // (crates/mixer-wasm), plus the archive-wide factory table wiring every
-// ported family's rows (ids 0..75 live; 76..82 await their TUs).
+// ported family's rows (all 83 ids live).
 //
 // Provenance: productionized port of OctOBX wasm/obxd/gxfx_dsp.cpp (the
 // authoritative wrapper TU). Each faust class is pulled into its own
@@ -211,16 +211,27 @@ PluginLV2* gxfx_create_balance();
 PluginLV2* gxfx_create_outputlevel();
 PluginLV2* gxfx_create_ampout();
 
-// Effect id (gxfx_catalog.h row order) → factory. Rows 0..75.
-// INCREMENTAL-PORT MODEL: the catalog (generated, 83 ids) is the complete
-// menu; availability is honest per id. Ids 76..82 are NULL factories —
-// their DSP TUs (cabinet/redeye/metalamp/metalhead convolver wrappers,
-// detune, tuner, livelooper) have not been ported yet, so gxfx_create
-// returns null, gxfx_effect_info reports available=0 and the engine's
-// set_slot rejects them as "effect unavailable" (the frontend greys them
-// out as "(not ported)"). Each port wave replaces a run of nulls with
-// real factories — flip the rows here, nothing else; the catalog header
-// and its JSON surface never change.
+// Convolution family (ids 76..79): gxfx_dsp_conv.cpp (kissfft-backed
+// partitioned convolver over the static cab tables).
+PluginLV2* gxfx_create_cabinet();
+PluginLV2* gxfx_create_redeye();
+PluginLV2* gxfx_create_metalamp();
+PluginLV2* gxfx_create_metalhead();
+
+// Specials: detune (id 80, smbPitchShift phase vocoder), tuner (id 81,
+// NSDF pitch tracker), livelooper (id 82, 4-tape live looper).
+PluginLV2* gxfx_create_detune();
+PluginLV2* gxfx_create_tuner();
+PluginLV2* gxfx_create_livelooper();
+
+// Effect id (gxfx_catalog.h row order) → factory. Rows 0..82 — the
+// FULL catalog is live. INCREMENTAL-PORT MODEL: the catalog (generated,
+// 83 ids) is the complete menu; availability is honest per id. A null
+// factory row makes gxfx_create return null, gxfx_effect_info report
+// available=0 and the engine's set_slot reject the id as "effect
+// unavailable" (the frontend greys it out as "(not ported)") — the state
+// every wave left its holdout ids in until their honesty tests landed
+// (none remain).
 static const gxfx_factory GXFX_FACTORIES[GXFX_EFFECT_COUNT] = {
     gxfx_create_wah,         /*  0 wah            */
     gxfx_create_overdrive,   /*  1 overdrive      */
@@ -298,11 +309,13 @@ static const gxfx_factory GXFX_FACTORIES[GXFX_EFFECT_COUNT] = {
     gxfx_create_outputlevel, /* 73 outputlevel    */
     gxfx_create_ampout,      /* 74 ampout         */
     gxfx_create_ampmodul,    /* 75 ampmodul       */
-    /* 76..82: not yet ported (null factories — see the comment above) */
-    0, /* 76 cabinet        */ 0, /* 77 redeye         */
-    0, /* 78 metalamp       */ 0, /* 79 metalhead      */
-    0, /* 80 detune         */ 0, /* 81 tuner          */
-    0, /* 82 livelooper     */
+    gxfx_create_cabinet,     /* 76 cabinet        */
+    gxfx_create_redeye,      /* 77 redeye         */
+    gxfx_create_metalamp,    /* 78 metalamp       */
+    gxfx_create_metalhead,   /* 79 metalhead      */
+    gxfx_create_detune,      /* 80 detune         */
+    gxfx_create_tuner,       /* 81 tuner          */
+    gxfx_create_livelooper,  /* 82 livelooper     */
 };
 
 static bool gxfx_id_ok(int fx)
