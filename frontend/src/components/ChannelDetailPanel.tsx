@@ -158,17 +158,23 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
   // - stereo (input strips): channelIndex is a STEREO channel t (0..63).
   //   Reads/writes go through the StereoChannel store and the setStereo*
   //   fan-out helpers (which also mirror the mono store and post to BOTH
-  //   engine strips 2t/2t+1). Single meter = L side for now (dual meters
-  //   come with the strip redesign).
+  //   engine strips 2t/2t+1). The strip bottom is the two-column stereo
+  //   layout (meters+SOLO | fader+MUTE) with dual L/R meters.
   // - mono (bus slots, channelIndex >= SLOT_BASE): exactly the old path.
   const stereoMode = props.stereo === true;
   const idx = props.channelIndex;
   const ch = () => (stereoMode ? stereoChannels[idx] : channels[idx]);
-  // Fields whose names/shape differ between the two stores.
+  // Fields whose names/shape differ between the two stores. The mono/bus
+  // bottom reads the mono store's single meter; the stereo bottom reads
+  // meters.peak/rms per side inline in its JSX below.
   const panVal = () => (stereoMode ? stereoChannels[idx].balance : channels[idx].pan);
-  const peakDbVal = () => (stereoMode ? stereoChannels[idx].meters.peakL : channels[idx].peakDb);
-  const rmsDbVal = () => (stereoMode ? stereoChannels[idx].meters.rmsL : channels[idx].rmsDb);
-  const grVal = () => (stereoMode ? stereoChannels[idx].meters.grL : channels[idx].compGrDb);
+  const peakDbVal = () => channels[idx].peakDb;
+  const rmsDbVal = () => channels[idx].rmsDb;
+  // GR (COMP section readout): stereo shows the DEEPER of the two sides'
+  // reductions — max(|grL|, |grR|); mono keeps its own strip value.
+  const grVal = () => (stereoMode
+    ? Math.max(Math.abs(stereoChannels[idx].meters.grL), Math.abs(stereoChannels[idx].meters.grR))
+    : channels[idx].compGrDb);
   const degradedVal = () => (stereoMode ? stereoChannels[idx].meters.degraded : channels[idx].degraded);
 
   // Control adapter: one bound setter set per path. Stereo fans out via
@@ -612,10 +618,10 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
       </div>
       )}
 
-      {/* ── PAN ───────────────────────────────────────── */}
+      {/* ── PAN (mono/bus) / BALANCE (stereo) ────────── */}
       <div class="detail-section">
         <div class="detail-section-divider">
-          <span class="detail-section-label">PAN</span>
+          <span class="detail-section-label">{stereoMode ? "BAL" : "PAN"}</span>
         </div>
         <div class="detail-pan-row">
           <input
@@ -624,55 +630,139 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
             min={-1} max={1} step={0.01}
             value={panVal()}
             onInput={(e) => S.pan(parseFloat(e.currentTarget.value))}
-            title="Pan"
+            title={stereoMode
+              ? "Stereo balance — offsets the L/R pair's image left (L) or right (R); C leaves it centered"
+              : "Pan"}
           />
+          {stereoMode && (
+            <span class="pan-val" title="Stereo balance position (L100 … C … R100)">
+              {fmtPan(panVal())}
+            </span>
+          )}
         </div>
       </div>
 
       {/* ── METER + FADER ──────────────────────────────── */}
-      <div class="detail-section detail-output">
-        <div class="detail-meter-fader">
-          {/* Single meter for now — stereo mode shows the L side (dual
-              meters land with the strip redesign). */}
-          <MeterCanvas peakDb={peakDbVal()} rmsDb={rmsDbVal()} width={14} height={160} />
-          <div class="fader-col">
-            <span
-              class={`strip-gated ${degradedVal() ? "on" : ""}`}
-              title="Stream health gate: this strip's delivery is pathologically lossy/bursty (e.g. TSBPD latency below the network's jitter, constant SRT drops) — the mixer faded it to silence to protect the output. Raise the receive latency or fix the connection; the strip returns automatically once delivery is clean."
-            >GATED</span>
-            <span class="fader-val">{formatGainDb(ch().gain)}</span>
-            <div class="fader-wrap">
-              <input
-                type="range"
-                class="fader"
-                min={0} max={1} step={0.001}
-                value={gainToFader(ch().gain)}
-                onInput={(e) => S.fader(parseFloat(e.currentTarget.value))}
-                onWheel={(e) => {
-                  e.preventDefault();
-                  const step = e.shiftKey ? 0.002 : 0.01;
-                  const delta = e.deltaY > 0 ? -step : step;
-                  const cur = gainToFader(ch().gain);
-                  S.fader(Math.max(0, Math.min(1, cur + delta)));
-                }}
-                title="Channel fader"
-              />
+      {stereoMode ? (
+        /* Stereo strip bottom, two side-by-side columns (bottom-aligned
+         * so SOLO/MUTE share a baseline and the meter scale lines up
+         * with the fader scale): LEFT = monitoring (slim L + R meters,
+         * SOLO directly beneath), RIGHT = mix (level fader, MUTE
+         * directly beneath). While no source maps to the right side the
+         * R meter dims with a mono badge — the strip stays fully
+         * functional. */
+        <div class="detail-section detail-output">
+          <div class="strip-bottom">
+            <div class="strip-col strip-col-meters">
+              <div class="strip-meters">
+                <div
+                  class="strip-meter"
+                  title="Left side level — peak bar with RMS average (dBFS)"
+                >
+                  <MeterCanvas
+                    peakDb={stereoChannels[idx].meters.peakL}
+                    rmsDb={stereoChannels[idx].meters.rmsL}
+                    width={10} height={160}
+                  />
+                </div>
+                <div
+                  class={`strip-meter${stereoChannels[idx].sideMapped.r ? "" : " dimmed"}`}
+                  title="Right side level — peak bar with RMS average (dBFS)"
+                >
+                  <MeterCanvas
+                    peakDb={stereoChannels[idx].meters.peakR}
+                    rmsDb={stereoChannels[idx].meters.rmsR}
+                    width={10} height={160}
+                  />
+                </div>
+                {!stereoChannels[idx].sideMapped.r && (
+                  <span
+                    class="strip-mono-badge"
+                    title="right side has no mapped source — mono material"
+                  >mono</span>
+                )}
+              </div>
+              <button
+                class={`btn-sm btn-solo ${ch().soloed ? "active" : ""}`}
+                onClick={() => S.solo()}
+                title="Solo this channel"
+              >S</button>
+            </div>
+            <div class="strip-col strip-col-fader">
+              <span
+                class={`strip-gated ${degradedVal() ? "on" : ""}`}
+                title="Stream health gate: this strip's delivery is pathologically lossy/bursty (e.g. TSBPD latency below the network's jitter, constant SRT drops) — the mixer faded it to silence to protect the output. Raise the receive latency or fix the connection; the strip returns automatically once delivery is clean."
+              >GATED</span>
+              <span class="fader-val">{formatGainDb(ch().gain)}</span>
+              <div class="fader-wrap">
+                <input
+                  type="range"
+                  class="fader"
+                  min={0} max={1} step={0.001}
+                  value={gainToFader(ch().gain)}
+                  onInput={(e) => S.fader(parseFloat(e.currentTarget.value))}
+                  onWheel={(e) => {
+                    e.preventDefault();
+                    const step = e.shiftKey ? 0.002 : 0.01;
+                    const delta = e.deltaY > 0 ? -step : step;
+                    const cur = gainToFader(ch().gain);
+                    S.fader(Math.max(0, Math.min(1, cur + delta)));
+                  }}
+                  title="Channel fader — level of the stereo pair (scroll to trim, Shift for fine)"
+                />
+              </div>
+              <button
+                class={`btn-sm btn-mute ${ch().muted ? "active" : ""}`}
+                onClick={() => S.mute()}
+                title="Mute this channel"
+              >M</button>
             </div>
           </div>
         </div>
-        <div class="detail-controls">
-          <button
-            class={`btn-sm btn-solo ${ch().soloed ? "active" : ""}`}
-            onClick={() => S.solo()}
-            title="Solo"
-          >S</button>
-          <button
-            class={`btn-sm btn-mute ${ch().muted ? "active" : ""}`}
-            onClick={() => S.mute()}
-            title="Mute"
-          >M</button>
+      ) : (
+        /* Mono/bus path: single-meter bottom, unchanged. */
+        <div class="detail-section detail-output">
+          <div class="detail-meter-fader">
+            <MeterCanvas peakDb={peakDbVal()} rmsDb={rmsDbVal()} width={14} height={160} />
+            <div class="fader-col">
+              <span
+                class={`strip-gated ${degradedVal() ? "on" : ""}`}
+                title="Stream health gate: this strip's delivery is pathologically lossy/bursty (e.g. TSBPD latency below the network's jitter, constant SRT drops) — the mixer faded it to silence to protect the output. Raise the receive latency or fix the connection; the strip returns automatically once delivery is clean."
+              >GATED</span>
+              <span class="fader-val">{formatGainDb(ch().gain)}</span>
+              <div class="fader-wrap">
+                <input
+                  type="range"
+                  class="fader"
+                  min={0} max={1} step={0.001}
+                  value={gainToFader(ch().gain)}
+                  onInput={(e) => S.fader(parseFloat(e.currentTarget.value))}
+                  onWheel={(e) => {
+                    e.preventDefault();
+                    const step = e.shiftKey ? 0.002 : 0.01;
+                    const delta = e.deltaY > 0 ? -step : step;
+                    const cur = gainToFader(ch().gain);
+                    S.fader(Math.max(0, Math.min(1, cur + delta)));
+                  }}
+                  title="Channel fader"
+                />
+              </div>
+            </div>
+          </div>
+          <div class="detail-controls">
+            <button
+              class={`btn-sm btn-solo ${ch().soloed ? "active" : ""}`}
+              onClick={() => S.solo()}
+              title="Solo"
+            >S</button>
+            <button
+              class={`btn-sm btn-mute ${ch().muted ? "active" : ""}`}
+              onClick={() => S.mute()}
+              title="Mute"
+            >M</button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
