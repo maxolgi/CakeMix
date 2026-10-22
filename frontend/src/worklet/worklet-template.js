@@ -95,6 +95,9 @@ class MixerProcessor extends AudioWorkletProcessor {
         // Log-once guard: non-zero-session pcm against a wasm build
         // without the keyed pid API (see _mapPidSid).
         this._keyedMissingWarned = false;
+        // Control-message failure log (see _warnCtl): one console.warn
+        // per unique (message type, error) pair.
+        this._warnedCtl = Object.create(null);
 
         this.port.onmessage = (e) => {
             var msg = e.data;
@@ -118,21 +121,21 @@ class MixerProcessor extends AudioWorkletProcessor {
                 // Test tones feed mixer inputs 0..3 whenever the engine runs.
                 this._tonesOn = !!msg.on;
             } else if (msg.type === "set-gain") {
-                if (this._mixer) try { this._mixer.set_channel_gain(msg.ch, msg.gain); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_channel_gain(msg.ch, msg.gain); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-pan") {
-                if (this._mixer) try { this._mixer.set_channel_pan(msg.ch, msg.pan); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_channel_pan(msg.ch, msg.pan); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-mute") {
-                if (this._mixer) try { this._mixer.set_channel_mute(msg.ch, msg.muted); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_channel_mute(msg.ch, msg.muted); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-solo") {
-                if (this._mixer) try { this._mixer.set_channel_solo(msg.ch, msg.soloed); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_channel_solo(msg.ch, msg.soloed); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-eq-gain") {
-                if (this._mixer) try { this._mixer.set_eq_band_gain(msg.ch, msg.band, msg.gainDb); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_eq_band_gain(msg.ch, msg.band, msg.gainDb); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-eq-freq") {
-                if (this._mixer) try { this._mixer.set_eq_band_freq(msg.ch, msg.band, msg.freqHz); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_eq_band_freq(msg.ch, msg.band, msg.freqHz); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-eq-q") {
-                if (this._mixer) try { this._mixer.set_eq_band_q(msg.ch, msg.band, msg.q); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_eq_band_q(msg.ch, msg.band, msg.q); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-eq-bypass") {
-                if (this._mixer) try { this._mixer.set_eq_bypass(msg.ch, msg.bypassed); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_eq_bypass(msg.ch, msg.bypassed); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "map-pid") {
                 if (this._mixer) try {
                     var mapSid = msg.sessionId || 0;
@@ -140,7 +143,7 @@ class MixerProcessor extends AudioWorkletProcessor {
                     // Explicit mapping registers without allocating (the
                     // auto-mapper skips it from then on).
                     this._pidMap[mapSid + ":" + msg.pid] = { sid: mapSid, pid: msg.pid, chStart: msg.chStart, channelCount: msg.channelCount };
-                } catch(e) {}
+                } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "unmap-pid") {
                 var unmapSid = msg.sessionId || 0;
                 if (this._mixer) this._unmapPidSid(unmapSid, msg.pid);
@@ -166,31 +169,31 @@ class MixerProcessor extends AudioWorkletProcessor {
                 // sessionId (default 0 in _onPcm).
                 this._onPcm(msg, msg.sessionId);
             } else if (msg.type === "set-input-gain") {
-                if (this._mixer) try { this._mixer.set_channel_input_gain(msg.ch, msg.gainDb); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_channel_input_gain(msg.ch, msg.gainDb); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-phase") {
-                if (this._mixer) try { this._mixer.set_channel_phase(msg.ch, msg.inverted); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_channel_phase(msg.ch, msg.inverted); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-pan-law") {
-                if (this._mixer) try { this._mixer.set_channel_pan_law(msg.ch, msg.law); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_channel_pan_law(msg.ch, msg.law); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-name") {
-                if (this._mixer) try { this._mixer.set_channel_name(msg.ch, msg.name); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_channel_name(msg.ch, msg.name); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "enable-compressor") {
-                if (this._mixer) try { this._mixer.enable_compressor(msg.ch); } catch(e) {}
+                if (this._mixer) try { this._mixer.enable_compressor(msg.ch); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "disable-compressor") {
-                if (this._mixer) try { this._mixer.disable_compressor(msg.ch); } catch(e) {}
+                if (this._mixer) try { this._mixer.disable_compressor(msg.ch); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-comp-param") {
-                if (this._mixer) try { this._mixer.set_comp_param(msg.ch, msg.param, msg.value); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_comp_param(msg.ch, msg.param, msg.value); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "enable-gate") {
-                if (this._mixer) try { this._mixer.enable_gate(msg.ch); } catch(e) {}
+                if (this._mixer) try { this._mixer.enable_gate(msg.ch); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "disable-gate") {
-                if (this._mixer) try { this._mixer.disable_gate(msg.ch); } catch(e) {}
+                if (this._mixer) try { this._mixer.disable_gate(msg.ch); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-gate-param") {
-                if (this._mixer) try { this._mixer.set_gate_param(msg.ch, msg.param, msg.value); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_gate_param(msg.ch, msg.param, msg.value); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "enable-expander") {
-                if (this._mixer) try { this._mixer.enable_expander(msg.ch); } catch(e) {}
+                if (this._mixer) try { this._mixer.enable_expander(msg.ch); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "disable-expander") {
-                if (this._mixer) try { this._mixer.disable_expander(msg.ch); } catch(e) {}
+                if (this._mixer) try { this._mixer.disable_expander(msg.ch); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-exp-param") {
-                if (this._mixer) try { this._mixer.set_expander_param(msg.ch, msg.param, msg.value); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_expander_param(msg.ch, msg.param, msg.value); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-fx-slot") {
                 // FX chain of the stereo pair owned by even strip ch
                 // (pair t = strips 2t/2t+1, 11 slots). fxId is a catalog
@@ -204,22 +207,22 @@ class MixerProcessor extends AudioWorkletProcessor {
                 // covers wasm builds without the fx API (TypeError) —
                 // surfacing that is fine too.
                 if (this._mixer) try { this._mixer.fx_set_slot(msg.ch, msg.slot, msg.fxId); }
-                catch(e) { this.port.postMessage({ type: "fx-error", op: "set-fx-slot", ch: msg.ch, slot: msg.slot, msg: String(e) }); }
+                catch(e) { this.port.postMessage({ type: "fx-error", op: "set-fx-slot", ch: msg.ch, slot: msg.slot, msg: String(e) }); this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-fx-enabled") {
                 if (this._mixer) try { this._mixer.fx_set_enabled(msg.ch, msg.slot, msg.on); }
-                catch(e) { this.port.postMessage({ type: "fx-error", op: "set-fx-enabled", ch: msg.ch, slot: msg.slot, msg: String(e) }); }
+                catch(e) { this.port.postMessage({ type: "fx-error", op: "set-fx-enabled", ch: msg.ch, slot: msg.slot, msg: String(e) }); this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-fx-param") {
                 // param is the param ORDINAL (catalog row order) in
                 // engine units; value is unconstrained (clamping is
                 // the UI's job). Errors post back as fx-error (above).
                 if (this._mixer) try { this._mixer.fx_set_param(msg.ch, msg.slot, msg.param, msg.value); }
-                catch(e) { this.port.postMessage({ type: "fx-error", op: "set-fx-param", ch: msg.ch, slot: msg.slot, msg: String(e) }); }
+                catch(e) { this.port.postMessage({ type: "fx-error", op: "set-fx-param", ch: msg.ch, slot: msg.slot, msg: String(e) }); this._warnCtl(msg.type, e); }
             } else if (msg.type === "move-fx-slot") {
                 // slot in an fx-error reply is the FROM slot — the store
                 // keys its rollback snapshot there (the payload carries
                 // no `to`).
                 if (this._mixer) try { this._mixer.fx_move_slot(msg.ch, msg.from, msg.to); }
-                catch(e) { this.port.postMessage({ type: "fx-error", op: "move-fx-slot", ch: msg.ch, slot: msg.from, msg: String(e) }); }
+                catch(e) { this.port.postMessage({ type: "fx-error", op: "move-fx-slot", ch: msg.ch, slot: msg.from, msg: String(e) }); this._warnCtl(msg.type, e); }
             } else if (msg.type === "get-fx-catalog") {
                 // FX catalog pull (request/reply like get-params): the
                 // catalog JSON is the FX UI's source of truth. Unlike
@@ -245,30 +248,30 @@ class MixerProcessor extends AudioWorkletProcessor {
                 } catch(e) {}
                 this.port.postMessage({ type: "fx-out", ch: msg.ch, slot: msg.slot, values: fxOut });
             } else if (msg.type === "set-master-gain") {
-                if (this._mixer) try { this._mixer.set_master_gain(msg.gain); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_master_gain(msg.gain); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-limiter") {
-                if (this._mixer) try { this._mixer.set_limiter_enabled(msg.enabled); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_limiter_enabled(msg.enabled); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-limiter-ceiling") {
-                if (this._mixer) try { this._mixer.set_limiter_ceiling(msg.ceilingDb); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_limiter_ceiling(msg.ceilingDb); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-limiter-release") {
-                if (this._mixer) try { this._mixer.set_limiter_release(msg.releaseMs); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_limiter_release(msg.releaseMs); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "clear-clip") {
-                if (this._mixer) try { this._mixer.master_clear_clip(); } catch(e) {}
+                if (this._mixer) try { this._mixer.master_clear_clip(); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-main-assign") {
-                if (this._mixer) try { this._mixer.set_channel_main_assign(msg.ch, msg.on); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_channel_main_assign(msg.ch, msg.on); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-bus-feeds-main") {
                 // Feature-detected: wasm builds without set_bus_feeds_main
                 // keep the bus as an independent mix feeding master (default).
                 if (this._mixer && typeof this._mixer.set_bus_feeds_main === "function")
-                    try { this._mixer.set_bus_feeds_main(msg.bus, msg.on); } catch(e) {}
+                    try { this._mixer.set_bus_feeds_main(msg.bus, msg.on); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-bus-source") {
-                if (this._mixer) try { this._mixer.set_bus_source(msg.bus, msg.slot, msg.ch); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_bus_source(msg.bus, msg.slot, msg.ch); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "clear-bus-source") {
-                if (this._mixer) try { this._mixer.clear_bus_source(msg.bus, msg.slot); } catch(e) {}
+                if (this._mixer) try { this._mixer.clear_bus_source(msg.bus, msg.slot); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-bus-gain") {
-                if (this._mixer) try { this._mixer.set_bus_gain(msg.bus, msg.gain); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_bus_gain(msg.bus, msg.gain); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-bus-mute") {
-                if (this._mixer) try { this._mixer.set_bus_mute(msg.bus, msg.muted); } catch(e) {}
+                if (this._mixer) try { this._mixer.set_bus_mute(msg.bus, msg.muted); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "scene-save") {
                 // Feature-detected: wasm builds without the scene API stay
                 // inert (no scene-saved event comes back, so no chip appears).
@@ -277,7 +280,7 @@ class MixerProcessor extends AudioWorkletProcessor {
                     try {
                         var sceneId = this._mixer.save_scene();
                         this.port.postMessage({ type: "scene-saved", id: sceneId });
-                    } catch(e) {}
+                    } catch(e) { this._warnCtl(msg.type, e); }
                 }
             } else if (msg.type === "scene-recall") {
                 // Timed cross-fade when the wasm has it, instant otherwise;
@@ -289,16 +292,16 @@ class MixerProcessor extends AudioWorkletProcessor {
                     try {
                         this._mixer.recall_scene_fade(msg.id, msg.fadeMs || 0);
                         this.port.postMessage({ type: "scene-recalled" });
-                    } catch(e) {}
+                    } catch(e) { this._warnCtl(msg.type, e); }
                 } else if (this._mixer && typeof this._mixer.recall_scene === "function") {
                     try {
                         this._mixer.recall_scene(msg.id);
                         this.port.postMessage({ type: "scene-recalled" });
-                    } catch(e) {}
+                    } catch(e) { this._warnCtl(msg.type, e); }
                 }
             } else if (msg.type === "scene-delete") {
                 if (this._mixer && typeof this._mixer.delete_scene === "function") {
-                    try { this._mixer.delete_scene(msg.id); } catch(e) {}
+                    try { this._mixer.delete_scene(msg.id); } catch(e) { this._warnCtl(msg.type, e); }
                 }
             } else if (msg.type === "get-params") {
                 // Console-state pull (the reply to scene-recalled):
@@ -308,7 +311,7 @@ class MixerProcessor extends AudioWorkletProcessor {
                 // fade target.
                 if (this._mixer) try {
                     this.port.postMessage({ type: "console-params", json: this._mixer.console_params_json() });
-                } catch(e) {}
+                } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "pub-start") {
                 // Enable the publish tap. Source "master" (default): msg.channels
                 // outputs — 2 taps the master stereo pair, 16/32/64/128 switch
@@ -432,6 +435,23 @@ class MixerProcessor extends AudioWorkletProcessor {
         }
 
         return true;
+    }
+
+    // Control-message failure log: one console.warn per unique
+    // (message type, error) pair. A failing console setter must not die
+    // silently — the live-E2E scene-recall bug (2026-10-21) was
+    // invisible for exactly this reason: a poisoned wasm object threw
+    // "recursive use of an object detected..." on every subsequent
+    // control call and every catch swallowed it, while audio kept
+    // running. Rate-limited per unique pair so a repeatedly-failing op
+    // cannot spam the console. CONTROL MESSAGES ONLY — the per-block
+    // render path (process, meters, taps, pub) and the PCM feed path
+    // stay silent by design.
+    _warnCtl(op, e) {
+        var k = op + "|" + String(e);
+        if (this._warnedCtl[k]) return;
+        this._warnedCtl[k] = true;
+        console.warn("[mixer] control message failed: " + op + ": " + e);
     }
 
     // Publish tap: append this block's audio to the accumulator — in "bus"

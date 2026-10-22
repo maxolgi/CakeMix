@@ -994,7 +994,18 @@ mod c_floor {
         if bytes == 0 {
             return ptr::null_mut();
         }
-        let layout = Layout::from_size_align(bytes, ALIGN).expect("checked product is valid");
+        // Same header contract as malloc: the chunk is allocated at
+        // bytes + HEADER so the layout free() reconstructs from the
+        // header (bytes + HEADER) EXACTLY matches this allocation —
+        // Rust's GlobalAllocator requires identical layouts, and the
+        // previous bytes-only allocation violated that (dlmalloc's
+        // free asserted on the first calloc'd chunk: LLVM folds the
+        // gxfx tuner's fftwf_malloc + trailing memset into calloc, so
+        // this path is live — malloc(0) rides the header the same way).
+        let Some(total) = bytes.checked_add(HEADER) else {
+            return ptr::null_mut();
+        };
+        let layout = Layout::from_size_align(total, ALIGN).expect("checked product is valid");
         let base = unsafe { alloc_zeroed(layout) };
         if base.is_null() {
             return ptr::null_mut();

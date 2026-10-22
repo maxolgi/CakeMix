@@ -247,6 +247,78 @@ fn scene_fade_snaps_fx_once_at_start() {
 
 // ── Console-params JSON ────────────────────────────────────────────────
 
+/// An EMPTY slot mid-chain passes audio through: the pair pass skips
+/// empty slots entirely (`fx < 0`), so a delay behind two empty slots —
+/// one never set, one set-then-cleared — still produces its echo at the
+/// master. Pins the chain semantics the live-E2E report questioned
+/// ("minor finding 1"): an empty slot is a no-op, not a silence gate.
+#[test]
+fn empty_slots_mid_chain_pass_audio_through() {
+    let mut m = mixer();
+    m.set_limiter_enabled(false);
+    m.set_channel_gain(0, 1.0).unwrap();
+    m.set_channel_gain(1, 1.0).unwrap();
+    m.set_eq_bypass(0, true).unwrap();
+    m.set_eq_bypass(1, true).unwrap();
+
+    // Slot 0: never set (empty by construction). Slot 1: set, then
+    // CLEARED (teardown path). Slot 2: the delay that must still hear
+    // the input through both.
+    m.fx_set_slot(0, 1, 2).unwrap(); // distortion, immediately cleared
+    m.fx_set_slot(0, 1, -1).unwrap();
+    m.fx_set_slot(0, 2, 8).unwrap(); // delay
+    m.fx_set_param(0, 2, 3, 0.0).unwrap(); // L_GAIN 0 dB
+    m.fx_set_param(0, 2, 4, 250.0).unwrap(); // L_TIME 250 ms
+    m.fx_set_enabled(0, 2, true).unwrap();
+
+    let silence = vec![0.0f32; BS];
+    for _ in 0..64 {
+        m.feed_interleaved(0, &silence, 1).unwrap();
+        m.feed_interleaved(1, &silence, 1).unwrap();
+        m.process_block(BLOCK).unwrap();
+    }
+    let mut impulse = vec![0.0f32; BS];
+    impulse[0] = 1.0;
+
+    let echo_at = (250.0 * SR as f32 / 1000.0) as usize;
+    let echo_block = echo_at / BS;
+    let blocks = echo_block + 4;
+    let mut left: Vec<f32> = Vec::with_capacity(blocks * BS);
+    for b in 0..blocks {
+        let feed_l: &[f32] = if b == 0 { &impulse } else { &silence };
+        m.feed_interleaved(0, feed_l, 1).unwrap();
+        m.feed_interleaved(1, &silence, 1).unwrap();
+        let out = m.process_block(BLOCK).expect("process");
+        for i in 0..BS {
+            left.push(out[i * 2]);
+        }
+    }
+
+    // The dry impulse arrived untouched (empty slots are transparent)…
+    assert!(
+        (left[0] - 0.5).abs() < 1e-6,
+        "dry impulse must pass the empty slots at pan gain, got {}",
+        left[0]
+    );
+    // …and the delay behind them still produced the echo.
+    let lo = echo_at - 2;
+    let hi = (echo_at + 2).min(left.len() - 1);
+    let (pos, peak) = left[lo..=hi]
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+        .map(|(i, &v)| (lo + i, v))
+        .expect("window is non-empty");
+    assert!(
+        (pos as i32 - echo_at as i32).abs() <= 2,
+        "echo at {pos}, expected {echo_at}"
+    );
+    assert!(
+        (0.49..=0.51).contains(&peak),
+        "echo amplitude {peak} ≈ 0.5 — empty upstream slots must not gate it"
+    );
+}
+
 /// The console JSON carries the FX chains in the shape the scene
 /// stores (per pair, per slot: id + enabled + params), with only the
 /// LIVE param ordinals on the wire; pairs without any effect are
