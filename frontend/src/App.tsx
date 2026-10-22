@@ -11,7 +11,7 @@ import { BusMasterStrip } from "./components/BusMasterStrip";
 import { BusManager } from "./components/BusManager";
 import { QuicSRTPanel } from "./components/QuicSRTPanel";
 import {
-  updateMeterData, applyConsoleParams, applyFxCatalog, applyFxError, applyFxOut, requestFxCatalog,
+  updateMeterData, applyConsoleParams, applyFxCatalog, applyFxError, applyFxOut, requestFxCatalog, applySideMapped,
   fxLastError, setFxLastError,
   wasmReady, setWasmReady, isRunning, setIsRunning,
   status, setStatus, setMixerNode, sendToWorklet,
@@ -19,6 +19,7 @@ import {
 } from "./stores/mixer";
 
 const SAMPLE_RATE = 48000;
+/** Stereo channels per bank: 64 stereo channels → 4 banks (16 each). */
 const STRIPS_PER_BANK = 16;
 
 export default function App() {
@@ -70,7 +71,18 @@ export default function App() {
           // Cumulative worklet-side pcm drop count rides the meter tick.
           if (typeof msg.droppedPcm === "number") quicsrtStore.onWorkletPcmDropped(msg.droppedPcm);
         }
-        else if (msg.type === "pid-mapped") { quicsrtStore.onWorkletPidMapped(msg); }
+        else if (msg.type === "pid-mapped") {
+          quicsrtStore.onWorkletPidMapped(msg);
+          // Mirror the mapping into the stereo store's sideMapped flags:
+          // ch range [chStart, chStart+count). chStart -1 = capped (PCM
+          // dropped worklet-side) → nothing to mark. Unmapped sessions
+          // never echo (see applySideMapped's note).
+          if (typeof msg.chStart === "number" && msg.chStart >= 0) {
+            for (let ch = msg.chStart; ch < msg.chStart + msg.channelCount; ch++) {
+              applySideMapped(ch, true);
+            }
+          }
+        }
         else if (msg.type === "scene-saved") { scenesStore.addScene(msg.id); }
         // Scene-recall UI loop: a recall happened in the mixer — pull the
         // console state back so sliders/knobs reflect it (otherwise the
@@ -148,8 +160,10 @@ export default function App() {
       <QuicSRTPanel expanded={settingsExpanded()} />
       <div class="mixer-console">
         {selectedBus() === null ? (
+          // Inputs view: 64 stereo channels (bank of 16; channel t = engine
+          // strips 2t/2t+1 — the panel fans every control out to both).
           <For each={Array.from({ length: STRIPS_PER_BANK }, (_, i) => bank() * STRIPS_PER_BANK + i)}>
-            {(chIdx) => <ChannelDetailPanel channelIndex={chIdx} />}
+            {(t) => <ChannelDetailPanel channelIndex={t} stereo />}
           </For>
         ) : (
           <For each={Array.from({ length: 16 }, (_, s) => s)}>

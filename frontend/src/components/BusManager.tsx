@@ -38,13 +38,15 @@ export function BusManager(props: {
           title={props.mode === "inputs" ? "Switch to bus view" : "Switch to inputs view"}
         >{props.mode === "inputs" ? "INPUTS" : "BUS"}</button>
         <div class="bank-selector">
-          <For each={[0, 1, 2, 3, 4, 5, 6, 7]}>
+          {/* Inputs view: 4 banks of 16 stereo channels (64 total).
+              Bus view: 8 buses. */}
+          <For each={props.mode === "inputs" ? [0, 1, 2, 3] : [0, 1, 2, 3, 4, 5, 6, 7]}>
             {(b) => (
               <button
                 class={`bank-btn ${props.index === b ? "active" : ""}`}
                 onClick={() => props.onIndex(b)}
                 title={props.mode === "inputs"
-                  ? `Channels ${b * 16 + 1}–${(b + 1) * 16}`
+                  ? `Stereo channels ${b * 16 + 1}–${(b + 1) * 16}`
                   : `Bus ${b + 1}`}
               >{b + 1}</button>
             )}
