@@ -55,7 +55,10 @@ function pubBatchPtsUs(framesBeforeBatch) {
 class MixerProcessor extends AudioWorkletProcessor {
     constructor(options) {
         super();
-        this._tones = new Float32Array(TONE_FREQS.length);
+        // Per-tone phase counters (sample position) must be f64: an f32
+        // counter freezes at 2^24 samples (~349 s @ 48 kHz) once += 1
+        // falls below f32 precision, silently turning tones to DC.
+        this._tones = new Float64Array(TONE_FREQS.length);
         this._tonesOn = false;
         this._running = false;
         this._mixer = null;
@@ -119,7 +122,9 @@ class MixerProcessor extends AudioWorkletProcessor {
                 this._running = false;
             } else if (msg.type === "tones") {
                 // Test tones feed mixer inputs 0..3 whenever the engine runs.
+                // Toggling off resets the phase counters — fresh start on re-enable.
                 this._tonesOn = !!msg.on;
+                if (!this._tonesOn) this._tones.fill(0);
             } else if (msg.type === "set-gain") {
                 if (this._mixer) try { this._mixer.set_channel_gain(msg.ch, msg.gain); } catch(e) { this._warnCtl(msg.type, e); }
             } else if (msg.type === "set-pan") {
