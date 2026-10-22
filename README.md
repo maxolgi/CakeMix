@@ -4,11 +4,13 @@ Professional WASM audio mixer with QuicSRT I/O. Built on the real `oximedia-mixe
 
 ## Status
 
-Complete through M5: multi-session QuicSRT PCM input, 128-strip console
-(EQ, dynamics, 8 buses, scenes with cross-fade), QuicSRT publish.
+Complete through M5: multi-session QuicSRT PCM input, 128-strip engine
+presented as a 64-stereo-channel console (EQ, dynamics, 8 buses, scenes
+with cross-fade), QuicSRT publish.
 
 | Date | Milestone |
 |---|---|
+| 2026-10-22 | Stereo console presentation: the UI presents 64 stereo channels (16 per bank × 4 banks) over the unchanged 128-mono-strip engine — stereo t = strips 2t (L) / 2t+1 (R), every control fans out to both strips, PAN shown as BALANCE (center = L hard-left / R hard-right, true stereo passthrough — fixes the center-panned mono collapse the old per-strip pan caused). Strip bottom is two columns: monitoring (L+R meters, SOLO beneath) and mix (fader, MUTE beneath); mono badge + dimmed R meter on odd-width PIDs, GR = max(L,R), GATED if either side is stream-gated. FX chains native to every stereo channel (pair chains map 1:1, no even/odd ownership visible); bus slots stay per-mono-strip |
 | 2026-10-21 | gxfx catalog complete: all 83 effects live. Final wave flipped the last factory rows — convolution family 76–79 (cabinet/redeye/metalamp/metalhead over the kissfft-backed partitioned convolver + static cab-IR tables), detune 80 (smbPitchShift phase vocoder), tuner 81 (NSDF pitch tracker; FREQ lands on the slot's control-OUTPUT row), livelooper 82 (4×16 MiB tapes, separate LOOPER_CAP=4). Tiered honesty suite per AGENTS.md: per-effect smoke for every id + representative known-answers (cabinet IR tail + model-Off passthrough, detune +7 st ZCR ratio 1.4994 vs 1.4983, tuner FREQ 439.996 Hz→0.000 on silence, looper record→rplay RMS/frequency match) |
 | 2026-10-20 | gxfx E2E stall investigation: engine exonerated by measurement (native/wasm/live-Chrome, numbers in the FX section); regression gates added — `gxfx_timing_test` (release wall-time budgets per interactive op) and `gxfx_alloc_wasm` (wasm zero-allocation steady state + param writes; exact tape-set churn). Reproduced stall is a renderer-level main-thread seizure during FX knob drags, frontend/Chrome layer (survives with all set-fx-* messages dropped); dropped-pcm/AudioContext error in the severe E2E variant = the same seizure process-wide on the loaded tester machine |
 | 2026-10-20 | Per-pair guitarix FX insert chains: the real faust C++ DSP compiled freestanding from `vendor/guitarix` (`crates/mixer-wasm/gxfx/`), 11 effects honesty-tested and live (wah, overdrive, distortion — bossds1 via the gx_resampler/zita oversampling TU — compressor, chorus, flanger, phaser, tremolo, delay, echo, reverb), 11 slots per stereo pair post-EQ, FX rack UI, scene snap, engine-sourced catalog |
@@ -91,23 +93,36 @@ Web Audio / QuicSRT publish (master stereo, Nch direct-out taps, or any bus 1-8)
 
 ### Console
 
-128 input strips + 8 summing buses (16 slots each). Bus slots tap their
-source's **raw** signal — the source's fader/mute/EQ/dynamics never affect
-the bus path. Two routing toggles: **MAIN** per strip (off = the strip
-reaches master only via its bus slots) and **FEEDS MAIN** per bus (off =
-independent bus, still publishable). Live per-strip COMP GR meters.
-**Scenes** capture the entire console (strips, buses, master); recall is
-instant or cross-faded (dB-domain gains, audio-rate fade inside the mixer
-block — any user set cancels the fade). Multiple QuicSRT receive sessions
-run concurrently — PIDs are namespaced per session (keyed mapping), so
-different gateways/streams may reuse PID numbers.
+The engine keeps 128 mono input strips + 8 summing buses (16 slots each);
+the console presents them as **64 stereo channels** (16 per bank × 4
+banks). Stereo channel *t* is engine strips 2t (L) / 2t+1 (R), and every
+control fans out to both strips. PAN is presented as **BALANCE**: center
+puts L hard-left / R hard-right — true stereo passthrough, which also
+fixes the mono collapse the old per-strip center pan caused. Bus slots
+tap their source's **raw** signal — the source's fader/mute/EQ/dynamics
+never affect the bus path — and still address the underlying mono strips.
+Two routing toggles: **MAIN** per strip (off = the strip reaches master
+only via its bus slots) and **FEEDS MAIN** per bus (off = independent
+bus, still publishable). **Scenes** capture the entire console (strips,
+buses, master); recall is instant or cross-faded (dB-domain gains,
+audio-rate fade inside the mixer block — any user set cancels the fade).
+Multiple QuicSRT receive sessions run concurrently — PIDs are namespaced
+per session (keyed mapping), so different gateways/streams may reuse PID
+numbers.
+
+**Strip layout**: two bottom-aligned columns — monitoring (slim L + R
+meters with SOLO beneath) and mix (level fader with MUTE beneath). Mono
+sources (odd-width PIDs) show a `mono` badge with the R meter dimmed;
+COMP GR shows max(L, R); a `GATED` badge appears if either side is
+stream-gated.
 
 **FX chains** insert in the staging pass post-EQ, pre-meter/fader. The
-128 input strips form 64 stereo pairs; pair *t* (strips 2t/2t+1, the
-even strip owning) carries one 11-slot chain — any effect per slot or
-empty, per-slot IN/BYP, params in engine units. Stereo effects run
-native stereo across the pair, mono effects dual-mono. Eleven guitarix
-effects are live (wah, overdrive, distortion, compressor, chorus,
+128 input strips form 64 stereo pairs, each carrying one 11-slot chain —
+any effect per slot or empty, per-slot IN/BYP, params in engine units.
+The pairs map 1:1 to the presented stereo channels, so every channel has
+a native chain (no even/odd ownership is visible to the user). Stereo
+effects run native stereo across the pair, mono effects dual-mono. Eleven
+guitarix effects are live (wah, overdrive, distortion, compressor, chorus,
 flanger, phaser, tremolo, delay, echo, reverb). The effect catalog is
 delivered once from the engine (`fx_catalog_json`, single source of
 truth); DSP is created/activated eagerly at message time, never inside
