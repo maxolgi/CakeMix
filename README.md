@@ -131,6 +131,28 @@ messages dropped before the worklet — i.e. a frontend/Chrome-layer
 interaction, with the audio render thread never missing a quantum
 under the same workload.
 
+Metering hardening (2026-10-21 E2E follow-up, pinned by
+`tests/cabinet_meter_regression.rs` + `meter.rs` unit tests): the
+"cabinet pegs a strip meter at full scale" incident was root-caused to
+HOT-but-FINITE signal, not non-finite — the convolver is
+linear-bounded (verified across all 19 cab models × ttl-rail params ×
+full-scale program × both native-rate and resampled IRs; post-cab
+peaks reach +24 dB pre-fader, and the UI's `dbToNorm` caps every ≥0 dB
+value at full scale, so a loud cabinet legitimately pegs the bar while
+the master limiter keeps the audible path clean). The audit still
+found a real meter hole, now guarded with a floor-not-propagate
+policy: ±Inf slipped the strip meters' `-200 dB` floor (`Inf > 1e-10`
+is true → `+Inf dB` → the hand-rolled `channel_meters_json` emits the
+literal `inf` → unparseable → the worklet's one-try-around-it drops
+EVERY meter update, freezing the whole console's meters), and
+`MasterMeter`'s ballistics had Inf fixed points (`peak·0.95` and the
+sliding-RMS drain both stick at Inf forever). Non-finite peak/rms now
+floors at the meter calculation on both paths. Known UNFIXED adjacent
+finding (filed): a single non-finite PCM sample (decoder-side anomaly)
+permanently kills a strip whose EQ is active — the biquads latch NaN
+into their IIR feedback state; the strip then meters an honest −200
+instead of freezing the console (the EQ-side scrub is future work).
+
 ### PCM-only
 
 No codecs anywhere. Raw linear PCM (Float32) end-to-end. Audio is transported inside MPEG2-TS using SMPTE 302M (s302m) encapsulation over QuicSRT/SRT (registration descriptor "BSSD").

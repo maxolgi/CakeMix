@@ -42,8 +42,15 @@ impl MasterMeter {
         self.processed_once = true;
         for ch in 0..2 {
             let buf = if ch == 0 { l } else { r };
-            let block_peak = buf[..n].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-            if block_peak >= 1.0 {
+            // f32::max already ignores NaN; Inf is the only value that
+            // can poison the ballistics (peak becomes Inf, a fixed
+            // point of the 0.95 decay that never recovers). The clip
+            // flag reads the RAW max (an Inf sample IS ≥ full scale);
+            // only the ballistics see the sanitized value — same
+            // floor-not-propagate policy as the strip meters.
+            let raw_peak = buf[..n].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            let block_peak = if raw_peak.is_finite() { raw_peak } else { 0.0 };
+            if raw_peak >= 1.0 {
                 self.clipped[ch] = true;
             }
             if block_peak > self.peak[ch] {
@@ -58,7 +65,10 @@ impl MasterMeter {
         // Sliding-window RMS per channel over an interleaved ring.
         for i in 0..n {
             for ch in 0..2 {
-                let s = if ch == 0 { l[i] } else { r[i] };
+                let s0 = if ch == 0 { l[i] } else { r[i] };
+                // Non-finite → 0: one Inf sample would otherwise stick
+                // rms_sq at Inf forever (Inf - x == Inf).
+                let s = if s0.is_finite() { s0 } else { 0.0 };
                 let ring_ch = self.rms_pos + ch * self.rms_window;
                 let old = self.rms_buf[ring_ch];
                 self.rms_sq[ch] -= f64::from(old * old);
@@ -90,10 +100,65 @@ impl MasterMeter {
 }
 
 /// dBFS conversion matching the engine meter's floor (`linear_to_db`).
+/// Non-finite input floors with the ≤0 case (belt over the sanitized
+/// accumulation above): a NaN/Inf must never reach the meter exports.
 fn master_lin_to_db(lin: f32) -> f32 {
-    if lin <= 0.0 {
+    if !lin.is_finite() || lin <= 0.0 {
         -120.0
     } else {
         20.0 * lin.log10()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One Inf block must not stick the ballistics: pre-fix, peak
+    /// latched Inf (a fixed point of the 0.95 decay — never recovers)
+    /// and rms_sq latched Inf (Inf − x == Inf — never drains). With the
+    /// sanitize-at-accumulation guard the meter reads the clean program
+    /// through the poison and keeps reading it after.
+    #[test]
+    fn inf_block_does_not_stick_ballistics() {
+        let mut m = MasterMeter::new(48_000, 128);
+        let block = vec![0.5f32; 128];
+        for _ in 0..40 {
+            m.process(&block, &block);
+        }
+        assert!((m.peak_db(0) + 6.02).abs() < 0.1, "clean peak ≈ -6 dB");
+        assert!((m.rms_db(0) + 6.02).abs() < 0.1, "clean rms ≈ -6 dB");
+
+        let mut bad = vec![0.5f32; 128];
+        bad[0] = f32::INFINITY;
+        m.process(&bad, &block);
+        assert!(m.peak_db(0).is_finite(), "peak finite through Inf block");
+        assert!(m.rms_db(0).is_finite(), "rms finite through Inf block");
+        assert!(m.clipped[0], "an Inf sample still flags clip");
+
+        for _ in 0..40 {
+            m.process(&block, &block);
+        }
+        assert!(
+            (m.peak_db(0) + 6.02).abs() < 0.1,
+            "peak recovers, got {}",
+            m.peak_db(0)
+        );
+        assert!(
+            (m.rms_db(0) + 6.02).abs() < 0.1,
+            "rms recovers, got {}",
+            m.rms_db(0)
+        );
+    }
+
+    /// Non-finite conversion floors at the master meter's -120 dB
+    /// floor instead of propagating NaN/Inf to the exports.
+    #[test]
+    fn nonfinite_floors_in_conversion() {
+        assert_eq!(master_lin_to_db(f32::NAN), -120.0);
+        assert_eq!(master_lin_to_db(f32::INFINITY), -120.0);
+        assert_eq!(master_lin_to_db(f32::NEG_INFINITY), -120.0);
+        assert_eq!(master_lin_to_db(0.0), -120.0);
+        assert!((master_lin_to_db(1.0) - 0.0).abs() < 1e-6);
     }
 }

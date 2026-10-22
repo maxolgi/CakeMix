@@ -1080,6 +1080,17 @@ impl MixerWasm {
 
     // ── Per-channel metering ───────────────────────────
 
+    /// Linear→dB for strip meters with the -200 dB floor: sub-audible
+    /// AND non-finite values floor (a non-finite meter value must never
+    /// reach `channel_meters_json` — see the metering loop above).
+    fn meter_lin_to_db(lin: f32) -> f32 {
+        if lin.is_finite() && lin > 1e-10 {
+            20.0 * lin.log10()
+        } else {
+            -200.0
+        }
+    }
+
     pub fn channel_peak_db(&self, ch: u32) -> f32 {
         self.channel_peak
             .get(&ch)
@@ -2188,7 +2199,12 @@ impl MixerWasm {
         // Same math and destination state as when this lived inside the
         // staging loop; hoisted out so input-strip meters observe the
         // post-FX signal. Non-existent strips keep their zero rows and
-        // their absence from the meter maps.
+        // their absence from the meter maps. The dB conversion FLOORS
+        // non-finite peak/rms at -200 like the sub-audible case instead
+        // of propagating them: a non-finite f32 formats as a literal
+        // (`inf`/`NaN`) in the hand-rolled channel_meters_json, which
+        // makes the whole document unparseable and freezes EVERY
+        // console meter in the UI (live-E2E finding, 2026-10-21).
         for idx in 0..self.channel_ids.len() {
             if self.channel_ids[idx].is_none() {
                 continue;
@@ -2199,22 +2215,8 @@ impl MixerWasm {
             let peak = row.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
             let sq_sum: f32 = row.iter().map(|s| s * s).sum();
             let rms = (sq_sum / bs as f32).sqrt();
-            self.channel_peak.insert(
-                strip,
-                if peak > 1e-10 {
-                    20.0 * peak.log10()
-                } else {
-                    -200.0
-                },
-            );
-            self.channel_rms.insert(
-                strip,
-                if rms > 1e-10 {
-                    20.0 * rms.log10()
-                } else {
-                    -200.0
-                },
-            );
+            self.channel_peak.insert(strip, Self::meter_lin_to_db(peak));
+            self.channel_rms.insert(strip, Self::meter_lin_to_db(rms));
         }
 
         // Snapshot every existing strip's gain params into the reused
