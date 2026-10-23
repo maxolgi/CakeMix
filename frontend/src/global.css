@@ -444,12 +444,13 @@ body {
     background: rgba(255,255,255,0.25);
     pointer-events: none;
 }
-/* Readout row between the slider and the strip bottom: balance value
+/* Readout row between the slider and the strip bottom (inside the
+ * output section, directly above the meters/fader): balance value
  * over the meters column, fader gain over the fader column. Mirrors
  * .strip-bottom's geometry — two 36px cells (the .strip-col .btn-sm
  * width both columns size to), 8px gap, centered — so each readout
  * sits centered over its column at any panel width. */
-.bal-readout-row { display: flex; justify-content: center; gap: 8px; }
+.bal-readout-row { display: flex; justify-content: center; gap: 8px; padding-bottom: 4px; }
 .bal-readout { width: 36px; text-align: center; font-size: 0.95em; color: #aaa; font-family: monospace; }
 
 /* ── Collapsible sections ────────────── */

@@ -618,40 +618,27 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
       </div>
       )}
 
-      {/* ── PAN (mono/bus) / BALANCE (stereo) ────────── */}
-      <div class="detail-section">
-        <div class="detail-section-divider">
-          <span class="detail-section-label">{stereoMode ? "BAL" : "PAN"}</span>
-        </div>
-        {/* Stereo: the slider row's only content is the slider itself,
-            spanning the full strip width (center detent tick via
-            .bal-slider-wrap::after); mono keeps .detail-pan-row. */}
-        <div class={stereoMode ? "bal-slider-wrap" : "detail-pan-row"}>
-          <input
-            type="range"
-            class="pan-slider"
-            min={-1} max={1} step={0.01}
-            value={panVal()}
-            onInput={(e) => S.pan(parseFloat(e.currentTarget.value))}
-            title={stereoMode
-              ? "Stereo balance — offsets the L/R pair's image left (L) or right (R); C leaves it centered"
-              : "Pan"}
-          />
-        </div>
-        {/* Readout row mirroring .strip-bottom's two-column geometry:
-            balance value over the meters column, fader gain over the
-            fader column (moved up out of the fader column). */}
-        {stereoMode && (
-          <div class="bal-readout-row">
-            <span class="bal-readout" title="Stereo balance position (L100 … C … R100)">
-              {fmtPan(panVal())}
-            </span>
-            <span class="bal-readout" title="Channel fader level (dB)">
-              {formatGainDb(ch().gain)}
-            </span>
+      {/* ── PAN (mono/bus only) ───────────────────────── */}
+      {/* Stereo strips have no standalone balance section: their BAL row
+          lives inside the output section below, pinned to the strip
+          bottom directly above the meters/fader. */}
+      {!stereoMode && (
+        <div class="detail-section">
+          <div class="detail-section-divider">
+            <span class="detail-section-label">PAN</span>
           </div>
-        )}
-      </div>
+          <div class="detail-pan-row">
+            <input
+              type="range"
+              class="pan-slider"
+              min={-1} max={1} step={0.01}
+              value={panVal()}
+              onInput={(e) => S.pan(parseFloat(e.currentTarget.value))}
+              title="Pan"
+            />
+          </div>
+        </div>
+      )}
 
       {/* ── METER + FADER ──────────────────────────────── */}
       {stereoMode ? (
@@ -661,8 +648,38 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
          * SOLO directly beneath), RIGHT = mix (level fader, MUTE
          * directly beneath). While no source maps to the right side the
          * R meter dims with a mono badge — the strip stays fully
-         * functional. */
+         * functional. Balance sits at the very top of this section:
+         * divider + full-width slider + readouts directly above the
+         * meters/fader, below the output separator (.detail-output's
+         * margin-top:auto pins the whole block to the strip bottom). */
         <div class="detail-section detail-output">
+          <div class="detail-section-divider">
+            <span class="detail-section-label">BAL</span>
+          </div>
+          {/* The slider row's only content is the slider itself, spanning
+              the full strip width (center detent tick via
+              .bal-slider-wrap::after). */}
+          <div class="bal-slider-wrap">
+            <input
+              type="range"
+              class="pan-slider"
+              min={-1} max={1} step={0.01}
+              value={panVal()}
+              onInput={(e) => S.pan(parseFloat(e.currentTarget.value))}
+              title="Stereo balance — offsets the L/R pair's image left (L) or right (R); C leaves it centered"
+            />
+          </div>
+          {/* Readout row mirroring .strip-bottom's two-column geometry:
+              balance value over the meters column, fader gain over the
+              fader column (moved up out of the fader column). */}
+          <div class="bal-readout-row">
+            <span class="bal-readout" title="Stereo balance position (L100 … C … R100)">
+              {fmtPan(panVal())}
+            </span>
+            <span class="bal-readout" title="Channel fader level (dB)">
+              {formatGainDb(ch().gain)}
+            </span>
+          </div>
           <div class="strip-bottom">
             <div class="strip-col strip-col-meters">
               <div class="strip-meters">
