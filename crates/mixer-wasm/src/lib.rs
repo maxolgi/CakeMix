@@ -2108,15 +2108,34 @@ impl MixerWasm {
             } else if fed_recent
                 && !fifo.degraded
                 && depth >= SLIP_FRAMES + SLIP_XFADE
+                && fifo.window_inserts < fifo::HEALTH_INSERT_MAX
                 && (fifo.window_starved || fifo.ewma < anchor_half)
-                && (depth as f32) < anchor_half + (2.0 * SLIP_FRAMES as f32)
+                && (depth as f32)
+                    < (anchor_half + 2.0 * SLIP_FRAMES as f32)
+                        .min(fifo::RECONCILE_CEIL_FRAMES as f32)
             {
                 // Sustained net-slow delivery (or live starvation): the
-                // queue would run dry — stretch the tail. The depth cap
-                // just above the trigger bounds the burst against a
-                // between-windows stale statistic. Skipped while the
-                // stream-health gate holds the channel (concealing a
-                // pathological stream just re-chops the holes).
+                // queue would run dry — stretch the tail. Two structural
+                // bounds keep reconciliation inside the health budget
+                // (a late-armed catch-up used to climb an anchor-scaled
+                // bound at cooldown pacing — anchor/4+64-frame bursts
+                // that tripped HEALTH_INSERT_MAX on slow-clock sources
+                // and flickered the gate):
+                //   - the depth cap is clamped to an absolute ceiling
+                //     (RECONCILE_CEIL_FRAMES): a refill can never climb
+                //     toward a far target; the queue must fall to it
+                //     first, so the steady correction rate is the deficit
+                //     itself (one insert per 64 frames of shortfall);
+                //   - inserts are capped at HEALTH_INSERT_MAX per window:
+                //     a deficit too large to reconcile within the health
+                //     budget outruns the refill and starves, where the
+                //     starve counters take it. Reconciliation therefore
+                //     cannot trip the insert gate BY CONSTRUCTION, and
+                //     the remaining gate paths (starve / trim / overflow)
+                //     are untouched.
+                // Skipped while the stream-health gate holds the channel
+                // (concealing a pathological stream just re-chops the
+                // holes).
                 slip_insert(&mut fifo.q);
                 fifo.inserts += 1;
                 fifo.window_inserts += 1;

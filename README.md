@@ -10,6 +10,7 @@ with cross-fade), QuicSRT publish.
 
 | Date | Milestone |
 |---|---|
+| 2026-10-23 | Stream-health gate: fix the GATED flicker on slow-clock sources — real gateway-fed streams whose clock runs slow vs the local DAC (reproduced live with an ffmpeg s302m ingest) flickered the gate 10–74 inserts/window, duty varying with receive latency. Structural fix, thresholds untouched: insert refill target clamped to an absolute 1024-frame ceiling (was anchor/2+128 — anchor-sized refill bursts) + per-window insert cap at HEALTH_INSERT_MAX (8), so reconciliation (0.1–1% deficits: 0.15–7.5 inserts/window) can never trip the insert gate by construction; an unreconcilable deficit starves into the starve counters instead. All 9 pre-existing gate tests green unmodified + 3 new slow-clock regressions |
 | 2026-10-22 | Stereo console presentation: the UI presents 64 stereo channels (16 per bank × 4 banks) over the unchanged 128-mono-strip engine — stereo t = strips 2t (L) / 2t+1 (R), every control fans out to both strips, PAN shown as BALANCE (center = L hard-left / R hard-right, true stereo passthrough — fixes the center-panned mono collapse the old per-strip pan caused). Strip bottom is two columns: monitoring (L+R meters, SOLO beneath) and mix (fader, MUTE beneath); mono badge + dimmed R meter on odd-width PIDs, GR = max(L,R), GATED if either side is stream-gated. FX chains native to every stereo channel (pair chains map 1:1, no even/odd ownership visible); bus slots stay per-mono-strip |
 | 2026-10-21 | gxfx catalog complete: all 83 effects live. Final wave flipped the last factory rows — convolution family 76–79 (cabinet/redeye/metalamp/metalhead over the kissfft-backed partitioned convolver + static cab-IR tables), detune 80 (smbPitchShift phase vocoder), tuner 81 (NSDF pitch tracker; FREQ lands on the slot's control-OUTPUT row), livelooper 82 (4×16 MiB tapes, separate LOOPER_CAP=4). Tiered honesty suite per AGENTS.md: per-effect smoke for every id + representative known-answers (cabinet IR tail + model-Off passthrough, detune +7 st ZCR ratio 1.4994 vs 1.4983, tuner FREQ 439.996 Hz→0.000 on silence, looper record→rplay RMS/frequency match) |
 | 2026-10-20 | gxfx E2E stall investigation: engine exonerated by measurement (native/wasm/live-Chrome, numbers in the FX section); regression gates added — `gxfx_timing_test` (release wall-time budgets per interactive op) and `gxfx_alloc_wasm` (wasm zero-allocation steady state + param writes; exact tape-set churn). Reproduced stall is a renderer-level main-thread seizure during FX knob drags, frontend/Chrome layer (survives with all set-fx-* messages dropped); dropped-pcm/AudioContext error in the severe E2E variant = the same seizure process-wide on the loaded tester machine |
@@ -222,7 +223,14 @@ tracks its own delivery health (`crates/mixer-wasm/src/fifo.rs`):
   statistics window; >12 trim slips or >256 cap-dropped frames per
   window; or the fast paths — ≥12 starved blocks (≈32 ms of holes),
   ≥12 trims, or ≥1024 cap-dropped frames mid-window — which engage the
-  fade immediately instead of at the window boundary.
+  fade immediately instead of the window boundary. Drift reconciliation
+  is structurally kept inside this budget: the insert refill target is
+  clamped to an absolute 1024-frame ceiling (an anchor-scaled bound once
+  turned every re-arm into an anchor-sized burst) and inserts are capped
+  at 8 per window, so reconciliation can never trip the insert gate by
+  construction — a deficit too large for the budget (≥ ~1.07% clock
+  mismatch) outruns the refill, starves, and gates through the starve
+  counters instead.
 - While degraded the channel **fades out over ≈5 ms** (per-sample ramp on
   the FIFO drain) and concealment inserts stop; it **fades back in over
   ≈11 ms** after two consecutive clean windows. The drain keeps running,
@@ -235,9 +243,12 @@ tracks its own delivery health (`crates/mixer-wasm/src/fifo.rs`):
 Pinned by `tests/stream_health_test.rs`: bursty (net-slow) delivery gates
 fast and recovers; net-fast backlog churn gates with zero starvation
 (proving the trim/overflow paths); paced delivery never gates; 200 ppm
-drift reconciliation never gates. The remaining fix belongs in the
-QuicSRT repos (enforce a sane minimum TSBPD latency / surface the
-effective value), not here.
+drift reconciliation never gates; 0.1–1% slow-clock sources (the live
+ffmpeg s302m-ingest flicker, 2026-10-23) never gate and converge to
+steady shallow depth; stepped-rate sources never gate; an unreconcilable
+5% deficit still gates via the starve counters. The remaining fix
+belongs in the QuicSRT repos (enforce a sane minimum TSBPD latency /
+surface the effective value), not here.
 
 ### Forks
 

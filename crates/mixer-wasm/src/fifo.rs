@@ -25,8 +25,11 @@ pub(crate) const MAX_QUEUE_FRAMES: usize = 8192;
 //   depth falls below half the anchor (relative — chunked delivery
 //   establishes anchors of only a few hundred frames, so an absolute
 //   lower band could sit below zero and never trigger), or on live
-//   starvation. The burst is capped near the trigger so a between-windows
-//   stale statistic cannot overshoot.
+//   starvation. The burst is capped near the trigger — clamped to the
+//   absolute RECONCILE_CEIL_FRAMES — and throttled to HEALTH_INSERT_MAX
+//   inserts per window, so reconciliation can never outspend the health
+//   budget: a deficit too large for the budget starves into the starve
+//   counters instead (see the gate notes below).
 //
 // All channels of a PID mapping are fed and drained in lockstep, so their
 // depths, EWMA and cooldowns stay equal and every channel applies the same
@@ -54,6 +57,23 @@ pub(crate) const SLIP_XFADE: usize = 32;
 /// Blocks between corrections on the same FIFO (rate limit: a slip every
 /// ~10.7 ms → max correction rate ≈ 6000 f/s, far above any real drift).
 pub(crate) const SLIP_COOLDOWN_BLOCKS: u32 = 4;
+/// Absolute ceiling (frames, ≈ 21 ms @ 48 k) on the insert refill target:
+/// `min(anchor/2 + 2·SLIP, this)`. The anchor-scaled bound alone made
+/// every drift re-arm climb `anchor/4 + 64` frames at cooldown pacing —
+/// ~33-insert bursts at live anchor depths (5248-frame anchor), periodic,
+/// deficit-independent, indistinguishable from the pathological churn
+/// HEALTH_INSERT_MAX exists to catch: a 1% slow clock flickered the gate
+/// 8/30 windows (native repro 2026-10-23, live ffmpeg s302m ingest). With
+/// the ceiling, a refill can never climb toward a far target — the queue
+/// must fall to ≤ 21 ms first — so the steady correction rate is the
+/// deficit itself (one insert per 64 frames of shortfall). Together with
+/// the per-window insert cap (lib.rs: `window_inserts <
+/// HEALTH_INSERT_MAX`) this keeps reconciliation inside the health
+/// budget by construction; a deficit too large for the budget outruns
+/// the refill and starves into the starve counters instead. Small-anchor
+/// streams (chunked delivery bottoms near zero → anchors of a few
+/// hundred frames) keep the unclamped relative bound exactly as before.
+pub(crate) const RECONCILE_CEIL_FRAMES: usize = 1024;
 /// A FIFO is "recently fed" if it saw input within this many windows.
 /// Insertions are gated on it (never stretch a stopped/disconnected
 /// source); trims are not (pre-draining a stall backlog is harmless).
