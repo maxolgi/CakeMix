@@ -646,9 +646,10 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
          * so SOLO/MUTE share a baseline and the meter scale lines up
          * with the fader scale): LEFT = monitoring (slim L + R meters,
          * SOLO directly beneath), RIGHT = mix (level fader, MUTE
-         * directly beneath). While no source maps to the right side the
-         * R meter dims with a mono badge — the strip stays fully
-         * functional. Balance sits at the very top of this section:
+         * directly beneath). Only genuine mono material (left side
+         * mapped, right not) dims the R meter — idle strips render
+         * both meters identically. Balance sits at the very top of
+         * this section:
          * divider + full-width slider + readouts directly above the
          * meters/fader, below the output separator (.detail-output's
          * margin-top:auto pins the whole block to the strip bottom). */
@@ -694,7 +695,7 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
                   />
                 </div>
                 <div
-                  class={`strip-meter${stereoChannels[idx].sideMapped.r ? "" : " dimmed"}`}
+                  class={`strip-meter${stereoChannels[idx].sideMapped.l && !stereoChannels[idx].sideMapped.r ? " dimmed" : ""}`}
                   title="Right side level — peak bar with RMS average (dBFS)"
                 >
                   <MeterCanvas
@@ -703,12 +704,6 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
                     width={10} height={160}
                   />
                 </div>
-                {!stereoChannels[idx].sideMapped.r && (
-                  <span
-                    class="strip-mono-badge"
-                    title="right side has no mapped source — mono material"
-                  >mono</span>
-                )}
               </div>
               <button
                 class={`btn-sm btn-solo ${ch().soloed ? "active" : ""}`}

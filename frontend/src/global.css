@@ -415,16 +415,10 @@ body {
 .strip-col .btn-sm { width: 36px; height: 26px; font-size: 0.8em; }
 .strip-meters { position: relative; display: flex; gap: 2px; }
 .strip-meter canvas { display: block; }
-/* No mapped source on the right side: dim the R meter (mono material —
- * the mono badge tooltip explains; the strip stays fully functional). */
+/* Genuine mono source (left side mapped, right not): dim the R meter;
+ * the strip stays fully functional. Idle/unmapped strips render both
+ * meters identically (no dim). */
 .strip-meter.dimmed canvas { opacity: 0.3; }
-.strip-mono-badge {
-    position: absolute; bottom: 3px; left: 50%; transform: translateX(-50%);
-    font-size: 0.55em; font-weight: 700; letter-spacing: 0.05em;
-    padding: 0 3px; border-radius: 2px;
-    background: rgba(10,10,15,0.85); border: 1px solid #26262f; color: #7a7a88;
-    cursor: help;
-}
 /* Fader column badge sized to the 36px column (the shared .strip-gated
  * default is 50px wide; the gain readout moved up to .bal-readout-row). */
 .strip-col-fader .strip-gated { width: 36px; }
