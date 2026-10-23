@@ -103,6 +103,17 @@ pub(crate) const HEALTH_FADE_IN_STEP: f32 = 1.0 / 512.0;
 /// Per-channel elastic input FIFO with drift bookkeeping.
 pub(crate) struct ChannelFifo {
     pub(crate) q: VecDeque<f32>,
+    /// Per-block direct input (test tones), summed with `q` at drain.
+    /// A separate overlay queue — NOT part of the elastic/health path:
+    /// `set_channel_input` shares the context clock with the drain (no
+    /// drift to reconcile), and letting it write `q` double-feeds the
+    /// drift-managed stream FIFO when a mapped PID lands on the same
+    /// strips (the publish→subscribe loopback's exact setup): 2× real
+    /// time in against a 1× drain pins `q` at the cap and trips the
+    /// stream-health gate permanently. Direct input never arms
+    /// elasticity (no `note_feed`) and never counts toward the health
+    /// statistics.
+    pub(crate) direct_q: VecDeque<f32>,
     /// Elastic corrections apply (fed via the interleaved PCM path).
     pub(crate) elastic: bool,
     /// Current drift-statistics window id (`block_counter / WINDOW`).
@@ -146,6 +157,7 @@ impl ChannelFifo {
     pub(crate) fn new() -> Self {
         Self {
             q: VecDeque::with_capacity(2048),
+            direct_q: VecDeque::with_capacity(256),
             elastic: false,
             window_id: 0,
             window_min: usize::MAX,
@@ -179,10 +191,21 @@ impl ChannelFifo {
     /// apply the stream-health decision (see the gate notes above).
     pub(crate) fn finalize_window(&mut self) {
         let m = self.window_min;
-        if self.ewma < 0.0 {
-            self.ewma = m as f32;
-        } else {
-            self.ewma += EWMA_ALPHA * (m as f32 - self.ewma);
+        // A window that never sampled a depth (the FIFO was created
+        // mid-window by a stream connecting while the engine was already
+        // running — every live session) leaves `window_min` at the
+        // usize::MAX sentinel: folding it seeded the EWMA with ~4.3e9,
+        // the anchor formed from that garbage, and the insert arm
+        // (`ewma < anchor_half`) then fired for the ~40 windows it took
+        // the giant value to decay — insert bursts, gate flicker and
+        // overflow creep for the first minute of every live stream.
+        // Skip the fold; the first sampled window seeds the EWMA.
+        if m != usize::MAX {
+            if self.ewma < 0.0 {
+                self.ewma = m as f32;
+            } else {
+                self.ewma += EWMA_ALPHA * (m as f32 - self.ewma);
+            }
         }
         if self.window_starved_blocks > HEALTH_STARVE_MAX
             || self.window_inserts > HEALTH_INSERT_MAX
@@ -195,6 +218,18 @@ impl ChannelFifo {
             self.clean_windows += 1;
             if self.clean_windows >= HEALTH_RECOVERY_WINDOWS {
                 self.degraded = false;
+                // Recovery = delivery judged clean again: re-base the
+                // anchor on the current smoothed depth. The anchor is a
+                // snapshot of the stream's early shape (often its subscribe
+                // transient); without this re-base the insert arm
+                // (`ewma < anchor_half`) re-fires every window against the
+                // stale snapshot, stretching +64 frames at cooldown rate,
+                // tripping HEALTH_INSERT_MAX, and re-gating a healthy
+                // stream. True rate-deficit streams never gate (a 200 ppm
+                // deficit is ~0.2 inserts/window), so their drift
+                // reconciliation is untouched; genuinely pathological
+                // streams re-gate on their own counters.
+                self.anchor = Some(self.ewma);
             }
         }
         self.window_min = usize::MAX;

@@ -42,6 +42,11 @@ fn sine_chunk(base: usize, frames: usize) -> Vec<f32> {
     inter
 }
 
+/// Interleaved stereo DC chunk (the sum-known-answer marker).
+fn dc_chunk(level: f32, frames: usize) -> Vec<f32> {
+    vec![level; frames * 2]
+}
+
 fn process(m: &mut MixerWasm) -> f32 {
     let out = m.process_block(BLOCK).expect("process");
     let mut peak = 0.0f32;
@@ -49,6 +54,12 @@ fn process(m: &mut MixerWasm) -> f32 {
         peak = peak.max(s[0].abs()).max(s[1].abs());
     }
     peak
+}
+
+fn process_avg(m: &mut MixerWasm) -> f32 {
+    let out = m.process_block(BLOCK).expect("process");
+    let n = out.len() / 2;
+    out.chunks(2).map(|s| s[0]).sum::<f32>() / n as f32
 }
 
 /// Bursty delivery: one 9000-frame burst per second (the queue cap keeps
@@ -402,5 +413,183 @@ fn netfast_backlog_flush_gates_without_starving() {
     assert!(
         peak > 0.2,
         "recovered channel must pass audio again (peak {peak})"
+    );
+}
+
+/// THE LOOPBACK REGRESSION (live E2E, 2026-10-22): the app's own
+/// publish→gateway→subscribe loopback maps the incoming PID onto the very
+/// strips the test-tone generator feeds (auto-map packs from channel 0;
+/// tones feed channels 0–3; QA enables tones to have content to publish).
+/// Both feeds used to write the SAME elastic FIFO: 2× real time in against
+/// a 1× drain pinned the queue at the 8192 cap, every batch was chopped
+/// from the head, and the stream-health gate engaged forever (strips GATED
+/// at 120 ms and 1000 ms TSBPD, loss 0 / rtt 1-2 ms, no recovery in 20+ s).
+/// The direct (tone) input now rides its own overlay queue summed at
+/// drain — the drift-managed stream FIFO has a single feeder, so the exact
+/// live delivery shape (1024-frame batches paced at real time, zero loss)
+/// must NEVER gate, and the strip must pass tone + stream summed.
+#[test]
+fn loopback_tone_and_stream_share_strips_without_gating() {
+    let mut m = mixer();
+    let mut base = 0usize; // stream frame cursor
+    let mut gated_at = None;
+    for block in 0..6 * WINDOW_BLOCKS {
+        // Per-block direct (tone) feed: the worklet's set_channel_input
+        // cadence — one 128-frame block per render block, on the same
+        // channels the stream maps to.
+        let tone = [0.05f32; BLOCK as usize];
+        m.set_channel_input_slice(0, &tone).expect("tone ch0");
+        m.set_channel_input_slice(1, &tone).expect("tone ch1");
+        // Stream feed: every 1024-frame batch due at this block's start
+        // (batch interval == batch duration — the PUB_BATCH_FRAMES loopback
+        // pacing), delivered between blocks exactly like worklet message
+        // handling.
+        while base + 1024 <= (block + 1) * BLOCK as usize {
+            let chunk = dc_chunk(0.5, 1024);
+            m.feed_interleaved(0, &chunk, 2).expect("feed");
+            base += 1024;
+        }
+        process(&mut m);
+        if m.degraded_channels() > 0 && gated_at.is_none() {
+            gated_at = Some(block);
+        }
+    }
+    assert_eq!(
+        m.degraded_channels(),
+        0,
+        "tone + stream on one strip must never gate (gated at block {gated_at:?})"
+    );
+    assert_eq!(m.starved_blocks(), 0);
+    assert_eq!(m.elastic_inserts(), 0);
+    assert_eq!(m.elastic_slips(), 0);
+    assert!(
+        !m.channel_meters_json().contains("\"ov\":1"),
+        "no overflow drops may be counted (got {})",
+        m.channel_meters_json()
+    );
+    // Sum honesty: stereo strips route ch0→L / ch1→R at unity, so each
+    // side passes stream 0.5 + tone 0.05 = 0.55.
+    let tone = [0.05f32; BLOCK as usize];
+    m.set_channel_input_slice(0, &tone).expect("tone ch0");
+    m.set_channel_input_slice(1, &tone).expect("tone ch1");
+    let chunk = dc_chunk(0.5, 1024);
+    m.feed_interleaved(0, &chunk, 2).expect("feed");
+    let avg = process_avg(&mut m);
+    assert!(
+        (avg - 0.55).abs() < 2e-3,
+        "strip must pass tone + stream summed (avg {avg}, want 0.55)"
+    );
+}
+
+/// The gate must still fade a genuinely pathological stream even while a
+/// direct (tone) feed shares the strip: bursty delivery gates, and the
+/// whole strip (tone included) fades to silence.
+#[test]
+fn gated_stream_still_fades_direct_input() {
+    let mut m = mixer();
+    // Burst drain (the low-TSBPD pathology) with tones feeding every block.
+    let chunk = sine_chunk(0, 9000);
+    m.feed_interleaved(0, &chunk, 2).expect("feed");
+    let tone = [0.25f32; BLOCK as usize];
+    for b in 0..100 {
+        m.set_channel_input_slice(0, &tone).expect("tone ch0");
+        m.set_channel_input_slice(1, &tone).expect("tone ch1");
+        let peak = process(&mut m);
+        if b == 80 {
+            // The 8192-frame cap keeps 64 blocks of the burst; starvation
+            // begins at block 64 and the 12-starved-block fast path gates
+            // ~12 blocks later — same schedule as without the tone overlay.
+            assert_eq!(
+                m.degraded_channels(),
+                2,
+                "bursty delivery must gate despite the tone overlay"
+            );
+            assert!(
+                peak < 0.02,
+                "gated strip must be silent including direct input (peak {peak})"
+            );
+        }
+    }
+    assert_eq!(m.degraded_channels(), 2, "the gate must hold");
+}
+
+/// THE MID-WINDOW SENTINEL (live E2E, 2026-10-22): the worklet drains
+/// from page load, so a stream connecting seconds later creates its FIFO
+/// mid-window — the first drain block hits the window-rollover check
+/// before any depth sample, and `finalize_window` folded the
+/// `usize::MAX` sentinel into the EWMA (~4.3e9). The anchor formed from
+/// that garbage; the insert arm (`ewma < anchor_half`) then fired for
+/// every one of the ~40 windows the giant value took to decay — insert
+/// bursts tripping HEALTH_INSERT_MAX, gate flicker and overflow creep
+/// for the first minute of every live session. Native tests never saw
+/// it: they start streams at block 0 (window 0), where the rollover
+/// cannot precede the first sample. The finalize guard skips unsampled
+/// windows; this test starts a stream mid-window, exactly like the live
+/// path, and requires clean batchy delivery thereafter.
+#[test]
+fn mid_window_stream_start_never_seeds_giant_anchor() {
+    let mut m = mixer();
+    // The engine runs empty past a window boundary before the stream
+    // connects (page load vs connect): the first feed lands mid-window.
+    for _ in 0..WINDOW_BLOCKS + 10 {
+        process(&mut m);
+    }
+    let mut base = 0usize;
+    let mut fed = 0usize;
+    let mut gated_at = None;
+    let total = 8 * WINDOW_BLOCKS;
+    for block in 0..total {
+        // Loopback shape: 1024-frame batches, interval == batch duration.
+        while fed + 1024 <= (block + 1) * BLOCK as usize {
+            let chunk = sine_chunk(base, 1024);
+            base += 1024;
+            m.feed_interleaved(0, &chunk, 2).expect("feed");
+            fed += 1024;
+        }
+        process(&mut m);
+        if m.degraded_channels() > 0 && gated_at.is_none() {
+            gated_at = Some(block);
+        }
+    }
+    assert_eq!(
+        m.degraded_channels(),
+        0,
+        "mid-window stream start must not gate clean batchy delivery (gated at {gated_at:?})"
+    );
+    assert_eq!(
+        m.elastic_inserts(),
+        0,
+        "no insert churn may fire against a sentinel-seeded anchor"
+    );
+    assert_eq!(m.starved_blocks(), 0);
+    assert_eq!(m.elastic_slips(), 0);
+}
+
+/// Direct input alone (no stream ever mapped) must stay healthy: no gate,
+/// no elastic starvation counting, audio passes at unity.
+#[test]
+fn tone_only_channel_never_gates() {
+    let mut m = mixer();
+    let tone = [0.25f32; BLOCK as usize];
+    for _ in 0..3 * WINDOW_BLOCKS {
+        m.set_channel_input_slice(0, &tone).expect("tone ch0");
+        m.set_channel_input_slice(1, &tone).expect("tone ch1");
+        process(&mut m);
+    }
+    assert_eq!(m.degraded_channels(), 0, "tone-only strips must never gate");
+    assert_eq!(
+        m.starved_blocks(),
+        0,
+        "direct input must not count as stream starvation"
+    );
+    let mut peak = 0.0f32;
+    for _ in 0..8 {
+        m.set_channel_input_slice(0, &tone).expect("tone ch0");
+        m.set_channel_input_slice(1, &tone).expect("tone ch1");
+        peak = peak.max(process(&mut m));
+    }
+    assert!(
+        (peak - 0.25).abs() < 2e-3,
+        "tone-only strip passes audio at unity (peak {peak}, want 0.25)"
     );
 }

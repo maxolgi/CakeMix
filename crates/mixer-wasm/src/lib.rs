@@ -450,15 +450,27 @@ impl MixerWasm {
         let len = data.length() as usize;
         self.raw_input.resize(len, 0.0);
         data.copy_to(&mut self.raw_input);
-        // Mono per-block feeds (test tones) are not drift-managed: plain FIFO.
+        let raw = std::mem::take(&mut self.raw_input);
+        let r = self.set_channel_input_slice(ch, &raw);
+        self.raw_input = raw;
+        r
+    }
+
+    /// Core direct input (shared by the wasm binding and native tests):
+    /// per-block audio (test tones) onto the channel's direct overlay
+    /// queue — see `ChannelFifo::direct_q`. Plain queue semantics, no
+    /// drift management, no stream-health accounting; summed with the
+    /// elastic stream FIFO at drain.
+    pub fn set_channel_input_slice(&mut self, ch: u32, data: &[f32]) -> Result<(), JsValue> {
+        self.ensure_channel(ch)?;
         let slot = self
             .channel_inputs
             .entry(ch)
             .or_insert_with(ChannelFifo::new);
-        slot.q.extend(self.raw_input.iter().copied());
-        let overflow = slot.q.len().saturating_sub(MAX_QUEUE_FRAMES);
+        slot.direct_q.extend(data.iter().copied());
+        let overflow = slot.direct_q.len().saturating_sub(MAX_QUEUE_FRAMES);
         if overflow > 0 {
-            slot.q.drain(0..overflow);
+            slot.direct_q.drain(0..overflow);
         }
         Ok(())
     }
@@ -2011,21 +2023,26 @@ impl MixerWasm {
             let mut starved = false;
             let target_gain = if fifo.degraded { 0.0 } else { 1.0 };
             for d in self.block_inputs[base..base + bs].iter_mut() {
-                if let Some(s) = fifo.q.pop_front() {
-                    // Stream-health fade: asymmetric per-sample ramp toward
-                    // the target (fast out, slower in — see fifo.rs).
-                    if fifo.health_gain < target_gain {
-                        fifo.health_gain =
-                            (fifo.health_gain + fifo::HEALTH_FADE_IN_STEP).min(target_gain);
-                    } else if fifo.health_gain > target_gain {
-                        fifo.health_gain =
-                            (fifo.health_gain - fifo::HEALTH_FADE_OUT_STEP).max(target_gain);
-                    }
-                    *d = s * fifo.health_gain;
-                } else {
+                let s = fifo.q.pop_front();
+                if s.is_none() {
                     starved = true;
-                    break;
                 }
+                let t = fifo.direct_q.pop_front();
+                if s.is_none() && t.is_none() {
+                    break; // both sources dry — the rest of the block stays zero
+                }
+                // Stream-health fade: asymmetric per-sample ramp toward
+                // the target (fast out, slower in — see fifo.rs). Ramps
+                // on any audible sample, direct input included: a gated
+                // strip is silent, period.
+                if fifo.health_gain < target_gain {
+                    fifo.health_gain =
+                        (fifo.health_gain + fifo::HEALTH_FADE_IN_STEP).min(target_gain);
+                } else if fifo.health_gain > target_gain {
+                    fifo.health_gain =
+                        (fifo.health_gain - fifo::HEALTH_FADE_OUT_STEP).max(target_gain);
+                }
+                *d = (s.unwrap_or(0.0) + t.unwrap_or(0.0)) * fifo.health_gain;
             }
             if !fifo.elastic {
                 continue;
@@ -2049,7 +2066,10 @@ impl MixerWasm {
                 let fed_recent =
                     window.saturating_sub(fifo.last_fed_window) <= FEED_RECENCY_WINDOWS;
                 fifo.fed_windows = if fed_recent { fifo.fed_windows + 1 } else { 0 };
-                if fifo.anchor.is_none() && fifo.fed_windows >= ANCHOR_INIT_WINDOWS {
+                if fifo.anchor.is_none()
+                    && fifo.fed_windows >= ANCHOR_INIT_WINDOWS
+                    && fifo.ewma >= 0.0
+                {
                     fifo.anchor = Some(fifo.ewma);
                 }
             }
