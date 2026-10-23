@@ -196,7 +196,6 @@ body {
     background: linear-gradient(90deg, #444, #2a2a2a);
     border: 1px solid #1a1a1a; border-radius: 2px; cursor: ew-resize;
 }
-.pan-val { font-size: 0.45em; color: #777; font-family: monospace; min-width: 24px; text-align: center; }
 
 /* ── Meter + Fader Row ───────────────── */
 .meter-fader-row { display: flex; gap: 3px; align-items: flex-end; }
@@ -426,14 +425,32 @@ body {
     background: rgba(10,10,15,0.85); border: 1px solid #26262f; color: #7a7a88;
     cursor: help;
 }
-/* Fader column badges/readouts sized to the 36px column (the shared
- * .strip-gated / .fader-val defaults are 50px wide). */
+/* Fader column badge sized to the 36px column (the shared .strip-gated
+ * default is 50px wide; the gain readout moved up to .bal-readout-row). */
 .strip-col-fader .strip-gated { width: 36px; }
-.strip-col-fader .fader-val { font-size: 0.95em; color: #aaa; width: 36px; text-align: center; }
 
-/* Balance readout (BAL section, stereo mode only) — .pan-val was sized
- * for the old narrow channel strips; give it detail-panel scale. */
-.detail-pan-row .pan-val { font-size: 11px; min-width: 32px; }
+/* ── Stereo BAL section ──────────────── */
+/* Balance slider row: the slider is the row's only content and spans the
+ * full strip width (mono PAN keeps .detail-pan-row). The ::after tick
+ * marks the center detent, drawn above the track but pointer-transparent
+ * so it never blocks dragging (same convention as
+ * .eq-slider-center-line). */
+.bal-slider-wrap { position: relative; display: flex; align-items: center; padding: 4px 0; }
+.bal-slider-wrap .pan-slider { flex: 1; min-width: 0; }
+.bal-slider-wrap::after {
+    content: ''; position: absolute; left: 50%; top: 50%;
+    width: 1px; height: 11px;
+    transform: translate(-50%, -50%);
+    background: rgba(255,255,255,0.25);
+    pointer-events: none;
+}
+/* Readout row between the slider and the strip bottom: balance value
+ * over the meters column, fader gain over the fader column. Mirrors
+ * .strip-bottom's geometry — two 36px cells (the .strip-col .btn-sm
+ * width both columns size to), 8px gap, centered — so each readout
+ * sits centered over its column at any panel width. */
+.bal-readout-row { display: flex; justify-content: center; gap: 8px; }
+.bal-readout { width: 36px; text-align: center; font-size: 0.95em; color: #aaa; font-family: monospace; }
 
 /* ── Collapsible sections ────────────── */
 .detail-section-divider.collapsible, .detail-section-header.collapsible { cursor: pointer; user-select: none; }

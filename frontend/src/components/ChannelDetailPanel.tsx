@@ -623,7 +623,10 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
         <div class="detail-section-divider">
           <span class="detail-section-label">{stereoMode ? "BAL" : "PAN"}</span>
         </div>
-        <div class="detail-pan-row">
+        {/* Stereo: the slider row's only content is the slider itself,
+            spanning the full strip width (center detent tick via
+            .bal-slider-wrap::after); mono keeps .detail-pan-row. */}
+        <div class={stereoMode ? "bal-slider-wrap" : "detail-pan-row"}>
           <input
             type="range"
             class="pan-slider"
@@ -634,12 +637,20 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
               ? "Stereo balance — offsets the L/R pair's image left (L) or right (R); C leaves it centered"
               : "Pan"}
           />
-          {stereoMode && (
-            <span class="pan-val" title="Stereo balance position (L100 … C … R100)">
+        </div>
+        {/* Readout row mirroring .strip-bottom's two-column geometry:
+            balance value over the meters column, fader gain over the
+            fader column (moved up out of the fader column). */}
+        {stereoMode && (
+          <div class="bal-readout-row">
+            <span class="bal-readout" title="Stereo balance position (L100 … C … R100)">
               {fmtPan(panVal())}
             </span>
-          )}
-        </div>
+            <span class="bal-readout" title="Channel fader level (dB)">
+              {formatGainDb(ch().gain)}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* ── METER + FADER ──────────────────────────────── */}
@@ -693,7 +704,6 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
                 class={`strip-gated ${degradedVal() ? "on" : ""}`}
                 title="Stream health gate: this strip's delivery is pathologically lossy/bursty (e.g. TSBPD latency below the network's jitter, constant SRT drops) — the mixer faded it to silence to protect the output. Raise the receive latency or fix the connection; the strip returns automatically once delivery is clean."
               >GATED</span>
-              <span class="fader-val">{formatGainDb(ch().gain)}</span>
               <div class="fader-wrap">
                 <input
                   type="range"
