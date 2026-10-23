@@ -298,10 +298,6 @@ body {
 .detail-eq-curve { width: 100%; padding: 2px; background: rgba(0,0,0,0.3); border-radius: 3px; margin: 2px 0; }
 
 /* ── FX Chain (pair-owned rack) ──────── */
-.fx-pair-hint {
-    font-size: 10px; color: #555; padding: 3px 0;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: help;
-}
 .fx-unavailable { font-size: 10px; color: #555; font-style: italic; padding: 4px 0; }
 /* LED chain summary: hollow = empty, dim category color = loaded but
  * BYP, bright + 1px ring = IN. The ring is a spread-only box-shadow
@@ -376,8 +372,6 @@ body {
 .bus-master .detail-controls { flex-wrap: wrap; }
 
 /* ── Pan ─────────────────────────────── */
-.detail-pan-row { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 0; }
-.detail-pan-row .pan-slider { flex: 1; min-width: 0; }
 .detail-select {
     background: #11111a; border: 1px solid #222230; border-radius: 3px; color: #ccc; font-size: 0.85em; padding: 2px 4px; outline: none;
 }
@@ -415,20 +409,18 @@ body {
 .strip-col .btn-sm { width: 36px; height: 26px; font-size: 0.8em; }
 .strip-meters { position: relative; display: flex; gap: 2px; }
 .strip-meter canvas { display: block; }
-/* Genuine mono source (left side mapped, right not): dim the R meter;
- * the strip stays fully functional. Idle/unmapped strips render both
- * meters identically (no dim). */
-.strip-meter.dimmed canvas { opacity: 0.3; }
+/* All strips are uniform stereo: both meters always render identically
+ * (the old mono-material R-dim special case was removed). */
 /* Fader column badge sized to the 36px column (the shared .strip-gated
  * default is 50px wide; the gain readout moved up to .bal-readout-row). */
 .strip-col-fader .strip-gated { width: 36px; }
 
-/* ── Stereo BAL section ──────────────── */
+/* ── Stereo BAL section (all strips) ─── */
 /* Balance slider row: the slider is the row's only content and spans the
- * full strip width (mono PAN keeps .detail-pan-row). The ::after tick
- * marks the center detent, drawn above the track but pointer-transparent
- * so it never blocks dragging (same convention as
- * .eq-slider-center-line). */
+ * full strip width (all strips are stereo; there is no mono PAN row
+ * anymore). The ::after tick marks the center detent, drawn above the
+ * track but pointer-transparent so it never blocks dragging (same
+ * convention as .eq-slider-center-line). */
 .bal-slider-wrap { position: relative; display: flex; align-items: center; padding: 4px 0; }
 .bal-slider-wrap .pan-slider { flex: 1; min-width: 0; }
 .bal-slider-wrap::after {

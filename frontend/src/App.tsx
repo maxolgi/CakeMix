@@ -15,7 +15,7 @@ import {
   fxLastError, setFxLastError,
   wasmReady, setWasmReady, isRunning, setIsRunning,
   status, setStatus, setMixerNode, sendToWorklet,
-  selectedBus, setSelectedBus, slotChannelIndex,
+  selectedBus, setSelectedBus, BUS_STEREO_SLOTS,
 } from "./stores/mixer";
 
 const SAMPLE_RATE = 48000;
@@ -166,12 +166,12 @@ export default function App() {
             {(t) => <ChannelDetailPanel channelIndex={t} stereo />}
           </For>
         ) : (
-          <For each={Array.from({ length: 16 }, (_, s) => s)}>
-            {(s) => (
-              <ChannelDetailPanel
-                channelIndex={slotChannelIndex(selectedBus()!, s)}
-                slot={{ bus: selectedBus()!, slot: s }}
-              />
+          // Bus view: 8 stereo slot strips per bus (stereo slot t = this
+          // bus's mono slot strips 2t/2t+1 — the panel fans every control
+          // out to both, same as the input strips).
+          <For each={Array.from({ length: BUS_STEREO_SLOTS }, (_, s) => s)}>
+            {(t) => (
+              <ChannelDetailPanel slot={{ bus: selectedBus()!, slot: t }} />
             )}
           </For>
         )}

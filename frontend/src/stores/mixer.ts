@@ -190,6 +190,63 @@ export const [busChannels, setBusChannels] = createStore<BusState[]>(
 );
 export const [selectedBus, setSelectedBus] = createSignal<number | null>(null);
 
+// ── Stereo bus-slot model (8 stereo slots per bus = mono slot pairs) ────────
+//
+// The bus view speaks in STEREO SLOTS: stereo slot t of bus b maps to that
+// bus's mono slots 2t (L) and 2t+1 (R) = engine strips 128+b*16+2t / +2t+1.
+// Same discipline as the input StereoChannel model above: every control
+// write fans out to BOTH underlying mono slot strips (the engine-facing
+// state scenes serialize), and the per-strip meter reports fold back into
+// the slot's L/R meters. The engine has no stereo bus-slot strip — this is
+// purely a UI layer over the mono pair.
+
+/** Stereo bus slots per bus: slot pair t = mono slots 2t/2t+1 (16 mono). */
+export const BUS_STEREO_SLOTS = 8;
+
+/** Stereo console bus slot: every control field fans out to the pair of
+ *  mono slot strips via the setBusSlot* helpers. */
+export interface StereoBusSlotState extends Omit<
+  ChannelState, "name" | "pan" | "peakDb" | "rmsDb" | "compGrDb" | "degraded"
+> {
+  name: string;
+  /** -1..1 balance across the slot pair (see channelPans). */
+  balance: number;
+  /** Stereo source channel routed into this slot pair, or null. An
+   *  assignment writes bus_source for BOTH mono slots (channel 2t → mono
+   *  slot 2t', 2t+1 → slot 2t'+1); the view reads as assigned only when
+   *  both halves hold a matching even/odd channel pair. */
+  source: number | null;
+  /** Per-side stream telemetry slot. Bus-slot strips carry no PCM FIFO of
+   *  their own (they sum their sources), so both sides stay false today;
+   *  tracked for uniformity with the input strips, no visual dependence. */
+  sideMapped: { l: boolean; r: boolean };
+  /** Folded from the pair's per-strip reports (see updateMeterData). */
+  meters: StereoMeters;
+}
+
+function defaultStereoBusSlot(bus: number, t: number): StereoBusSlotState {
+  // Defaults mirror the pair's L mono slot strip; the mono-only fields are
+  // dropped — meters/sideMapped are runtime state, not params.
+  const { pan, peakDb, rmsDb, compGrDb, degraded, ...params } = defaultChannel(slotChannelIndex(bus, 2 * t));
+  return {
+    ...params,
+    name: `B${bus + 1}-S${t + 1}`,
+    balance: 0,
+    source: null,
+    sideMapped: { l: false, r: false },
+    meters: {
+      peakL: -Infinity, rmsL: -Infinity,
+      peakR: -Infinity, rmsR: -Infinity,
+      grL: 0, grR: 0, degraded: false,
+    },
+  };
+}
+
+export const [stereoBusSlots, setStereoBusSlots] = createStore<StereoBusSlotState[][]>(
+  Array.from({ length: 8 }, (_, b) =>
+    Array.from({ length: BUS_STEREO_SLOTS }, (_, t) => defaultStereoBusSlot(b, t)))
+);
+
 function defaultFxSlot(): FxSlotState { return { fx: -1, enabled: false, params: [] }; }
 
 /** Per-pair FX chains: fxChains[pair][slot]. pair = ch/2 for the even
@@ -244,7 +301,8 @@ export function updateMeterData(msg: MeterData) {
       setChannels(cm.ch, "degraded", cm.dg === 1);
       // Input strips additionally fold into the stereo store: even ch → L,
       // odd → R of stereo channel ch>>1. Bus-slot strips (>= SLOT_BASE)
-      // have no stereo pair and only take the mono writes above.
+      // fold into the stereo bus-slot view the same way: strip slot s of
+      // bus b → side s&1 of stereo slot s>>1.
       if (cm.ch < NUM_CHANNELS) {
         const t = cm.ch >> 1;
         if (cm.ch & 1) {
@@ -260,6 +318,22 @@ export function updateMeterData(msg: MeterData) {
         // mono entry was updated earlier in this batch (or holds the last
         // known state), so reading it back gives the correct OR.
         setStereoChannels(t, "meters", "degraded", cm.dg === 1 || channels[cm.ch ^ 1].degraded);
+      } else {
+        const sIdx = cm.ch - SLOT_BASE;
+        const b = sIdx >> 4;
+        const t = (sIdx >> 1) & (BUS_STEREO_SLOTS - 1);
+        if (cm.ch & 1) {
+          setStereoBusSlots(b, t, "meters", "peakR", cm.peak);
+          setStereoBusSlots(b, t, "meters", "rmsR", cm.rms);
+          setStereoBusSlots(b, t, "meters", "grR", cm.gr ?? 0);
+        } else {
+          setStereoBusSlots(b, t, "meters", "peakL", cm.peak);
+          setStereoBusSlots(b, t, "meters", "rmsL", cm.rms);
+          setStereoBusSlots(b, t, "meters", "grL", cm.gr ?? 0);
+        }
+        // Same OR-readback trick as above: slot pairs are adjacent strips,
+        // so ch^1 is the partner.
+        setStereoBusSlots(b, t, "meters", "degraded", cm.dg === 1 || channels[cm.ch ^ 1].degraded);
       }
     }
   } else {
@@ -277,6 +351,17 @@ export function updateMeterData(msg: MeterData) {
       setStereoChannels(t, "meters", "grL", 0);
       setStereoChannels(t, "meters", "grR", 0);
       setStereoChannels(t, "meters", "degraded", false);
+    }
+    for (let b = 0; b < stereoBusSlots.length; b++) {
+      for (let t = 0; t < BUS_STEREO_SLOTS; t++) {
+        setStereoBusSlots(b, t, "meters", "peakL", -Infinity);
+        setStereoBusSlots(b, t, "meters", "rmsL", -Infinity);
+        setStereoBusSlots(b, t, "meters", "peakR", -Infinity);
+        setStereoBusSlots(b, t, "meters", "rmsR", -Infinity);
+        setStereoBusSlots(b, t, "meters", "grL", 0);
+        setStereoBusSlots(b, t, "meters", "grR", 0);
+        setStereoBusSlots(b, t, "meters", "degraded", false);
+      }
     }
   }
   if (msg.buses && msg.buses.length) {
@@ -636,6 +721,260 @@ export function slotChannelIndex(bus: number, slot: number): number {
   return SLOT_BASE + bus * 16 + slot;
 }
 
+// ── Stereo bus-slot helpers ──────────────────────────────────────────────────
+//
+// Stereo version of the control helpers for the bus slot PAIRS: stereo
+// slot t of bus b maps to mono slot strips 2t (L) / 2t+1 (R). Same
+// discipline as the input stereo helpers above: write the StereoBusSlot
+// view, mirror BOTH mono slot strips, and post the SAME message
+// (identical field names) to both strips. The mono helpers above stay
+// exported and unchanged — scenes and engine-facing callers keep using
+// them, and the source assignment drives them for pair writes.
+
+function busSlotSend(bus: number, t: number, msg: (ch: number) => object): void {
+  sendToWorklet(msg(slotChannelIndex(bus, 2 * t)));
+  sendToWorklet(msg(slotChannelIndex(bus, 2 * t + 1)));
+}
+
+export function setBusSlotName(bus: number, t: number, name: string) {
+  setStereoBusSlots(bus, t, "name", name);
+  setChannels(slotChannelIndex(bus, 2 * t), "name", name);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "name", name);
+  busSlotSend(bus, t, ch => ({ type: "set-name", ch, name }));
+}
+export function setBusSlotGain(bus: number, t: number, gain: number) {
+  setStereoBusSlots(bus, t, "gain", gain);
+  setChannels(slotChannelIndex(bus, 2 * t), "gain", gain);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "gain", gain);
+  busSlotSend(bus, t, ch => ({ type: "set-gain", ch, gain }));
+}
+export function setBusSlotBalance(bus: number, t: number, balance: number) {
+  setStereoBusSlots(bus, t, "balance", balance);
+  // Balance → per-side pans (see channelPans); each engine strip gets
+  // its own pan, and the mono mirror keeps each side's actual pan.
+  const { lPan, rPan } = channelPans(balance);
+  setChannels(slotChannelIndex(bus, 2 * t), "pan", lPan);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "pan", rPan);
+  sendToWorklet({ type: "set-pan", ch: slotChannelIndex(bus, 2 * t), pan: lPan });
+  sendToWorklet({ type: "set-pan", ch: slotChannelIndex(bus, 2 * t + 1), pan: rPan });
+}
+export function setBusSlotInputGain(bus: number, t: number, gainDb: number) {
+  setStereoBusSlots(bus, t, "inputGainDb", gainDb);
+  setChannels(slotChannelIndex(bus, 2 * t), "inputGainDb", gainDb);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "inputGainDb", gainDb);
+  busSlotSend(bus, t, ch => ({ type: "set-input-gain", ch, gainDb }));
+}
+export function setBusSlotPhase(bus: number, t: number, inverted: boolean) {
+  setStereoBusSlots(bus, t, "phaseInverted", inverted);
+  setChannels(slotChannelIndex(bus, 2 * t), "phaseInverted", inverted);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "phaseInverted", inverted);
+  busSlotSend(bus, t, ch => ({ type: "set-phase", ch, inverted }));
+}
+export function setBusSlotPanLaw(bus: number, t: number, law: number) {
+  setStereoBusSlots(bus, t, "panLaw", law);
+  setChannels(slotChannelIndex(bus, 2 * t), "panLaw", law);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "panLaw", law);
+  busSlotSend(bus, t, ch => ({ type: "set-pan-law", ch, law }));
+}
+export function setBusSlotMute(bus: number, t: number, muted: boolean) {
+  setStereoBusSlots(bus, t, "muted", muted);
+  setChannels(slotChannelIndex(bus, 2 * t), "muted", muted);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "muted", muted);
+  busSlotSend(bus, t, ch => ({ type: "set-mute", ch, muted }));
+}
+export function setBusSlotSolo(bus: number, t: number, soloed: boolean) {
+  setStereoBusSlots(bus, t, "soloed", soloed);
+  setChannels(slotChannelIndex(bus, 2 * t), "soloed", soloed);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "soloed", soloed);
+  busSlotSend(bus, t, ch => ({ type: "set-solo", ch, soloed }));
+}
+
+/** Route stereo channel `ch` into the slot pair — writes bus_source for
+ *  BOTH mono slots (channel 2ch → mono slot 2t, 2ch+1 → slot 2t+1) — or
+ *  clear both on null. The engine sees two independent mono bus_source
+ *  writes; the stereo view records the channel. */
+export function setBusSlotSource(bus: number, t: number, ch: number | null) {
+  setStereoBusSlots(bus, t, "source", ch);
+  if (ch === null) {
+    clearBusSource(bus, 2 * t);
+    clearBusSource(bus, 2 * t + 1);
+  } else {
+    setBusSource(bus, 2 * t, 2 * ch);
+    setBusSource(bus, 2 * t + 1, 2 * ch + 1);
+  }
+}
+
+export function setBusSlotEqGain(bus: number, t: number, band: number, gainDb: number) {
+  setStereoBusSlots(bus, t, "eqBands", band, "gainDb", gainDb);
+  setChannels(slotChannelIndex(bus, 2 * t), "eqBands", band, "gainDb", gainDb);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "eqBands", band, "gainDb", gainDb);
+  busSlotSend(bus, t, ch => ({ type: "set-eq-gain", ch, band, gainDb }));
+}
+export function setBusSlotEqFreq(bus: number, t: number, band: number, freqHz: number) {
+  setStereoBusSlots(bus, t, "eqBands", band, "freqHz", freqHz);
+  setChannels(slotChannelIndex(bus, 2 * t), "eqBands", band, "freqHz", freqHz);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "eqBands", band, "freqHz", freqHz);
+  busSlotSend(bus, t, ch => ({ type: "set-eq-freq", ch, band, freqHz }));
+}
+export function setBusSlotEqQ(bus: number, t: number, band: number, q: number) {
+  setStereoBusSlots(bus, t, "eqBands", band, "q", q);
+  setChannels(slotChannelIndex(bus, 2 * t), "eqBands", band, "q", q);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "eqBands", band, "q", q);
+  busSlotSend(bus, t, ch => ({ type: "set-eq-q", ch, band, q }));
+}
+export function setBusSlotEqBypass(bus: number, t: number, bypassed: boolean) {
+  setStereoBusSlots(bus, t, "eqBypassed", bypassed);
+  setChannels(slotChannelIndex(bus, 2 * t), "eqBypassed", bypassed);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "eqBypassed", bypassed);
+  busSlotSend(bus, t, ch => ({ type: "set-eq-bypass", ch, bypassed }));
+}
+
+// Dynamics: same push-params-after-enable discipline as the input stereo
+// helpers — enabling recreates the engine effect on BOTH strips with ITS
+// OWN defaults, so every enable is followed by a push of all displayed
+// params to both sides.
+
+export function setBusSlotCompEnabled(bus: number, t: number, enabled: boolean) {
+  setStereoBusSlots(bus, t, "compEnabled", enabled);
+  setChannels(slotChannelIndex(bus, 2 * t), "compEnabled", enabled);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "compEnabled", enabled);
+  busSlotSend(bus, t, ch => ({ type: enabled ? "enable-compressor" : "disable-compressor", ch }));
+  if (enabled) pushBusSlotCompParams(bus, t);
+}
+/** Re-send all displayed comp params to both sides. */
+export function pushBusSlotCompParams(bus: number, t: number) {
+  const s = stereoBusSlots[bus][t];
+  busSlotSend(bus, t, ch => ({ type: "set-comp-param", ch, param: 0, value: s.compThresholdDb }));
+  busSlotSend(bus, t, ch => ({ type: "set-comp-param", ch, param: 1, value: s.compRatio }));
+  busSlotSend(bus, t, ch => ({ type: "set-comp-param", ch, param: 2, value: s.compAttackMs }));
+  busSlotSend(bus, t, ch => ({ type: "set-comp-param", ch, param: 3, value: s.compReleaseMs }));
+  busSlotSend(bus, t, ch => ({ type: "set-comp-param", ch, param: 4, value: s.compMakeupDb }));
+  busSlotSend(bus, t, ch => ({ type: "set-comp-param", ch, param: 5, value: s.compKneeDb }));
+}
+export function setBusSlotCompThreshold(bus: number, t: number, v: number) {
+  setStereoBusSlots(bus, t, "compThresholdDb", v);
+  setChannels(slotChannelIndex(bus, 2 * t), "compThresholdDb", v);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "compThresholdDb", v);
+  busSlotSend(bus, t, ch => ({ type: "set-comp-param", ch, param: 0, value: v }));
+}
+export function setBusSlotCompRatio(bus: number, t: number, v: number) {
+  setStereoBusSlots(bus, t, "compRatio", v);
+  setChannels(slotChannelIndex(bus, 2 * t), "compRatio", v);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "compRatio", v);
+  busSlotSend(bus, t, ch => ({ type: "set-comp-param", ch, param: 1, value: v }));
+}
+export function setBusSlotCompAttack(bus: number, t: number, v: number) {
+  setStereoBusSlots(bus, t, "compAttackMs", v);
+  setChannels(slotChannelIndex(bus, 2 * t), "compAttackMs", v);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "compAttackMs", v);
+  busSlotSend(bus, t, ch => ({ type: "set-comp-param", ch, param: 2, value: v }));
+}
+export function setBusSlotCompRelease(bus: number, t: number, v: number) {
+  setStereoBusSlots(bus, t, "compReleaseMs", v);
+  setChannels(slotChannelIndex(bus, 2 * t), "compReleaseMs", v);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "compReleaseMs", v);
+  busSlotSend(bus, t, ch => ({ type: "set-comp-param", ch, param: 3, value: v }));
+}
+export function setBusSlotCompMakeup(bus: number, t: number, v: number) {
+  setStereoBusSlots(bus, t, "compMakeupDb", v);
+  setChannels(slotChannelIndex(bus, 2 * t), "compMakeupDb", v);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "compMakeupDb", v);
+  busSlotSend(bus, t, ch => ({ type: "set-comp-param", ch, param: 4, value: v }));
+}
+export function setBusSlotCompKnee(bus: number, t: number, v: number) {
+  setStereoBusSlots(bus, t, "compKneeDb", v);
+  setChannels(slotChannelIndex(bus, 2 * t), "compKneeDb", v);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "compKneeDb", v);
+  busSlotSend(bus, t, ch => ({ type: "set-comp-param", ch, param: 5, value: v }));
+}
+
+export function setBusSlotGateEnabled(bus: number, t: number, enabled: boolean) {
+  setStereoBusSlots(bus, t, "gateEnabled", enabled);
+  setChannels(slotChannelIndex(bus, 2 * t), "gateEnabled", enabled);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "gateEnabled", enabled);
+  busSlotSend(bus, t, ch => ({ type: enabled ? "enable-gate" : "disable-gate", ch }));
+  if (enabled) pushBusSlotGateParams(bus, t);
+}
+/** Re-send all displayed gate params to both sides (see pushBusSlotCompParams). */
+export function pushBusSlotGateParams(bus: number, t: number) {
+  const s = stereoBusSlots[bus][t];
+  busSlotSend(bus, t, ch => ({ type: "set-gate-param", ch, param: 0, value: s.gateThresholdDb }));
+  busSlotSend(bus, t, ch => ({ type: "set-gate-param", ch, param: 1, value: s.gateHysteresisDb }));
+  busSlotSend(bus, t, ch => ({ type: "set-gate-param", ch, param: 2, value: s.gateAttackMs }));
+  busSlotSend(bus, t, ch => ({ type: "set-gate-param", ch, param: 3, value: s.gateReleaseMs }));
+  busSlotSend(bus, t, ch => ({ type: "set-gate-param", ch, param: 4, value: s.gateHoldMs }));
+}
+export function setBusSlotGateThreshold(bus: number, t: number, v: number) {
+  setStereoBusSlots(bus, t, "gateThresholdDb", v);
+  setChannels(slotChannelIndex(bus, 2 * t), "gateThresholdDb", v);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "gateThresholdDb", v);
+  busSlotSend(bus, t, ch => ({ type: "set-gate-param", ch, param: 0, value: v }));
+}
+export function setBusSlotGateHysteresis(bus: number, t: number, v: number) {
+  setStereoBusSlots(bus, t, "gateHysteresisDb", v);
+  setChannels(slotChannelIndex(bus, 2 * t), "gateHysteresisDb", v);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "gateHysteresisDb", v);
+  busSlotSend(bus, t, ch => ({ type: "set-gate-param", ch, param: 1, value: v }));
+}
+export function setBusSlotGateAttack(bus: number, t: number, v: number) {
+  setStereoBusSlots(bus, t, "gateAttackMs", v);
+  setChannels(slotChannelIndex(bus, 2 * t), "gateAttackMs", v);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "gateAttackMs", v);
+  busSlotSend(bus, t, ch => ({ type: "set-gate-param", ch, param: 2, value: v }));
+}
+export function setBusSlotGateRelease(bus: number, t: number, v: number) {
+  setStereoBusSlots(bus, t, "gateReleaseMs", v);
+  setChannels(slotChannelIndex(bus, 2 * t), "gateReleaseMs", v);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "gateReleaseMs", v);
+  busSlotSend(bus, t, ch => ({ type: "set-gate-param", ch, param: 3, value: v }));
+}
+export function setBusSlotGateHold(bus: number, t: number, v: number) {
+  setStereoBusSlots(bus, t, "gateHoldMs", v);
+  setChannels(slotChannelIndex(bus, 2 * t), "gateHoldMs", v);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "gateHoldMs", v);
+  busSlotSend(bus, t, ch => ({ type: "set-gate-param", ch, param: 4, value: v }));
+}
+
+export function setBusSlotExpanderEnabled(bus: number, t: number, enabled: boolean) {
+  setStereoBusSlots(bus, t, "expanderEnabled", enabled);
+  setChannels(slotChannelIndex(bus, 2 * t), "expanderEnabled", enabled);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "expanderEnabled", enabled);
+  busSlotSend(bus, t, ch => ({ type: enabled ? "enable-expander" : "disable-expander", ch }));
+  if (enabled) pushBusSlotExpParams(bus, t);
+}
+/** Re-send all displayed expander params to both sides. */
+export function pushBusSlotExpParams(bus: number, t: number) {
+  const s = stereoBusSlots[bus][t];
+  busSlotSend(bus, t, ch => ({ type: "set-exp-param", ch, param: 0, value: s.expanderThresholdDb }));
+  busSlotSend(bus, t, ch => ({ type: "set-exp-param", ch, param: 1, value: s.expanderRatio }));
+  busSlotSend(bus, t, ch => ({ type: "set-exp-param", ch, param: 2, value: s.expanderAttackMs }));
+  busSlotSend(bus, t, ch => ({ type: "set-exp-param", ch, param: 3, value: s.expanderReleaseMs }));
+}
+export function setBusSlotExpanderThreshold(bus: number, t: number, v: number) {
+  setStereoBusSlots(bus, t, "expanderThresholdDb", v);
+  setChannels(slotChannelIndex(bus, 2 * t), "expanderThresholdDb", v);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "expanderThresholdDb", v);
+  busSlotSend(bus, t, ch => ({ type: "set-exp-param", ch, param: 0, value: v }));
+}
+export function setBusSlotExpanderRatio(bus: number, t: number, v: number) {
+  setStereoBusSlots(bus, t, "expanderRatio", v);
+  setChannels(slotChannelIndex(bus, 2 * t), "expanderRatio", v);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "expanderRatio", v);
+  busSlotSend(bus, t, ch => ({ type: "set-exp-param", ch, param: 1, value: v }));
+}
+export function setBusSlotExpanderAttack(bus: number, t: number, v: number) {
+  setStereoBusSlots(bus, t, "expanderAttackMs", v);
+  setChannels(slotChannelIndex(bus, 2 * t), "expanderAttackMs", v);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "expanderAttackMs", v);
+  busSlotSend(bus, t, ch => ({ type: "set-exp-param", ch, param: 2, value: v }));
+}
+export function setBusSlotExpanderRelease(bus: number, t: number, v: number) {
+  setStereoBusSlots(bus, t, "expanderReleaseMs", v);
+  setChannels(slotChannelIndex(bus, 2 * t), "expanderReleaseMs", v);
+  setChannels(slotChannelIndex(bus, 2 * t + 1), "expanderReleaseMs", v);
+  busSlotSend(bus, t, ch => ({ type: "set-exp-param", ch, param: 3, value: v }));
+}
+
 // ── FX chain helpers ──────────────────────────────────────────────────────────
 
 /** Pair index of even strip `ch`, or null when ch is not an even input
@@ -881,6 +1220,58 @@ export function applyConsoleParams(json: string) {
     setBusChannels(b, "feedsMain", bus.feedsMain);
     for (let slot = 0; slot < bus.sources.length; slot++) {
       setBusChannels(b, "sources", slot, bus.sources[slot]);
+    }
+  }
+  // Stereo bus-slot derivation: stereo slot t of bus b = mono slot strips
+  // 2t/2t+1 as just written above, L wins on mismatch (the fan-out setters
+  // wrote both sides identically, so mismatches only exist on legacy
+  // mono-per-slot scenes). Balance is recovered from the per-side pans —
+  // channelPans guarantees lPan + rPan = 2·balance (clamped for arbitrary
+  // legacy values). Source reads as a stereo channel only when BOTH halves
+  // hold a matching even/odd channel pair; legacy loose assignments stay
+  // routable but show "none" until re-assigned. Same write-directly-never-
+  // echo rule; the object write is a shallow merge, so meters/sideMapped
+  // (runtime state, not part of the document) stay untouched.
+  for (let b = 0; b < busChannels.length; b++) {
+    for (let t = 0; t < BUS_STEREO_SLOTS; t++) {
+      const l = channels[slotChannelIndex(b, 2 * t)];
+      const r = channels[slotChannelIndex(b, 2 * t + 1)];
+      const srcL = busChannels[b].sources[2 * t];
+      const srcR = busChannels[b].sources[2 * t + 1];
+      setStereoBusSlots(b, t, {
+        name: l.name,
+        gain: l.gain,
+        balance: Math.max(-1, Math.min(1, (l.pan + r.pan) / 2)),
+        source: srcL !== null && srcR !== null && srcL % 2 === 0 && srcR === srcL + 1
+          ? srcL / 2
+          : null,
+        inputGainDb: l.inputGainDb,
+        phaseInverted: l.phaseInverted,
+        panLaw: l.panLaw,
+        muted: l.muted,
+        soloed: l.soloed,
+        mainAssigned: l.mainAssigned,
+        eqBypassed: l.eqBypassed,
+        eqBands: l.eqBands.map(band => ({ ...band })),
+        gateEnabled: l.gateEnabled,
+        gateThresholdDb: l.gateThresholdDb,
+        gateHysteresisDb: l.gateHysteresisDb,
+        gateAttackMs: l.gateAttackMs,
+        gateReleaseMs: l.gateReleaseMs,
+        gateHoldMs: l.gateHoldMs,
+        compEnabled: l.compEnabled,
+        compThresholdDb: l.compThresholdDb,
+        compRatio: l.compRatio,
+        compKneeDb: l.compKneeDb,
+        compAttackMs: l.compAttackMs,
+        compReleaseMs: l.compReleaseMs,
+        compMakeupDb: l.compMakeupDb,
+        expanderEnabled: l.expanderEnabled,
+        expanderThresholdDb: l.expanderThresholdDb,
+        expanderRatio: l.expanderRatio,
+        expanderAttackMs: l.expanderAttackMs,
+        expanderReleaseMs: l.expanderReleaseMs,
+      });
     }
   }
   // FX chains: fxChains carries NON-EMPTY pairs only — an absent pair is

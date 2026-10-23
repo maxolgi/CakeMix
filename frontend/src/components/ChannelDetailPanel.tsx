@@ -1,13 +1,6 @@
 import { createSignal, createEffect, onCleanup, For } from "solid-js";
 import type { JSX } from "solid-js";
 import {
-  channels,
-  setInputGain, setPhase, setPanLaw, setChannelName,
-  setEqGain, setEqFreq, setEqQ, setEqBypass,
-  setCompEnabled, setCompThreshold, setCompRatio, setCompAttack, setCompRelease, setCompKnee, setCompMakeup,
-  setGateEnabled, setGateThreshold, setGateHysteresis, setGateAttack, setGateRelease, setGateHold,
-  setExpanderEnabled, setExpanderThreshold, setExpanderRatio, setExpanderAttack, setExpanderRelease,
-  setMainAssign,
   stereoChannels,
   setStereoName, setStereoGain, setStereoBalance, setStereoInputGain, setStereoPhase, setStereoPanLaw,
   setStereoMute, setStereoSolo, setStereoMainAssign,
@@ -15,12 +8,19 @@ import {
   setStereoCompEnabled, setStereoCompThreshold, setStereoCompRatio, setStereoCompAttack, setStereoCompRelease, setStereoCompKnee, setStereoCompMakeup,
   setStereoGateEnabled, setStereoGateThreshold, setStereoGateHysteresis, setStereoGateAttack, setStereoGateRelease, setStereoGateHold,
   setStereoExpanderEnabled, setStereoExpanderThreshold, setStereoExpanderRatio, setStereoExpanderAttack, setStereoExpanderRelease,
+  stereoBusSlots, STEREO_CHANNELS, slotChannelIndex,
+  setBusSlotName, setBusSlotGain, setBusSlotBalance, setBusSlotInputGain, setBusSlotPhase, setBusSlotPanLaw,
+  setBusSlotMute, setBusSlotSolo, setBusSlotSource,
+  setBusSlotEqGain, setBusSlotEqFreq, setBusSlotEqQ, setBusSlotEqBypass,
+  setBusSlotCompEnabled, setBusSlotCompThreshold, setBusSlotCompRatio, setBusSlotCompAttack, setBusSlotCompRelease, setBusSlotCompKnee, setBusSlotCompMakeup,
+  setBusSlotGateEnabled, setBusSlotGateThreshold, setBusSlotGateHysteresis, setBusSlotGateAttack, setBusSlotGateRelease, setBusSlotGateHold,
+  setBusSlotExpanderEnabled, setBusSlotExpanderThreshold, setBusSlotExpanderRatio, setBusSlotExpanderAttack, setBusSlotExpanderRelease,
   fxAnchor,
-  busChannels, setBusSource, clearBusSource, NUM_CHANNELS, FX_SLOTS,
+  FX_SLOTS,
   fxChains, fxCatalog, setFxSlot, setFxEnabled, setFxParam, moveFxSlot, type FxParamDef,
   fxOut,
   faderToGain, gainToFader, formatGainDb,
-  setChannels, sendToWorklet,
+  sendToWorklet,
 } from "../stores/mixer";
 import { Knob } from "./Knob";
 import { GrMeter } from "./GrMeter";
@@ -153,34 +153,31 @@ function FxEditArea(props: { ch: number; pair: number; slot: () => number }) {
   );
 }
 
-export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boolean; slot?: { bus: number; slot: number } }) {
-  // Two paths, chosen once per mount:
-  // - stereo (input strips): channelIndex is a STEREO channel t (0..63).
-  //   Reads/writes go through the StereoChannel store and the setStereo*
-  //   fan-out helpers (which also mirror the mono store and post to BOTH
-  //   engine strips 2t/2t+1). The strip bottom is the two-column stereo
-  //   layout (meters+SOLO | fader+MUTE) with dual L/R meters.
-  // - mono (bus slots, channelIndex >= SLOT_BASE): exactly the old path.
+export function ChannelDetailPanel(props: { channelIndex?: number; stereo?: boolean; slot?: { bus: number; slot: number } }) {
+  // Two paths, chosen once per mount — BOTH are stereo: they read/write a
+  // stereo store and fan every control out to the underlying mono strip
+  // pair. The strip layout is shared; only the anchor points differ
+  // (source picker is bus-slot only, MAIN and the FX rack are input-only).
+  // - input strips (`stereo`): channelIndex is a STEREO channel t (0..63)
+  //   → engine strips 2t/2t+1, via the StereoChannel store + setStereo*.
+  // - bus slots (`slot`): slot.slot is the bus's STEREO slot t (0..7)
+  //   → the bus's mono slots 2t/2t+1 = engine strips 128+bus*16+2t / +2t+1,
+  //   via the StereoBusSlot store + setBusSlot*.
   const stereoMode = props.stereo === true;
-  const idx = props.channelIndex;
-  const ch = () => (stereoMode ? stereoChannels[idx] : channels[idx]);
-  // Fields whose names/shape differ between the two stores. The mono/bus
-  // bottom reads the mono store's single meter; the stereo bottom reads
-  // meters.peak/rms per side inline in its JSX below.
-  const panVal = () => (stereoMode ? stereoChannels[idx].balance : channels[idx].pan);
-  const peakDbVal = () => channels[idx].peakDb;
-  const rmsDbVal = () => channels[idx].rmsDb;
-  // GR (COMP section readout): stereo shows the DEEPER of the two sides'
-  // reductions — max(|grL|, |grR|); mono keeps its own strip value.
-  const grVal = () => (stereoMode
-    ? Math.max(Math.abs(stereoChannels[idx].meters.grL), Math.abs(stereoChannels[idx].meters.grR))
-    : channels[idx].compGrDb);
-  const degradedVal = () => (stereoMode ? stereoChannels[idx].meters.degraded : channels[idx].degraded);
+  const slotCtx = props.slot ?? null;
+  const busIdx = slotCtx ? slotCtx.bus : -1;
+  const slotT = slotCtx ? slotCtx.slot : -1;
+  const idx = props.channelIndex ?? -1;
+  const ch = () => (stereoMode ? stereoChannels[idx] : stereoBusSlots[busIdx][slotT]);
+  // Balance, GR and stream-health reads are uniform: both stereo stores
+  // fold them (balance lives on the view; gr/degraded ride the meters).
+  const panVal = () => ch().balance;
+  const grVal = () => Math.max(Math.abs(ch().meters.grL), Math.abs(ch().meters.grR));
+  const degradedVal = () => ch().meters.degraded;
 
-  // Control adapter: one bound setter set per path. Stereo fans out via
-  // the store helpers; mono keeps the exact helpers/messages as before
-  // (fader/pan/mute/solo stay the inline setChannels + sendToWorklet
-  // pattern on the mono path).
+  // Control adapter: one bound setter set per path. Input fans out via
+  // the setStereo* helpers; bus slots via the setBusSlot* helpers (both
+  // mirror the mono strips and post to BOTH engine strips).
   const S = stereoMode ? {
     setName: (v: string) => setStereoName(idx, v),
     fader: (pos: number) => setStereoGain(idx, faderToGain(pos)),
@@ -214,52 +211,36 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
     expanderAttack: (v: number) => setStereoExpanderAttack(idx, v),
     expanderRelease: (v: number) => setStereoExpanderRelease(idx, v),
   } : {
-    setName: (v: string) => setChannelName(idx, v),
-    fader: (pos: number) => {
-      const gain = faderToGain(pos);
-      setChannels(idx, "gain", gain);
-      sendToWorklet({ type: "set-gain", ch: idx, gain });
-    },
-    pan: (v: number) => {
-      setChannels(idx, "pan", v);
-      sendToWorklet({ type: "set-pan", ch: idx, pan: v });
-    },
-    mute: () => {
-      const muted = !ch().muted;
-      setChannels(idx, "muted", muted);
-      sendToWorklet({ type: "set-mute", ch: idx, muted });
-    },
-    solo: () => {
-      const soloed = !ch().soloed;
-      setChannels(idx, "soloed", soloed);
-      sendToWorklet({ type: "set-solo", ch: idx, soloed });
-    },
-    inputGain: (v: number) => setInputGain(idx, v),
-    phase: (v: boolean) => setPhase(idx, v),
-    panLaw: (v: number) => setPanLaw(idx, v),
-    mainAssign: (v: boolean) => setMainAssign(idx, v),
-    eqBypass: (v: boolean) => setEqBypass(idx, v),
-    eqGain: (b: number, v: number) => setEqGain(idx, b, v),
-    eqFreq: (b: number, v: number) => setEqFreq(idx, b, v),
-    eqQ: (b: number, v: number) => setEqQ(idx, b, v),
-    gateEnabled: (v: boolean) => setGateEnabled(idx, v),
-    gateThreshold: (v: number) => setGateThreshold(idx, v),
-    gateHysteresis: (v: number) => setGateHysteresis(idx, v),
-    gateAttack: (v: number) => setGateAttack(idx, v),
-    gateRelease: (v: number) => setGateRelease(idx, v),
-    gateHold: (v: number) => setGateHold(idx, v),
-    compEnabled: (v: boolean) => setCompEnabled(idx, v),
-    compThreshold: (v: number) => setCompThreshold(idx, v),
-    compRatio: (v: number) => setCompRatio(idx, v),
-    compAttack: (v: number) => setCompAttack(idx, v),
-    compRelease: (v: number) => setCompRelease(idx, v),
-    compKnee: (v: number) => setCompKnee(idx, v),
-    compMakeup: (v: number) => setCompMakeup(idx, v),
-    expanderEnabled: (v: boolean) => setExpanderEnabled(idx, v),
-    expanderThreshold: (v: number) => setExpanderThreshold(idx, v),
-    expanderRatio: (v: number) => setExpanderRatio(idx, v),
-    expanderAttack: (v: number) => setExpanderAttack(idx, v),
-    expanderRelease: (v: number) => setExpanderRelease(idx, v),
+    setName: (v: string) => setBusSlotName(busIdx, slotT, v),
+    fader: (pos: number) => setBusSlotGain(busIdx, slotT, faderToGain(pos)),
+    pan: (v: number) => setBusSlotBalance(busIdx, slotT, v),
+    mute: () => setBusSlotMute(busIdx, slotT, !ch().muted),
+    solo: () => setBusSlotSolo(busIdx, slotT, !ch().soloed),
+    inputGain: (v: number) => setBusSlotInputGain(busIdx, slotT, v),
+    phase: (v: boolean) => setBusSlotPhase(busIdx, slotT, v),
+    panLaw: (v: number) => setBusSlotPanLaw(busIdx, slotT, v),
+    eqBypass: (v: boolean) => setBusSlotEqBypass(busIdx, slotT, v),
+    eqGain: (b: number, v: number) => setBusSlotEqGain(busIdx, slotT, b, v),
+    eqFreq: (b: number, v: number) => setBusSlotEqFreq(busIdx, slotT, b, v),
+    eqQ: (b: number, v: number) => setBusSlotEqQ(busIdx, slotT, b, v),
+    gateEnabled: (v: boolean) => setBusSlotGateEnabled(busIdx, slotT, v),
+    gateThreshold: (v: number) => setBusSlotGateThreshold(busIdx, slotT, v),
+    gateHysteresis: (v: number) => setBusSlotGateHysteresis(busIdx, slotT, v),
+    gateAttack: (v: number) => setBusSlotGateAttack(busIdx, slotT, v),
+    gateRelease: (v: number) => setBusSlotGateRelease(busIdx, slotT, v),
+    gateHold: (v: number) => setBusSlotGateHold(busIdx, slotT, v),
+    compEnabled: (v: boolean) => setBusSlotCompEnabled(busIdx, slotT, v),
+    compThreshold: (v: number) => setBusSlotCompThreshold(busIdx, slotT, v),
+    compRatio: (v: number) => setBusSlotCompRatio(busIdx, slotT, v),
+    compAttack: (v: number) => setBusSlotCompAttack(busIdx, slotT, v),
+    compRelease: (v: number) => setBusSlotCompRelease(busIdx, slotT, v),
+    compKnee: (v: number) => setBusSlotCompKnee(busIdx, slotT, v),
+    compMakeup: (v: number) => setBusSlotCompMakeup(busIdx, slotT, v),
+    expanderEnabled: (v: boolean) => setBusSlotExpanderEnabled(busIdx, slotT, v),
+    expanderThreshold: (v: number) => setBusSlotExpanderThreshold(busIdx, slotT, v),
+    expanderRatio: (v: number) => setBusSlotExpanderRatio(busIdx, slotT, v),
+    expanderAttack: (v: number) => setBusSlotExpanderAttack(busIdx, slotT, v),
+    expanderRelease: (v: number) => setBusSlotExpanderRelease(busIdx, slotT, v),
   };
 
   // Section collapse state (default some to collapsed)
@@ -280,15 +261,15 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
   };
 
   // ── FX chain (pair-owned rack) ─────────────────────────────────────
-  // Even input strips own the 2t/2t+1 pair's chain (store fxChains
-  // [pair][slot]). Stereo mode: pair index = t, its even anchor strip
-  // (the ch every fx message takes) = 2t via fxAnchor. Mono mode:
-  // unchanged — the even ch is idx itself; bus slots (>= 128) and odd
-  // mono strips get no chain (odd strips show a pointer to the owner).
-  const fxChIdx = stereoMode ? fxAnchor(idx) : idx;
-  const fxPair = stereoMode
-    ? idx
-    : idx < NUM_CHANNELS && idx % 2 === 0 ? idx / 2 : null;
+  // Input stereo pairs own the 2t/2t+1 pair's chain (store fxChains
+  // [pair][slot]): pair index = t, its even anchor strip (the ch every
+  // fx message takes) = 2t via fxAnchor. Bus slots have NO FX chain —
+  // the section is absent for them. fxChIdx doubles as the EQCurve
+  // anchor: the curve reads the mono store, so point it at the pair's
+  // L strip (2t for inputs, the bus's mono slot 2t for bus slots),
+  // which the fan-out helpers keep in sync.
+  const fxChIdx = stereoMode ? fxAnchor(idx) : slotChannelIndex(busIdx, 2 * slotT);
+  const fxPair = stereoMode ? idx : null;
 
   // UI-local: which chain slot the edit area shows. Follows the first
   // enabled slot until the user picks one explicitly (OctOBX semantics).
@@ -310,9 +291,8 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
     return cats;
   };
 
-  // Fader / pan / mute / solo live in the S adapter above (stereo fans out
-  // via store helpers; mono keeps the inline setChannels + sendToWorklet
-  // pattern).
+  // Fader / pan / mute / solo live in the S adapter above (both paths fan
+  // out via their store helpers).
 
   const fmtPan = (p: number) => {
     if (Math.abs(p) < 0.02) return "C";
@@ -336,17 +316,16 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
         <div class="slot-source-row">
           <select
             class="slot-source-select"
-            value={busChannels[props.slot.bus].sources[props.slot.slot] ?? ""}
+            value={stereoBusSlots[props.slot!.bus][props.slot!.slot].source ?? ""}
             onInput={(e) => {
               const v = e.currentTarget.value;
-              if (v === "") clearBusSource(props.slot!.bus, props.slot!.slot);
-              else setBusSource(props.slot!.bus, props.slot!.slot, parseInt(v));
+              setBusSlotSource(props.slot!.bus, props.slot!.slot, v === "" ? null : parseInt(v));
             }}
-            title="Input source for this slot"
+            title="Stereo input source for this slot pair — none leaves both halves unassigned"
           >
-            <option value="">—</option>
-            {Array.from({ length: NUM_CHANNELS }, (_, ch) => (
-              <option value={ch}>{channels[ch]?.name || `ch${ch + 1}`}</option>
+            <option value="">none</option>
+            {Array.from({ length: STEREO_CHANNELS }, (_, t) => (
+              <option value={t}>{stereoChannels[t]?.name || `Ch ${t + 1}`}</option>
             ))}
           </select>
         </div>
@@ -375,7 +354,7 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
           {!props.slot && (
             <button
               class={`btn-sm btn-main ${ch().mainAssigned ? "active" : ""}`}
-              onClick={() => S.mainAssign(!ch().mainAssigned)}
+              onClick={() => S.mainAssign?.(!ch().mainAssigned)}
               title="Main bus assign — off = this strip reaches master only through its bus slots"
             >MAIN</button>
           )}
@@ -525,13 +504,7 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
         )}
       </div>
 
-      {/* ── FX CHAIN (pair-owned; even input strips only) ── */}
-      {!stereoMode && idx < NUM_CHANNELS && idx % 2 === 1 && (
-        <div
-          class="fx-pair-hint"
-          title={`FX chains are pair-owned: strips 2t/2t+1 form one L/R pair and the pair's chain is owned and edited on the L strip (channel ${idx - 1}, "${channels[idx - 1].name}").`}
-        >FX CHAIN → {channels[idx - 1].name}</div>
-      )}
+      {/* ── FX CHAIN (input pairs only; bus slots have none) ── */}
       {fxPair !== null && (
       <div class="detail-section">
         <div class="detail-section-divider collapsible" onClick={() => toggle("FX")} title="FX chain of this stereo pair — click to expand/collapse">
@@ -618,173 +591,106 @@ export function ChannelDetailPanel(props: { channelIndex: number; stereo?: boole
       </div>
       )}
 
-      {/* ── PAN (mono/bus only) ───────────────────────── */}
-      {/* Stereo strips have no standalone balance section: their BAL row
-          lives inside the output section below, pinned to the strip
-          bottom directly above the meters/fader. */}
-      {!stereoMode && (
-        <div class="detail-section">
-          <div class="detail-section-divider">
-            <span class="detail-section-label">PAN</span>
-          </div>
-          <div class="detail-pan-row">
-            <input
-              type="range"
-              class="pan-slider"
-              min={-1} max={1} step={0.01}
-              value={panVal()}
-              onInput={(e) => S.pan(parseFloat(e.currentTarget.value))}
-              title="Pan"
-            />
-          </div>
+      {/* ── METER + FADER (shared stereo strip bottom) ─── */}
+      {/* Both paths (input strips and bus slots) end in the same
+          two-column bottom (bottom-aligned so SOLO/MUTE share a baseline
+          and the meter scale lines up with the fader scale): LEFT =
+          monitoring (slim L + R meters, SOLO directly beneath), RIGHT =
+          mix (level fader, MUTE directly beneath). All strips are
+          uniform stereo — both meters always render identically (the
+          old mono-material R-dim special case is gone). Balance sits at
+          the very top of this section:
+          divider + full-width slider + readouts directly above the
+          meters/fader, below the output separator (.detail-output's
+          margin-top:auto pins the whole block to the strip bottom). */}
+      <div class="detail-section detail-output">
+        <div class="detail-section-divider">
+          <span class="detail-section-label">BAL</span>
         </div>
-      )}
-
-      {/* ── METER + FADER ──────────────────────────────── */}
-      {stereoMode ? (
-        /* Stereo strip bottom, two side-by-side columns (bottom-aligned
-         * so SOLO/MUTE share a baseline and the meter scale lines up
-         * with the fader scale): LEFT = monitoring (slim L + R meters,
-         * SOLO directly beneath), RIGHT = mix (level fader, MUTE
-         * directly beneath). Only genuine mono material (left side
-         * mapped, right not) dims the R meter — idle strips render
-         * both meters identically. Balance sits at the very top of
-         * this section:
-         * divider + full-width slider + readouts directly above the
-         * meters/fader, below the output separator (.detail-output's
-         * margin-top:auto pins the whole block to the strip bottom). */
-        <div class="detail-section detail-output">
-          <div class="detail-section-divider">
-            <span class="detail-section-label">BAL</span>
-          </div>
-          {/* The slider row's only content is the slider itself, spanning
-              the full strip width (center detent tick via
-              .bal-slider-wrap::after). */}
-          <div class="bal-slider-wrap">
-            <input
-              type="range"
-              class="pan-slider"
-              min={-1} max={1} step={0.01}
-              value={panVal()}
-              onInput={(e) => S.pan(parseFloat(e.currentTarget.value))}
-              title="Stereo balance — offsets the L/R pair's image left (L) or right (R); C leaves it centered"
-            />
-          </div>
-          {/* Readout row mirroring .strip-bottom's two-column geometry:
-              balance value over the meters column, fader gain over the
-              fader column (moved up out of the fader column). */}
-          <div class="bal-readout-row">
-            <span class="bal-readout" title="Stereo balance position (L100 … C … R100)">
-              {fmtPan(panVal())}
-            </span>
-            <span class="bal-readout" title="Channel fader level (dB)">
-              {formatGainDb(ch().gain)}
-            </span>
-          </div>
-          <div class="strip-bottom">
-            <div class="strip-col strip-col-meters">
-              <div class="strip-meters">
-                <div
-                  class="strip-meter"
-                  title="Left side level — peak bar with RMS average (dBFS)"
-                >
-                  <MeterCanvas
-                    peakDb={stereoChannels[idx].meters.peakL}
-                    rmsDb={stereoChannels[idx].meters.rmsL}
-                    width={10} height={160}
-                  />
-                </div>
-                <div
-                  class={`strip-meter${stereoChannels[idx].sideMapped.l && !stereoChannels[idx].sideMapped.r ? " dimmed" : ""}`}
-                  title="Right side level — peak bar with RMS average (dBFS)"
-                >
-                  <MeterCanvas
-                    peakDb={stereoChannels[idx].meters.peakR}
-                    rmsDb={stereoChannels[idx].meters.rmsR}
-                    width={10} height={160}
-                  />
-                </div>
-              </div>
-              <button
-                class={`btn-sm btn-solo ${ch().soloed ? "active" : ""}`}
-                onClick={() => S.solo()}
-                title="Solo this channel"
-              >S</button>
-            </div>
-            <div class="strip-col strip-col-fader">
-              <span
-                class={`strip-gated ${degradedVal() ? "on" : ""}`}
-                title="Stream health gate: this strip's delivery is pathologically lossy/bursty (e.g. TSBPD latency below the network's jitter, constant SRT drops) — the mixer faded it to silence to protect the output. Raise the receive latency or fix the connection; the strip returns automatically once delivery is clean."
-              >GATED</span>
-              <div class="fader-wrap">
-                <input
-                  type="range"
-                  class="fader"
-                  min={0} max={1} step={0.001}
-                  value={gainToFader(ch().gain)}
-                  onInput={(e) => S.fader(parseFloat(e.currentTarget.value))}
-                  onWheel={(e) => {
-                    e.preventDefault();
-                    const step = e.shiftKey ? 0.002 : 0.01;
-                    const delta = e.deltaY > 0 ? -step : step;
-                    const cur = gainToFader(ch().gain);
-                    S.fader(Math.max(0, Math.min(1, cur + delta)));
-                  }}
-                  title="Channel fader — level of the stereo pair (scroll to trim, Shift for fine)"
+        {/* The slider row's only content is the slider itself, spanning
+            the full strip width (center detent tick via
+            .bal-slider-wrap::after). */}
+        <div class="bal-slider-wrap">
+          <input
+            type="range"
+            class="pan-slider"
+            min={-1} max={1} step={0.01}
+            value={panVal()}
+            onInput={(e) => S.pan(parseFloat(e.currentTarget.value))}
+            title="Stereo balance — offsets the L/R pair's image left (L) or right (R); C leaves it centered"
+          />
+        </div>
+        {/* Readout row mirroring .strip-bottom's two-column geometry:
+            balance value over the meters column, fader gain over the
+            fader column (moved up out of the fader column). */}
+        <div class="bal-readout-row">
+          <span class="bal-readout" title="Stereo balance position (L100 … C … R100)">
+            {fmtPan(panVal())}
+          </span>
+          <span class="bal-readout" title="Channel fader level (dB)">
+            {formatGainDb(ch().gain)}
+          </span>
+        </div>
+        <div class="strip-bottom">
+          <div class="strip-col strip-col-meters">
+            <div class="strip-meters">
+              <div
+                class="strip-meter"
+                title="Left side level — peak bar with RMS average (dBFS)"
+              >
+                <MeterCanvas
+                  peakDb={ch().meters.peakL}
+                  rmsDb={ch().meters.rmsL}
+                  width={10} height={160}
                 />
               </div>
-              <button
-                class={`btn-sm btn-mute ${ch().muted ? "active" : ""}`}
-                onClick={() => S.mute()}
-                title="Mute this channel"
-              >M</button>
-            </div>
-          </div>
-        </div>
-      ) : (
-        /* Mono/bus path: single-meter bottom, unchanged. */
-        <div class="detail-section detail-output">
-          <div class="detail-meter-fader">
-            <MeterCanvas peakDb={peakDbVal()} rmsDb={rmsDbVal()} width={14} height={160} />
-            <div class="fader-col">
-              <span
-                class={`strip-gated ${degradedVal() ? "on" : ""}`}
-                title="Stream health gate: this strip's delivery is pathologically lossy/bursty (e.g. TSBPD latency below the network's jitter, constant SRT drops) — the mixer faded it to silence to protect the output. Raise the receive latency or fix the connection; the strip returns automatically once delivery is clean."
-              >GATED</span>
-              <span class="fader-val">{formatGainDb(ch().gain)}</span>
-              <div class="fader-wrap">
-                <input
-                  type="range"
-                  class="fader"
-                  min={0} max={1} step={0.001}
-                  value={gainToFader(ch().gain)}
-                  onInput={(e) => S.fader(parseFloat(e.currentTarget.value))}
-                  onWheel={(e) => {
-                    e.preventDefault();
-                    const step = e.shiftKey ? 0.002 : 0.01;
-                    const delta = e.deltaY > 0 ? -step : step;
-                    const cur = gainToFader(ch().gain);
-                    S.fader(Math.max(0, Math.min(1, cur + delta)));
-                  }}
-                  title="Channel fader"
+              <div
+                class="strip-meter"
+                title="Right side level — peak bar with RMS average (dBFS)"
+              >
+                <MeterCanvas
+                  peakDb={ch().meters.peakR}
+                  rmsDb={ch().meters.rmsR}
+                  width={10} height={160}
                 />
               </div>
             </div>
-          </div>
-          <div class="detail-controls">
             <button
               class={`btn-sm btn-solo ${ch().soloed ? "active" : ""}`}
               onClick={() => S.solo()}
-              title="Solo"
+              title="Solo this channel"
             >S</button>
+          </div>
+          <div class="strip-col strip-col-fader">
+            <span
+              class={`strip-gated ${degradedVal() ? "on" : ""}`}
+              title="Stream health gate: this strip's delivery is pathologically lossy/bursty (e.g. TSBPD latency below the network's jitter, constant SRT drops) — the mixer faded it to silence to protect the output. Raise the receive latency or fix the connection; the strip returns automatically once delivery is clean."
+            >GATED</span>
+            <div class="fader-wrap">
+              <input
+                type="range"
+                class="fader"
+                min={0} max={1} step={0.001}
+                value={gainToFader(ch().gain)}
+                onInput={(e) => S.fader(parseFloat(e.currentTarget.value))}
+                onWheel={(e) => {
+                  e.preventDefault();
+                  const step = e.shiftKey ? 0.002 : 0.01;
+                  const delta = e.deltaY > 0 ? -step : step;
+                  const cur = gainToFader(ch().gain);
+                  S.fader(Math.max(0, Math.min(1, cur + delta)));
+                }}
+                title="Channel fader — level of the stereo pair (scroll to trim, Shift for fine)"
+              />
+            </div>
             <button
               class={`btn-sm btn-mute ${ch().muted ? "active" : ""}`}
               onClick={() => S.mute()}
-              title="Mute"
+              title="Mute this channel"
             >M</button>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
