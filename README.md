@@ -55,6 +55,12 @@ QuicSRT engine staged at `web/build/`). The server
 everything first, including the emcc engine (`make build-quicsrt-engine`,
 which needs emsdk and inits the submodule's own deps).
 
+The dev machine's local instance runs under system supervisord (program
+`cakemix`, binary `target/release/cakemix`, conf
+`/etc/supervisor/conf.d/cakemix.conf`): to land a rebuild on it, run
+`cargo build --release -p cakemix-server` then `sudo supervisorctl
+restart cakemix` — rebuilding `web/` alone never reaches the served UI.
+
 cakemix-server embeds **no gateway**. The external QuicSRT-gateway must
 be running (on the dev machine it is, under supervisord: web/player
 HTTPS :8443, WebTransport ingest :4435, SRT ingest :9102, health :9292);
