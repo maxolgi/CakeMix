@@ -87,7 +87,7 @@ build-ui: build-quicsrt-engine
 # Worklet bundle → web/mixer-worklet-processor.js (polyfill + wasm glue +
 # processor, from frontend/src/worklet/ + the mixer pkg).
 build-worklet: build-web
-	node build/build-worklet.js
+	node build/build-worklet.cjs
 
 # Build the QuicSRT engine module with emcc: libquicsrt's receiver-only
 # flavor + the srt fork + the single engine module →
