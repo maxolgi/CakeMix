@@ -221,7 +221,7 @@ jobs:
 
       - name: Build mixer worklet
         shell: bash
-        run: node build/build-worklet.js
+        run: node build/build-worklet.cjs
 
       # Step 6: server binary — embeds web/ (incl. web/build/) and pkg/.
       - name: Build server binary
