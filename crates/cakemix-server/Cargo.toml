@@ -37,3 +37,18 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 url = "2"
+
+# Debian package metadata for cargo-deb. The CI build-linux job (Debian
+# trixie container, glibc-capped) runs `cargo deb --no-build` after the
+# release build — "target/release/" is a cargo-deb-rewritten prefix, so it
+# resolves to the workspace target dir despite the nested crate.
+[package.metadata.deb]
+maintainer = "maxolgi <https://github.com/maxolgi/CakeMix>"
+copyright = "2026"
+license-file = ["../../LICENSE", "0"]
+section = "sound"
+priority = "optional"
+depends = "$auto"
+assets = [
+    ["target/release/cakemix", "usr/bin/", "755"],
+]

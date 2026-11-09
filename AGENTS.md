@@ -148,12 +148,14 @@ then bump the pin here once it's merged.
 
 CI is GitHub Actions (`.github/workflows/ci.yml`): fmt + clippy + native
 tests + the release-mode glitch_sim RT-budget gate + the wasm test suites
-+ a 3-OS build matrix that produces release binaries. Jobs that need
-`web/` also build the emcc QuicSRT engine first (CI installs emsdk 6.0.8;
-`make build-quicsrt-engine`, staged into `web/build/` by `build-ui`) —
-the gates themselves are otherwise unchanged. Every milestone
-ships with a test that proves the milestone's claim; keep the suites
-green locally (`make test-all`) before pushing.
++ a Windows/macOS build matrix plus a Debian 13 (trixie) containerized
+Linux build (glibc-capped) that produces release binaries and a `.deb`
+package via cargo-deb (`[package.metadata.deb]` in cakemix-server).
+Jobs that need `web/` also build the emcc QuicSRT engine first (CI
+installs emsdk 6.0.8; `make build-quicsrt-engine`, staged into
+`web/build/` by `build-ui`) — the gates themselves are otherwise
+unchanged. Every milestone ships with a test that proves the milestone's
+claim; keep the suites green locally (`make test-all`) before pushing.
 
 ### Frontend conventions
 

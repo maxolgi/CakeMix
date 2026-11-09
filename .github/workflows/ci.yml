@@ -119,7 +119,9 @@ jobs:
         run: cd crates/mixer-wasm && wasm-pack test --node --release
 
   # ---------------------------------------------------------------------------
-  # 3. Full build — Linux, Windows, macOS (ARM).
+  # 3. Full build — Windows, macOS (ARM).
+  #    (Linux is built by build-linux below, inside the Debian trixie
+  #    container — `container:` cannot be set conditionally from a matrix.)
   #    Each matrix entry builds the QuicSRT engine → WASM → web/ → server
   #    binary independently, because rust-embed embeds web/ (incl. the staged
   #    engine at web/build/) and crates/mixer-wasm/pkg at compile time.
@@ -130,10 +132,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Linux x64
-            os: ubuntu-latest
-            binary: cakemix
-            artifact: cakemix-linux-x64
           - name: Windows x64
             os: windows-latest
             binary: cakemix.exe
@@ -239,17 +237,140 @@ jobs:
           path: target/release/${{ matrix.binary }}
           if-no-files-found: error
 
-      # web/ is platform-agnostic — upload once from Linux only
+  # ---------------------------------------------------------------------------
+  # 4. Linux build — Debian 13 (trixie) container, glibc 2.41.
+  #    ubuntu-latest images carry a newer glibc (2.42), which would raise the
+  #    binary's minimum requirement above Debian stable. Building inside
+  #    debian:trixie caps it at glibc 2.41, and cargo-deb's $auto depends
+  #    resolve against trixie's library versions via dpkg-shlibdeps.
+  #    Unlike SlopShady's trixie job there are no GUI/openssl packages here:
+  #    cakemix-server is a headless axum server on rustls (reqwest
+  #    default-features = false), but clang is added for mixer-wasm's gxfx
+  #    guitarix C++ DSP (build.rs).
+  # ---------------------------------------------------------------------------
+  build-linux:
+    name: Build (Linux x64)
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      # Must precede checkout: git is not in the base image and checkout falls
+      # back to a REST download (no submodules) without it.
+      - name: Install build deps (Debian trixie)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git python3 xz-utils \
+            build-essential cmake ninja-build pkg-config clang
+          ldd --version | head -n 1
+
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      # mixer-wasm's build.rs compiles the gxfx guitarix C++ DSP with
+      # clang++ and an archiver — ar, falling back to llvm-ar or $AR
+      # (vendor/guitarix is initialized by the recursive checkout above).
+      # Fail fast with a clear message if the toolchain is missing.
+      - name: Check gxfx toolchain (clang++ / ar)
+        shell: bash
+        run: |
+          command -v clang++ >/dev/null || { echo "::error::clang++ not found on PATH — building mixer-wasm requires the clang/LLVM toolchain (gxfx C++ DSP)"; exit 1; }
+          command -v ar >/dev/null || command -v llvm-ar >/dev/null || { echo "::error::neither ar nor llvm-ar found on PATH — building mixer-wasm requires an archiver (binutils or LLVM) for the gxfx static library"; exit 1; }
+
+      # dtolnay/rust-toolchain assumes rustup is preinstalled (true on GH
+      # runners, not in the bare container), so install rustup directly.
+      # 1.95 + wasm32-unknown-unknown mirror rust-toolchain.toml / the
+      # toolchain pins in the other jobs.
+      - name: Install Rust (1.95 + wasm32 target)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain 1.95
+          . "$HOME/.cargo/env"
+          rustup target add wasm32-unknown-unknown
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # build.sh sources ~/emsdk/emsdk_env.sh, so emsdk must live at exactly
+      # that path. 6.0.8 is the toolchain the port was built and
+      # byte-parity-verified with (mirrors vendor/QuicSRT-wasm's CI).
+      - name: Install Emscripten (emsdk 6.0.8)
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk "$HOME/emsdk"
+          "$HOME/emsdk/emsdk" install 6.0.8
+          "$HOME/emsdk/emsdk" activate 6.0.8
+
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      # Same chain as the build matrix: engine → wasm pkg → stage → frontend
+      # → worklet → server (rust-embed compiles the web/ tree in).
+      - name: Build QuicSRT engine
+        run: cd vendor/QuicSRT-wasm && ./build.sh setup && ./build.sh lib && ./build.sh engine
+
+      - name: Build mixer WASM pkg (wasm-pack web)
+        run: cd crates/mixer-wasm && wasm-pack build --target web --release
+
+      - name: Stage QuicSRT engine into web/build
+        run: |
+          mkdir -p web/build
+          cp vendor/QuicSRT-wasm/build/srt_engine.mjs vendor/QuicSRT-wasm/build/srt_engine.wasm web/build/
+
+      - name: Build frontend (npm ci + vite)
+        working-directory: frontend
+        run: |
+          npm ci
+          npx vite build
+
+      - name: Build mixer worklet
+        run: node build/build-worklet.cjs
+
+      - name: Build server binary
+        run: cargo build --release -p cakemix-server
+
+      - name: Strip binary
+        run: strip target/release/cakemix
+
+      - name: Upload server binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: cakemix-linux-x64
+          path: target/release/cakemix
+          if-no-files-found: error
+
+      # web/ is platform-agnostic — uploaded once, from this job (the only
+      # Linux one left).
       - name: Upload web dist
-        if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
           name: cakemix-web-dist
           path: web/
           if-no-files-found: error
 
+      # .deb package (binary already built, --no-build skips rebuild). $auto
+      # depends resolve against trixie via dpkg-shlibdeps (from
+      # build-essential); metadata lives in cakemix-server's Cargo.toml
+      # ([package.metadata.deb]).
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+
+      - name: Build .deb package
+        run: cargo deb -p cakemix-server --no-build
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@v7
+        with:
+          name: cakemix-deb
+          path: target/debian/*.deb
+          if-no-files-found: error
+
   # ---------------------------------------------------------------------------
-  # 4. Publish a GitHub Release for every successful build.
+  # 5. Publish a GitHub Release for every successful build.
   #    - Push to master  → release tagged dev-<short_sha>, marked "latest"
   #      (regular release, not a prerelease: GitHub ignores make_latest on
   #      pre-releases, so the dev build would never get the Latest badge)
@@ -257,7 +378,7 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     name: Publish release
-    needs: [build, wasm-tests]
+    needs: [build, build-linux, wasm-tests]
     if: >-
       github.event_name != 'pull_request' &&
       (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
@@ -275,6 +396,7 @@ jobs:
           cp artifacts/cakemix-linux-x64/cakemix       release/cakemix-linux
           cp artifacts/cakemix-windows-x64/cakemix.exe release/cakemix-windows.exe
           cp artifacts/cakemix-macos-arm64/cakemix     release/cakemix-macos
+          cp artifacts/cakemix-deb/*.deb               release/
           (cd artifacts/cakemix-web-dist && zip -r "$GITHUB_WORKSPACE/release/cakemix-web-dist.zip" .)
 
       - name: Set release metadata
