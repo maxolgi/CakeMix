@@ -62,18 +62,17 @@ fn clang_bin_dir() -> Option<PathBuf> {
         .find(|dir| dir.join("clang++").is_file() || dir.join("clang++.exe").is_file())
 }
 
-/// Probe each candidate with `--version` and return the first one that
-/// actually runs. Panics with everything tried if none do.
-fn resolve_archiver() -> String {
+/// Probe each candidate by exercising the operation this build depends on
+/// — `rcs` over a scratch file — and return the first one that succeeds.
+/// (`--version` is not a portable capability test: macOS's BSD `ar` answers
+/// no version flag and exits nonzero despite archiving fine.) Panics with
+/// everything tried if none do.
+fn resolve_archiver(out_dir: &Path) -> String {
     let mut failures = Vec::new();
     for candidate in archiver_candidates() {
-        match Command::new(&candidate).arg("--version").output() {
-            Ok(out) if out.status.success() => return candidate,
-            Ok(out) => failures.push(format!("`{candidate}` --version exited {}", out.status)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                failures.push(format!("`{candidate}` not found"))
-            }
-            Err(e) => failures.push(format!("`{candidate}` failed to run: {e}")),
+        match probe_archiver(&candidate, out_dir) {
+            Ok(()) => return candidate,
+            Err(reason) => failures.push(format!("`{candidate}` {reason}")),
         }
     }
     panic!(
@@ -82,6 +81,39 @@ fn resolve_archiver() -> String {
          beside clang++)",
         failures.join("\n  ")
     );
+}
+
+/// Have `candidate` archive a scratch file with `rcs` (the exact invocation
+/// used for libgxfx_dsp.a) in a cargo-owned OUT_DIR corner; Ok(()) means it
+/// created the archive. Probe artifacts are removed afterwards.
+fn probe_archiver(candidate: &str, out_dir: &Path) -> Result<(), String> {
+    let scratch = out_dir.join(".ar-probe.txt");
+    let archive = out_dir.join(".ar-probe.a");
+    let _ = std::fs::remove_file(&archive);
+    if let Err(e) = std::fs::write(&scratch, b"probe") {
+        return Err(format!("cannot write {}: {e}", scratch.display()));
+    }
+    let result = Command::new(candidate)
+        .arg("rcs")
+        .arg(&archive)
+        .arg(&scratch)
+        .output();
+    let verdict = match result {
+        Ok(out) if out.status.success() && archive.is_file() => Ok(()),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            Err(format!(
+                "`rcs` probe exited {}{}",
+                out.status,
+                if stderr.is_empty() { String::new() } else { format!(": {stderr}") }
+            ))
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Err("not found".to_string()),
+        Err(e) => Err(format!("failed to run: {e}")),
+    };
+    let _ = std::fs::remove_file(&scratch);
+    let _ = std::fs::remove_file(&archive);
+    verdict
 }
 
 fn rerun_if_changed_recursive(dir: &Path) {
@@ -195,7 +227,7 @@ fn main() {
     let mut objects: Vec<PathBuf> = Vec::new();
     // Resolve the archiver before compiling, so a machine without any
     // archiver fails fast instead of after the full C++ compile.
-    let ar_program = resolve_archiver();
+    let ar_program = resolve_archiver(&out_dir);
     for src in &sources {
         let obj = out_dir.join(src.file_name().unwrap()).with_extension("o");
         let mut cmd = Command::new("clang++");
