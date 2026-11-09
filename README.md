@@ -36,8 +36,10 @@ make test-all
 
 Prerequisites: the pinned Rust toolchain with `wasm32-unknown-unknown`.
 Building mixer-wasm compiles the gxfx guitarix C++ DSP freestanding —
-that needs `clang++` and an archiver on PATH (`ar`, else `llvm-ar`, else
-`$AR`) plus the vendored sources:
+that needs a clang++ able to target wasm32 (`$CXX`, else PATH `clang++`,
+else emsdk/homebrew LLVM — Apple's clang++ has no WebAssembly backend, so
+on macOS the emsdk clang is the one that gets used) and an archiver
+(`$AR`, else `ar`, else `llvm-ar`) plus the vendored sources:
 `git submodule update --init vendor/guitarix`. The QuicSRT engine step
 (`make serve`) additionally needs emsdk (below).
 

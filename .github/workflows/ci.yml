@@ -151,9 +151,10 @@ jobs:
       # mixer-wasm's build.rs compiles the gxfx guitarix C++ DSP with
       # clang++ and an archiver — ar, falling back to llvm-ar or $AR
       # (vendor/guitarix is initialized by the recursive checkout above).
-      # Linux/macOS runners ship both ar and llvm-ar; windows-latest ships
-      # LLVM's llvm-ar without binutils ar. Fail fast with a clear message
-      # anywhere the toolchain is missing instead of deep inside the build.
+      # Apple's clang++ has no WebAssembly backend, so on macOS build.rs
+      # probes compilers and falls back to the emsdk clang installed two
+      # steps below. The hosted runners ship a toolchain providing these;
+      # fail fast with a clear message if it is missing.
       - name: Check gxfx toolchain (clang++ / ar)
         shell: bash
         run: |

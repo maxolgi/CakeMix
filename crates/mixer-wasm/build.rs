@@ -1,7 +1,10 @@
 /// Compile the gxfx guitarix faust C++ DSP sources — every `.cpp` directly
-/// under `gxfx/` — into one static library with plain `clang++` plus an
-/// archiver (`ar`, `llvm-ar`, or `$AR` — see `resolve_archiver`; no `cc`
-/// crate, no build-dependencies). The DSP sources are
+/// under `gxfx/` — into one static library with a discovered clang++ plus
+/// a discovered archiver (no `cc` crate, no build-dependencies). Both are
+/// resolved by probing candidates with the exact invocations this build
+/// uses: the compiler (`$CXX`, PATH `clang++`, then emsdk/homebrew LLVM —
+/// Apple's clang++ ships without the WebAssembly backend) and the archiver
+/// (`$AR`, `ar`, `llvm-ar` — see `resolve_archiver`). The DSP sources are
 /// consumed from the pinned `vendor/guitarix` submodule; the wasm32 build is
 /// freestanding (`-nostdinc`/`-nostdinc++`) with `gxfx/shim/` first on the
 /// include path so the C++ standard-name headers resolve to our shims.
@@ -28,22 +31,69 @@ fn run(command: &mut Command) {
     }
 }
 
-/// Archiver candidates in priority order: an explicit `$AR` override, the
-/// classic `ar`, LLVM's `llvm-ar` (windows-latest ships LLVM but no
-/// binutils `ar` on PATH), and finally `llvm-ar` sitting in the same bin
-/// dir as the `clang++` we are about to invoke.
-fn archiver_candidates() -> Vec<String> {
+/// C++ compiler candidates in priority order: an explicit `$CXX` override,
+/// `clang++` on PATH, then wasm-capable toolchains that live off PATH —
+/// emsdk (`$EMSDK`, else the `~/emsdk` CI installs) and homebrew LLVM.
+/// Apple's clang++ ships without the WebAssembly backend, so on macOS the
+/// PATH hit fails the probe and emsdk's clang (already a prerequisite of
+/// the web build) takes over; Linux and Windows keep their PATH clang++.
+fn cxx_candidates() -> Vec<String> {
+    let mut candidates = Vec::new();
+    if let Ok(cxx) = env::var("CXX") {
+        if !cxx.trim().is_empty() {
+            candidates.push(cxx);
+        }
+    }
+    candidates.push("clang++".to_string());
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(emsdk) = env::var("EMSDK") {
+        dirs.push(Path::new(&emsdk).join("upstream/bin"));
+    }
+    if let Ok(home) = env::var("HOME") {
+        dirs.push(Path::new(&home).join("emsdk/upstream/bin"));
+    }
+    dirs.push(PathBuf::from("/opt/homebrew/opt/llvm/bin"));
+    // Explicit dirs bypass the OS search, so only offer file names that exist
+    // (.exe included for Windows).
+    for dir in dirs {
+        for name in ["clang++", "clang++.exe"] {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                candidates.push(candidate.display().to_string());
+            }
+        }
+    }
+    candidates
+}
+
+/// Archiver candidates in priority order: an explicit `$AR` override, LLVM's
+/// `llvm-ar` beside the resolved C++ compiler when that compiler came from
+/// an off-PATH toolchain dir (a matched pair — a system `ar` may not index
+/// that toolchain's objects), the classic `ar`, `llvm-ar` on PATH (windows-
+/// latest ships LLVM's llvm-ar without binutils `ar`), and finally
+/// `llvm-ar` sitting in the same bin dir as the `clang++` found on PATH.
+fn archiver_candidates(cxx: &str) -> Vec<String> {
     let mut candidates = Vec::new();
     if let Ok(ar) = env::var("AR") {
         if !ar.trim().is_empty() {
             candidates.push(ar);
         }
     }
+    let cxx_path = Path::new(cxx);
+    if cxx_path
+        .parent()
+        .is_some_and(|dir| !dir.as_os_str().is_empty())
+    {
+        for name in ["llvm-ar", "llvm-ar.exe"] {
+            let candidate = cxx_path.parent().unwrap().join(name);
+            if candidate.is_file() {
+                candidates.push(candidate.display().to_string());
+            }
+        }
+    }
     candidates.push("ar".to_string());
     candidates.push("llvm-ar".to_string());
     if let Some(dir) = clang_bin_dir() {
-        // Bare `ar`/`llvm-ar` rely on the OS search to resolve `.exe`; for
-        // an explicit path, only offer the concrete file names that exist.
         for name in ["llvm-ar", "llvm-ar.exe"] {
             let candidate = dir.join(name);
             if candidate.is_file() {
@@ -62,18 +112,87 @@ fn clang_bin_dir() -> Option<PathBuf> {
         .find(|dir| dir.join("clang++").is_file() || dir.join("clang++.exe").is_file())
 }
 
-/// Probe each candidate by exercising the operation this build depends on
-/// — `rcs` over a scratch file — and return the first one that succeeds.
-/// (`--version` is not a portable capability test: macOS's BSD `ar` answers
-/// no version flag and exits nonzero despite archiving fine.) Panics with
-/// everything tried if none do.
-fn resolve_archiver(out_dir: &Path) -> String {
+/// Probe each C++ compiler candidate by compiling a scratch TU with the
+/// exact flags this build passes — a compiler that cannot create the target
+/// (Apple clang++ asked for wasm32 has no WebAssembly backend) fails here
+/// with a clear message instead of mid-build. Returns the winner plus the
+/// probe object, which `resolve_archiver` reuses so archivers are probed on
+/// a real object of the kind this build archives.
+fn resolve_cxx(target: &str, flags: &[String], out_dir: &Path) -> (String, PathBuf) {
+    let src = out_dir.join(".cxx-probe.cpp");
+    let obj = out_dir.join(".cxx-probe.o");
+    if let Err(e) = std::fs::write(
+        &src,
+        b"extern \"C\" int gxfx_build_probe(void) { return 1; }\n",
+    ) {
+        panic!("cannot write {}: {e}", src.display());
+    }
     let mut failures = Vec::new();
-    for candidate in archiver_candidates() {
-        match probe_archiver(&candidate, out_dir) {
-            Ok(()) => return candidate,
-            Err(reason) => failures.push(format!("`{candidate}` {reason}")),
+    for candidate in cxx_candidates() {
+        // A failed compile can leave a stale object; never let one masquerade
+        // as the next candidate's success.
+        let _ = std::fs::remove_file(&obj);
+        match Command::new(&candidate)
+            .args(flags)
+            .arg("-c")
+            .arg(&src)
+            .arg("-o")
+            .arg(&obj)
+            .output()
+        {
+            Ok(out) if out.status.success() && obj.is_file() => return (candidate, obj),
+            Ok(out) => failures.push(format!(
+                "`{candidate}` probe compile exited {}{}",
+                out.status,
+                stderr_note(&out.stderr)
+            )),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                failures.push(format!("`{candidate}` not found"))
+            }
+            Err(e) => failures.push(format!("`{candidate}` failed to run: {e}")),
         }
+    }
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&obj);
+    panic!(
+        "no C++ compiler able to target {target} for the gxfx static library — \
+         tried:\n  {}\n  set CXX to a clang++ that can (Apple's clang++ cannot: \
+         it ships without the WebAssembly backend; emsdk's or LLVM's can)",
+        failures.join("\n  ")
+    );
+}
+
+/// Probe each archiver candidate by archiving the compiler-probe object — a
+/// real object of the kind this build archives — with the exact `rcs`
+/// invocation used for libgxfx_dsp.a. (`--version` is not a portable
+/// capability test: macOS's BSD `ar` answers no version flag and exits
+/// nonzero despite archiving fine.) Panics with everything tried if none do.
+fn resolve_archiver(cxx: &str, probe_obj: &Path, out_dir: &Path) -> String {
+    let archive = out_dir.join(".ar-probe.a");
+    let mut failures = Vec::new();
+    for candidate in archiver_candidates(cxx) {
+        let _ = std::fs::remove_file(&archive);
+        match Command::new(&candidate)
+            .arg("rcs")
+            .arg(&archive)
+            .arg(probe_obj)
+            .output()
+        {
+            Ok(out) if out.status.success() && archive.is_file() => {
+                let _ = std::fs::remove_file(&archive);
+                return candidate;
+            }
+            Ok(out) => failures.push(format!(
+                "`{candidate}` `rcs` probe exited {}{}",
+                out.status,
+                stderr_note(&out.stderr)
+            )),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                failures.push(format!("`{candidate}` not found"))
+            }
+            Err(e) => failures.push(format!("`{candidate}` failed to run: {e}")),
+        }
+        let _ = std::fs::remove_file(&archive);
     }
     panic!(
         "no working archiver for the gxfx static library — tried:\n  {}\n  \
@@ -83,37 +202,14 @@ fn resolve_archiver(out_dir: &Path) -> String {
     );
 }
 
-/// Have `candidate` archive a scratch file with `rcs` (the exact invocation
-/// used for libgxfx_dsp.a) in a cargo-owned OUT_DIR corner; Ok(()) means it
-/// created the archive. Probe artifacts are removed afterwards.
-fn probe_archiver(candidate: &str, out_dir: &Path) -> Result<(), String> {
-    let scratch = out_dir.join(".ar-probe.txt");
-    let archive = out_dir.join(".ar-probe.a");
-    let _ = std::fs::remove_file(&archive);
-    if let Err(e) = std::fs::write(&scratch, b"probe") {
-        return Err(format!("cannot write {}: {e}", scratch.display()));
+/// Compact `: <first lines of stderr>` suffix for probe failure messages.
+fn stderr_note(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr).trim().to_string();
+    if text.is_empty() {
+        String::new()
+    } else {
+        format!(": {text}")
     }
-    let result = Command::new(candidate)
-        .arg("rcs")
-        .arg(&archive)
-        .arg(&scratch)
-        .output();
-    let verdict = match result {
-        Ok(out) if out.status.success() && archive.is_file() => Ok(()),
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            Err(format!(
-                "`rcs` probe exited {}{}",
-                out.status,
-                if stderr.is_empty() { String::new() } else { format!(": {stderr}") }
-            ))
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Err("not found".to_string()),
-        Err(e) => Err(format!("failed to run: {e}")),
-    };
-    let _ = std::fs::remove_file(&scratch);
-    let _ = std::fs::remove_file(&archive);
-    verdict
 }
 
 fn rerun_if_changed_recursive(dir: &Path) {
@@ -137,8 +233,10 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let target = env::var("TARGET").unwrap();
 
-    // A set AR changes which archiver runs, so it must trigger a rebuild.
+    // A set AR or CXX changes which tools run, so either must trigger a
+    // rebuild.
     println!("cargo:rerun-if-env-changed=AR");
+    println!("cargo:rerun-if-env-changed=CXX");
 
     let gxfx = manifest_dir.join("gxfx");
     let root = manifest_dir.join("../.."); // crates/mixer-wasm -> workspace root
@@ -225,12 +323,16 @@ fn main() {
     }
 
     let mut objects: Vec<PathBuf> = Vec::new();
-    // Resolve the archiver before compiling, so a machine without any
-    // archiver fails fast instead of after the full C++ compile.
-    let ar_program = resolve_archiver(&out_dir);
+    // Resolve the compiler and archiver before compiling, probing each with
+    // the exact invocations used below, so a machine without a usable
+    // toolchain fails fast instead of after a partial C++ compile.
+    let (cxx, probe_obj) = resolve_cxx(&target, &flags, &out_dir);
+    let ar_program = resolve_archiver(&cxx, &probe_obj, &out_dir);
+    let _ = std::fs::remove_file(&probe_obj);
+    let _ = std::fs::remove_file(out_dir.join(".cxx-probe.cpp"));
     for src in &sources {
         let obj = out_dir.join(src.file_name().unwrap()).with_extension("o");
-        let mut cmd = Command::new("clang++");
+        let mut cmd = Command::new(&cxx);
         cmd.args(&flags)
             .args(includes.iter().map(|i| format!("-I{i}")))
             .arg("-c")
